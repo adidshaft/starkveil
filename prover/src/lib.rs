@@ -16,8 +16,8 @@ pub unsafe extern "C" fn generate_transfer_proof(
 ) -> *mut c_char {
     if notes_json.is_null() {
         let err = FFIResult::Error("Received null pointer".to_string());
-        let json_err = serde_json::to_string(&err).unwrap();
-        return CString::new(json_err).unwrap().into_raw();
+        let json_err = serde_json::to_string(&err).unwrap_or_else(|_| "{\"Error\":\"Serialization failed\"}".to_string());
+        return CString::new(json_err).unwrap_or_else(|_| CString::new("{\"Error\":\"CString failed\"}").unwrap()).into_raw();
     }
 
     let c_str = CStr::from_ptr(notes_json);
@@ -25,8 +25,8 @@ pub unsafe extern "C" fn generate_transfer_proof(
         Ok(s) => s,
         Err(_) => {
             let err = FFIResult::Error("Invalid UTF-8 sequence".to_string());
-            let json_err = serde_json::to_string(&err).unwrap();
-            return CString::new(json_err).unwrap().into_raw();
+            let json_err = serde_json::to_string(&err).unwrap_or_else(|_| "{\"Error\":\"Serialization failed\"}".to_string());
+            return CString::new(json_err).unwrap_or_else(|_| CString::new("{\"Error\":\"CString failed\"}").unwrap()).into_raw();
         }
     };
 
@@ -35,8 +35,8 @@ pub unsafe extern "C" fn generate_transfer_proof(
         Ok(n) => n,
         Err(e) => {
             let err = FFIResult::Error(format!("Failed to parse notes: {}", e));
-            let json_err = serde_json::to_string(&err).unwrap();
-            return CString::new(json_err).unwrap().into_raw();
+            let json_err = serde_json::to_string(&err).unwrap_or_else(|_| "{\"Error\":\"Serialization failed\"}".to_string());
+            return CString::new(json_err).unwrap_or_else(|_| CString::new("{\"Error\":\"CString failed\"}").unwrap()).into_raw();
         }
     };
 
@@ -48,10 +48,10 @@ pub unsafe extern "C" fn generate_transfer_proof(
         fee: "100000000000000".to_string(), // 0.0001 ETH
     };
 
-    let result = FFIResult::Success(serde_json::to_string(&mock_payload).unwrap());
+    let result = FFIResult::Success(serde_json::to_string(&mock_payload).unwrap_or_else(|_| "{}".to_string()));
     
     match serde_json::to_string(&result) {
-        Ok(json_str) => CString::new(json_str).unwrap().into_raw(),
+        Ok(json_str) => CString::new(json_str).unwrap_or_else(|_| CString::new("{\"Error\":\"CString failed\"}").unwrap()).into_raw(),
         Err(_) => CString::new("{\"Error\":\"Serialization failed\"}").unwrap().into_raw()
     }
 }

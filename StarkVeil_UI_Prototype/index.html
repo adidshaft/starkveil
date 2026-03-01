@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>StarkVeil Wallet Prototype</title>
+
+    <!-- Modern Typeface -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&family=Space+Grotesk:wght@400;600;700&display=swap"
+        rel="stylesheet">
+
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+
+    <!-- Device Frame Mimic (For Desktop View only, expands fully on mobile) -->
+    <div class="app-container">
+
+        <!-- Background Ambient Glow -->
+        <div class="ambient-glow glow-1"></div>
+        <div class="ambient-glow glow-2"></div>
+
+        <!-- Splash Screen -->
+        <div id="splash-screen" class="splash-screen active">
+            <div class="logo-container">
+                <i class="fa-solid fa-shield-halved"></i>
+            </div>
+            <h1 class="brand-name">STARKVEIL</h1>
+            <p class="brand-tagline">Cypherpunk Grade Privacy</p>
+            <div class="loader-line"></div>
+        </div>
+
+        <!-- Main Interface -->
+        <main id="main-interface" class="interface hidden">
+
+            <!-- Header -->
+            <header class="top-nav">
+                <div class="user-profile">
+                    <div class="avatar">
+                        <i class="fa-solid fa-user-ninja"></i>
+                    </div>
+                    <div class="wallet-address">
+                        <span class="starknet-id">aman.stark</span>
+                        <div class="status-indicator">
+                            <i class="fa-solid fa-shield-halved"></i>
+                            <span>Shielded</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="icon-btn" id="theme-toggle"><i class="fa-solid fa-moon"></i></button>
+                    <button class="icon-btn" id="audit-btn"><i class="fa-solid fa-qrcode"></i></button>
+                </div>
+            </header>
+
+            <!-- Balance Card -->
+            <section class="balance-card glass-panel" id="balance-panel">
+                <div class="card-header">
+                    <h3>SHIELDED BALANCE</h3>
+                    <button class="icon-btn sm toggle-visibility" id="toggle-balance">
+                        <i class="fa-solid fa-eye-slash"></i>
+                    </button>
+                </div>
+                <div class="balance-amount redacted" id="total-balance">
+                    <span>******</span>
+                    <span class="currency">STRK</span>
+                </div>
+                <div class="fiat-value redacted" id="fiat-balance">$****** USD</div>
+
+                <div class="action-buttons">
+                    <button class="btn btn-primary" id="btn-send">
+                        <i class="fa-solid fa-arrow-up-right-dots"></i> Send
+                    </button>
+                    <button class="btn btn-glass" id="btn-receive">
+                        <i class="fa-solid fa-arrow-down"></i> Receive
+                    </button>
+                </div>
+            </section>
+
+            <!-- Activity / Assets Toggle -->
+            <div class="tab-container">
+                <button class="tab-btn active" data-tab="assets">Assets</button>
+                <button class="tab-btn" data-tab="activity">Activity</button>
+            </div>
+
+            <!-- Content Area -->
+            <div class="scroll-area">
+
+                <!-- Assets Tab -->
+                <div id="tab-assets" class="tab-content active">
+                    <div class="asset-item glass-panel">
+                        <div class="asset-icon strk">
+                            <i class="fa-brands fa-ethereum"></i>
+                        </div>
+                        <div class="asset-details">
+                            <h4>Starknet (STRK)</h4>
+                            <p>Private Token</p>
+                        </div>
+                        <div class="asset-balance redacted amounts-list">
+                            <h4>******</h4>
+                            <p>$******</p>
+                        </div>
+                    </div>
+
+                    <div class="asset-item glass-panel">
+                        <div class="asset-icon btc">
+                            <i class="fa-brands fa-bitcoin"></i>
+                        </div>
+                        <div class="asset-details">
+                            <h4>strkBTC</h4>
+                            <p>Shielded Pool</p>
+                        </div>
+                        <div class="asset-balance redacted amounts-list">
+                            <h4>******</h4>
+                            <p>$******</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Tab -->
+                <div id="tab-activity" class="tab-content hidden">
+
+                    <div class="activity-timeline">
+                        <!-- Auto-Generated via JS -->
+                    </div>
+
+                </div>
+
+            </div>
+
+        </main>
+
+        <!-- Bottom Nav -->
+        <nav class="bottom-nav hidden" id="bottom-nav">
+            <button class="nav-item active"><i class="fa-solid fa-wallet"></i><span
+                    class="nav-label">Wallet</span></button>
+            <button class="nav-item"><i class="fa-solid fa-arrow-right-arrow-left"></i><span
+                    class="nav-label">Swap</span></button>
+            <button class="nav-item"><i class="fa-solid fa-shield-halved"></i><span class="nav-label">ZK
+                    Proofs</span></button>
+            <button class="nav-item"><i class="fa-solid fa-gear"></i><span class="nav-label">Settings</span></button>
+        </nav>
+
+        <!-- Overlay Modals -->
+
+        <!-- 1. The Proving Overlay / Sending -->
+        <div id="proving-overlay" class="modal-overlay hidden">
+            <div class="proving-container">
+                <div class="proving-graphic">
+                    <div class="loader-spinner"></div>
+                </div>
+                <h2 class="sys-text">Synthesizing STARK Proof</h2>
+                <p class="sys-subtext">Executing Cairo Circuits Locally...</p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="proof-progress"></div>
+                </div>
+                <div class="log-output" id="proof-logs">
+                    > Compiling note configuration...<br>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. The Auto-Shielding Demo Trigger -->
+        <button id="demo-trigger" class="demo-trigger"><i class="fa-solid fa-bug"></i> Demo Public Deposit</button>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
