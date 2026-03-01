@@ -1,6 +1,6 @@
 use starknet::ContractAddress;
 
-#[derive(Copy, Drop, Serde, Hash)]
+#[derive(Copy, Drop, Serde)]
 pub struct Note {
     pub value: u256,
     pub asset_id: ContractAddress,
@@ -8,7 +8,7 @@ pub struct Note {
     pub memo: felt252,
 }
 
-#[derive(Copy, Drop, Serde, Hash)]
+#[derive(Copy, Drop, Serde)]
 pub struct Nullifier {
     pub nullifier_hash: felt252,
 }

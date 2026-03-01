@@ -1,34 +1,27 @@
-use starknet::ContractAddress;
-
 #[starknet::contract]
 pub mod PrivacyPool {
     use starknet::{ContractAddress, get_caller_address, get_contract_address};
     use core::poseidon::poseidon_hash_span;
     use openzeppelin::token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use starknet::storage::{Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess, StoragePointerWriteAccess};
     
     use super::super::interfaces::IPrivacyPool;
-    use super::super::merkle_tree::MerkleTreeComponent;
 
-    component!(path: MerkleTreeComponent, storage: merkle_tree, event: MerkleTreeEvent);
-
-    #[abi(embed_v0)]
-    impl MerkleTreeImpl = MerkleTreeComponent::MerkleTreeImpl<ContractState>;
-
-    impl MerkleTreeInternalImpl = MerkleTreeComponent::InternalImpl<ContractState>;
+    const TREE_DEPTH: u32 = 20;
 
     #[storage]
     struct Storage {
-        #[substorage(v0)]
-        merkle_tree: MerkleTreeComponent::Storage,
+        nullifiers: Map<felt252, bool>, // Map nullifier hash -> is_spent
         
-        nullifiers: starknet::storage::Map<felt252, bool>, // Map nullifier hash -> is_spent
+        // Merkle Tree storage
+        mt_next_index: u32,
+        mt_nodes: Map<(u32, u32), felt252>, // (level, index) -> hash
+        mt_root: felt252,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
-        #[flat]
-        MerkleTreeEvent: MerkleTreeComponent::Event,
         Shielded: Shielded,
         Transfer: Transfer,
         Unshielded: Unshielded
@@ -56,27 +49,68 @@ pub mod PrivacyPool {
         nullifier: felt252
     }
 
+    #[generate_trait]
+    impl InternalImpl of InternalTrait {
+        fn insert_leaf(ref self: ContractState, leaf: felt252) -> felt252 {
+            let index = self.mt_next_index.read();
+            self.mt_nodes.write((0, index), leaf);
+            
+            let mut current_index = index;
+            let mut current_hash = leaf;
+
+            let mut level: u32 = 0;
+            loop {
+                if level == TREE_DEPTH {
+                    break;
+                }
+                
+                let is_right_child = (current_index % 2) == 1;
+                let sibling_index = if is_right_child { current_index - 1 } else { current_index + 1 };
+                
+                let sibling_hash = self.mt_nodes.read((level, sibling_index));
+                
+                let (left, right) = if is_right_child {
+                    (sibling_hash, current_hash)
+                } else {
+                    (current_hash, sibling_hash)
+                };
+
+                let mut hash_data = ArrayTrait::new();
+                hash_data.append(left);
+                hash_data.append(right);
+                
+                current_hash = poseidon_hash_span(hash_data.span());
+                
+                current_index = current_index / 2;
+                level += 1;
+                
+                self.mt_nodes.write((level, current_index), current_hash);
+            };
+
+            self.mt_root.write(current_hash);
+            self.mt_next_index.write(index + 1);
+
+            current_hash
+        }
+    }
+
     #[abi(embed_v0)]
     impl PrivacyPoolImpl of IPrivacyPool<ContractState> {
         fn shield(ref self: ContractState, asset: ContractAddress, amount: u256, note_commitment: felt252) {
             let caller = get_caller_address();
             let contract_addr = get_contract_address();
 
-            // Transfer funds from user to this contract
-            // Requires approval beforehand
             let erc20 = IERC20Dispatcher { contract_address: asset };
             erc20.transfer_from(caller, contract_addr, amount);
 
-            // Insert commitment into MT
-            let new_root = self.merkle_tree.insert(note_commitment);
-            // Index from Merkle tree component isn't easily returned in this rough draft, 
-            // so we'll just emit 0 or add a getter later. Let's assume leaf index is not critical for basic tests.
+            let index = self.mt_next_index.read();
+            self.insert_leaf(note_commitment);
             
             self.emit(Event::Shielded(Shielded {
                 asset: asset,
                 amount: amount,
                 commitment: note_commitment,
-                leaf_index: 0
+                leaf_index: index
             }));
         }
 
@@ -87,8 +121,6 @@ pub mod PrivacyPool {
             new_commitments: Array<felt252>,
             fee: u256
         ) {
-            // 1. Verify ZK Proof (omitted from MVP, assumed valid)
-            // 2. Process nullifiers
             let mut i = 0;
             loop {
                 if i == nullifiers.len() { break; }
@@ -98,12 +130,11 @@ pub mod PrivacyPool {
                 i += 1;
             };
 
-            // 3. Insert new commitments
             let mut j = 0;
             loop {
                 if j == new_commitments.len() { break; }
                 let commitment = *new_commitments.at(j);
-                self.merkle_tree.insert(commitment);
+                self.insert_leaf(commitment);
                 j += 1;
             };
 
@@ -121,13 +152,9 @@ pub mod PrivacyPool {
             amount: u256,
             asset: ContractAddress
         ) {
-            // 1. Verify ZK Proof (omitted) that proof allows this unshield
-            
-            // 2. Check nullifier
             assert(!self.nullifiers.read(nullifier), 'Note already spent');
             self.nullifiers.write(nullifier, true);
 
-            // 3. Transfer out
             let erc20 = IERC20Dispatcher { contract_address: asset };
             erc20.transfer(recipient, amount);
 
