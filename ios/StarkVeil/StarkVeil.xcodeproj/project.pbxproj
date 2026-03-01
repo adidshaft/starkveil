@@ -18,8 +18,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		ABF20A662F54CB82009C7826 /* StarkVeil */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = StarkVeil;
 			sourceTree = "<group>";
 		};

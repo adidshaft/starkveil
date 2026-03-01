@@ -7,10 +7,13 @@ struct ProofSynthesisSkeleton: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
+                // Static track — strokeBorder keeps stroke inward so both rings share
+                // the same rendered boundary (no 3pt offset between track and arc)
                 Circle()
-                    .stroke(Color.purple.opacity(0.3), lineWidth: 3)
+                    .strokeBorder(Color.purple.opacity(0.3), lineWidth: 3)
                     .frame(width: 20, height: 20)
-                
+
+                // Animated gradient arc — .clear creates the gap that reads as a moving arc
                 Circle()
                     .strokeBorder(
                         AngularGradient(
@@ -24,6 +27,8 @@ struct ProofSynthesisSkeleton: View {
             }
             .scaleEffect(pulse)
             .onAppear {
+                // Both animations run independently on the render thread —
+                // no main-thread body calls per frame
                 withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
                     rotation = 360
                 }
@@ -31,18 +36,19 @@ struct ProofSynthesisSkeleton: View {
                     pulse = 1.1
                 }
             }
-            
+
             Text("Synthesizing STARK Proof…")
                 .font(.headline.monospaced())
-                .foregroundColor(.white)
+                .foregroundStyle(.white)
         }
         .frame(maxWidth: .infinity)
         .padding()
         .background(Color(white: 0.1))
-        .cornerRadius(16)
-        // Electric purple stroke during generation
+        // clipShape with .continuous matches the superellipse used in ShieldedBalanceCard
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // Electric purple stroke — .continuous matches the background clip shape
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.purple.opacity(0.6), lineWidth: 1)
         )
     }

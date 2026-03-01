@@ -39,6 +39,23 @@ Built a premium, dark-themed native iOS wallet wrapper capable of interfacing di
 
 ---
 
+### Phase 5: High-End UI/UX Assembly (SwiftUI)
+The StarkVeil UI is constructed using native SwiftUI to offer a "Premium Vault" aesthetic. It breaks away from traditional "web3 wallet" interfaces to prioritize strict physical privacy against over-the-shoulder lookers.
+
+#### Aesthetic Rules
+- **Color Palette**: Pure OLED Black backgrounds (`#000000`) mapping to true pixels-off displays to conserve battery during heavy ZK operations. Use `UltraThinMaterial` or dark grays with blur radiuses for cards.
+- **Micro-Animations**: 
+  - The Syncing indicator utilizes scale-pulsing for a "breathing" background thread feel.
+  - The Shielded Balance acts as the primary focal point: it remains universally obfuscated (`••••••`) and requires a deliberate, non-trivial intent gesture (a continuous `@GestureState` LongPress) to reveal the numeric `decryptedBalance`.
+- **Proof Generation State**: Starknet STARK proof synthesis is an inherently blocking, complex mathematical operation. Instead of a standard loading spinner, the action button dynamically swaps to a "Synthesizing STARK Proof..." label alongside a `CircularProgressViewStyle`, communicating that actual secure computation is occurring natively.
+
+#### SwiftUI Structure
+- **VaultHeaderView**: Houses the branded typography and the SyncEngine status indicator.
+- **ShieldedBalanceCard**: The interactive focal pane obfuscating the total parsed UTXO bounds.
+- **PrivateSendForm**: The isolated constraint inputs handling `transferAmount` and `recipientAddress`. Holds independent local-validation for balance thresholds before emitting to the `WalletManager`.
+
+---
+
 ### Phase 6: Auditing & Launch (Upcoming)
 Formal verification of Cairo contracts and beta net deployment.
 - **[CRITICAL TODO]**: Before real ZK verifiers are wired, someone must pre-compute the 20 levels of canonical Poseidon empty-subtree hashes starting from 0, and hardcode the exact 20 hex constants synchronously into both the `PrivacyPool.cairo` `get_zero_hash()` method and the Rust SDK. If these differ, no proofs will verify.
