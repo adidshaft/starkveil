@@ -31,6 +31,7 @@ Premium dark-themed glassmorphic UI overlay ensuring "Privacy by Default".
 
 ### Phase 6: Auditing & Launch (Upcoming)
 Formal verification of Cairo contracts and beta net deployment.
+- **[CRITICAL TODO]**: Before real ZK verifiers are wired, someone must pre-compute the 20 levels of canonical Poseidon empty-subtree hashes starting from 0, and hardcode the exact 20 hex constants synchronously into both the `PrivacyPool.cairo` `get_zero_hash()` method and the Rust SDK. If these differ, no proofs will verify.
 
 ---
 
