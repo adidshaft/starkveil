@@ -29,6 +29,16 @@ The mobile frontend managing keys, state, and user interactions.
 ### Phase 5: High-End UI/UX Assembly (Upcoming)
 Premium dark-themed glassmorphic UI overlay ensuring "Privacy by Default".
 
+### Phase 4: iOS App Engineering (SwiftUI Core)
+Built a premium, dark-themed native iOS wallet wrapper capable of interfacing directly with the Rust Proving SDK via `.a` bridging.
+
+#### Core iOS Architecture
+1. **SyncEngine**: A background reactor that simulates (or eventually runs) Starknet Light Client polling. It detects incoming "public" tokens and auto-triggers Shielding pipelines silently.
+2. **WalletManager**: Holds the `decryptedBalance` and tracks the array of active unspent UTXO `Note` structs. Interacts asynchronously with the Rust STARK prover natively.
+3. **StarkVeilProver**: The FFI boundary struct. It serializes arrays of `Note` constraints into JSON, sends them via a `cString` pointer to the Rust `generate_transfer_proof` C-interface, frees the Rust memory to prevent iOS memory leakage, and decodes the resulting JSON payload.
+
+---
+
 ### Phase 6: Auditing & Launch (Upcoming)
 Formal verification of Cairo contracts and beta net deployment.
 - **[CRITICAL TODO]**: Before real ZK verifiers are wired, someone must pre-compute the 20 levels of canonical Poseidon empty-subtree hashes starting from 0, and hardcode the exact 20 hex constants synchronously into both the `PrivacyPool.cairo` `get_zero_hash()` method and the Rust SDK. If these differ, no proofs will verify.
