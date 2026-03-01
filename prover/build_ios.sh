@@ -16,10 +16,13 @@ cargo build --target aarch64-apple-ios --release
 echo "Building aarch64-apple-ios-sim (Simulator)..."
 cargo build --target aarch64-apple-ios-sim --release
 
-# Note: In a complete production setup, we would use `xcodebuild -create-xcframework` 
-# here to bundle the .a files into an XCFramework for easier Xcode integration.
-# For this phase, we ensure the static libraries compile successfully.
+# Create XCFramework
+echo "Creating XCFramework bundle..."
+rm -rf target/StarkVeilProver.xcframework
+xcodebuild -create-xcframework \
+    -library target/aarch64-apple-ios/release/libstarkveil_prover.a \
+    -library target/aarch64-apple-ios-sim/release/libstarkveil_prover.a \
+    -output target/StarkVeilProver.xcframework
 
-echo "Build successful! The static libraries are located in:"
-echo "- target/aarch64-apple-ios/release/libstarkveil_prover.a"
-echo "- target/aarch64-apple-ios-sim/release/libstarkveil_prover.a"
+echo "Build successful! The XCFramework is located at:"
+echo "- target/StarkVeilProver.xcframework"

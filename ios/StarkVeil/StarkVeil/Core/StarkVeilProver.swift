@@ -96,7 +96,7 @@ class StarkVeilProver {
                     let resultString = String(cString: resultPtr)
 
                     // 3. Release Rust allocation — must happen after the String copy above
-                    free_rust_string(resultPtr)
+                    free_rust_string(UnsafeMutablePointer(mutating: resultPtr))
 
                     // 4. Decode the FFIResult envelope
                     guard let resultData = resultString.data(using: .utf8) else {
