@@ -48,8 +48,10 @@ pub unsafe extern "C" fn generate_transfer_proof(
         fee: "100000000000000".to_string(), // 0.0001 ETH
     };
 
-    let result = FFIResult::Success(serde_json::to_string(&mock_payload).unwrap_or_else(|_| "{}".to_string()));
-    
+    // FFIResult::Success now embeds TransferPayload directly.
+    // Swift decodes a single JSON layer: parse FFIResult, read Success(TransferPayload).
+    let result = FFIResult::Success(mock_payload);
+
     match serde_json::to_string(&result) {
         Ok(json_str) => CString::new(json_str).unwrap_or_else(|_| CString::new("{\"Error\":\"CString failed\"}").unwrap()).into_raw(),
         Err(_) => CString::new("{\"Error\":\"Serialization failed\"}").unwrap().into_raw()

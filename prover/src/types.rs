@@ -23,6 +23,9 @@ pub struct TransferPayload {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FFIResult {
-    Success(String), // Serialized JSON of TransferPayload or ShieldingPayload
+    // Previously this held a pre-serialized JSON String, forcing Swift to
+    // parse twice. Now embeds the typed payload directly so the Swift caller
+    // only decodes one JSON layer.
+    Success(TransferPayload),
     Error(String),
 }
