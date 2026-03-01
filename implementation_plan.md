@@ -97,3 +97,29 @@ To compete, the interface must be extremely fluid and evoke the feeling of enter
     *   Run a closed Testnet Beta to collect metrics on UX flow drop-offs and on-device proof failure edge cases.
 
 > **Manual Step 6**: Conduct a simulated "Hackathon" on your own codebase. Give the starknet community access to the testnet contract holding dummy bounties, asking them to try tracing or doubly-spending notes.
+
+---
+
+## Phase 5: High-End UI/UX Assembly
+
+Now that the core STARK proving mechanisms and state boundaries are solidly engineered, we must overhaul the UI to match the "Premium Vault" aesthetic requirements.
+
+### User Review Required
+Please review the styling constraints below. In Phase 5, we will focus exclusively on the `ios/StarkVeil/Views/` components. No changes will be made to the `Core/` logic or Rust Prover SDK.
+
+### 1. View Refactoring & Splitting
+- Break down `VaultView.swift` into manageable subcomponents:
+  - `VaultHeaderView.swift` (Sync status and title)
+  - `ShieldedBalanceCard.swift` (The interactive privacy-blur balance)
+  - `PrivateSendForm.swift` (The action area)
+  
+### 2. Styling Constraints (Glassmorphism & OLED)
+- Base background: Pure OLED Black (`#000000`).
+- Card backgrounds: `UltraThinMaterial` or customized `#1A1A1A` with a heavy blur radius.
+- Accents: Introduce a striking color logic. For instance, Electric Purple / Neon Indigo buttons when active, or Laser Green success text.
+- Typography: Setup custom font modifiers targeting `SpaceGrotesk` and `Outfit` if they are packaged, or configure exact system fallbacks.
+
+### 3. Micro-Animations
+- **Syncing Status**: The green/red dot should have an organic breathing (scale up/down) animation.
+- **Privacy Reveal**: The long-press un-blurring of the balance should use `withAnimation(.spring())` for extreme fluidity.
+- **Proof Generation Loop**: Swap the generic `ProgressView` during `isProving == true` for a custom geometric or pulsing skeleton animation indicating complex mathematical STARK synthesis.
