@@ -1,0 +1,41 @@
+{
+  "" : {
+    "const-values" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.swiftconstvalues",
+    "dependencies" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.d",
+    "diagnostics" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.dia",
+    "emit-module-dependencies" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary-emit-module.dia",
+    "pch" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.swiftdeps"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/StarkVeilProver.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilProver.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilProver.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilProver.o"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/SyncEngine.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/SyncEngine.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/SyncEngine.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/SyncEngine.o"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/WalletManager.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/WalletManager.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/WalletManager.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/WalletManager.o"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/StarkVeilApp.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilApp.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilApp.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeilApp.o"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Views/VaultView.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/VaultView.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/VaultView.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/VaultView.o"
+  },
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "index-unit-output-path" : "/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/GeneratedAssetSymbols.o"
+  }
+}

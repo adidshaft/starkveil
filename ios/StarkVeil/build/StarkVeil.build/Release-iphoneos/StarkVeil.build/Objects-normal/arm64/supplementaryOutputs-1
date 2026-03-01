@@ -1,0 +1,12 @@
+{
+  "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/StarkVeilProver.swift" : {
+    "abi-baseline-json" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil.abi.json",
+    "const-values" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.swiftconstvalues",
+    "dependencies" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.d",
+    "diagnostics" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-primary.dia",
+    "objc-header" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil-Swift.h",
+    "swiftdoc" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil.swiftdoc",
+    "swiftmodule" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil.swiftmodule",
+    "swiftsourceinfo" : "/Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/build/StarkVeil.build/Release-iphoneos/StarkVeil.build/Objects-normal/arm64/StarkVeil.swiftsourceinfo"
+  }
+}
