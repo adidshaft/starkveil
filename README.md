@@ -2,6 +2,8 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet via a Zcash-style UTXO model. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs), bringing Zero-Knowledge STARK proof synthesis directly to the `A`-series silicon inside the iPhone via a Rust SDK bridging layer.
 
+**Current status (Phase 9 — Production Ready):** Full Starknet JSON-RPC sync engine, SwiftData UTXO persistence, AES-GCM note decryption via CryptoKit, and live FFI STARK proof generation on-device. The iOS UI precisely matches the `StarkVeil_UI_Prototype` web reference.
+
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
 - **`prover/`**: A standard Rust Cargo library that compiles to static binaries (`libstarkveil_prover.a`) leveraging FFI `C` strings to pass Proofs to Swift.
@@ -367,5 +369,9 @@ Converts a shielded note back to a public ERC-20 balance. The recipient and amou
 | **Tree capacity guard** | `assert(leaf_count < 1_048_576)` | Tree cannot overflow and cause silent data loss |
 | **Thread isolation** | `WalletManager: @MainActor`, `dispatchPrecondition` | UTXO mutations are race-condition-free |
 | **Network UTXO isolation** | `clearStore()` via `MainActor.assumeIsolated` on `networkChanged` | Mainnet notes never contaminate Sepolia view |
+| **Persisted UTXO isolation** | `StoredNote` scoped by `networkId` in SwiftData | Notes survive app restarts without cross-network leakage |
+| **IVK key protection** | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | No iCloud backup; no device transfer; no background access |
+| **Per-note key separation** | HKDF-SHA256 with commitment as `info` param | Compromise of one memo key cannot attack any other note |
+| **Foreign note rejection** | AES-GCM authentication tag mismatch → `nil` returned silently | Other users' notes leave zero trace in local state |
 | **No server trust** | Rust prover statically linked into app binary | Proof generated entirely on-device |
 | **No TEE dependency** | A-series silicon + Rust STARK circuits | Privacy does not rely on Intel SGX or any cloud enclave |

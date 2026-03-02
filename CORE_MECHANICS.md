@@ -33,7 +33,7 @@ Premium dark-themed glassmorphic UI overlay ensuring "Privacy by Default".
 Built a premium, dark-themed native iOS wallet wrapper capable of interfacing directly with the Rust Proving SDK via `.a` bridging.
 
 #### Core iOS Architecture
-1. **SyncEngine**: A background reactor that simulates (or eventually runs) Starknet Light Client polling. It detects incoming "public" tokens and auto-triggers Shielding pipelines silently. Fully integrated with `NetworkManager` isolated resets.
+1. **SyncEngine**: A light-client reactor polling Starknet JSON-RPC every 5 seconds (`starknet_blockNumber` + `starknet_getEvents`). Detects incoming `Shielded` events from the `PrivacyPool` contract, decodes Cairo `u256` arrays into Swift `Note` structs, and emits them via `PassthroughSubject`. Concurrency-safe via `isFetchingRPC` guard and `syncEpoch` network-switch isolation.
 2. **WalletManager**: Holds the `decryptedBalance` and tracks the array of active unspent UTXO `Note` structs. Interacts asynchronously with the Rust STARK prover natively. Handles strictly-enforced state isolation flushes cross-thread.
 3. **StarkVeilProver**: The FFI boundary struct. It serializes arrays of `Note` constraints into JSON, sends them via a `cString` pointer to the Rust `generate_transfer_proof` C-interface, frees the Rust memory to prevent iOS memory leakage, and decodes the resulting JSON payload.
 4. **NetworkEnvironment**: Global deterministic singleton containing explicit RPC boundaries and routing limits for STARK proofs targeted at Mainnet or Sepolia respectively.
@@ -63,12 +63,43 @@ Formal verification of Cairo contracts and beta net deployment.
 
 ---
 
-### Phase 7: Real Network Integration (In Progress)
+### Phase 7: Real Network Integration (Completed)
 Transitioning the StarkVeil app off Katana Sandbox mocked timers and linking standard infrastructure nodes.
 - **[Completed]**: Network selection topology (`NetworkEnvironment` integration) mapping to `mainnet-juno` or `sepolia-juno` HTTP pools.
-- **[Upcoming]**: Replacing `SyncEngine.tick()` simulator with JSON-RPC endpoint queries scanning logs for Event `NoteCommitted`.
+- **[Completed]**: Dynamic `clearStore()` State-flush across `WalletManager` via `SyncEngine.networkChanged` with `MainActor.assumeIsolated` ordering guarantee.
 
 ---
+
+### Phase 8: JSON-RPC Sync Engine (Completed)
+Live blockchain polling replacing the mock deposit generator.
+- **`RPCModels.swift`**: `Codable` structs for `starknet_blockNumber` and `starknet_getEvents` with correct `BlockId` encoding (fixed double-container JSON encoder crash).
+- **`RPCClient.swift`**: `URLSession`-based HTTP client with paginated event fetching.
+- **`SyncEngine.tick()`**: Diffs `currentBlockNumber` vs `latestBlock`, fetches events page-by-page, decodes Cairo `u256` arrays into Swift `Note` structs, delivers the full batch in a single `MainActor.run` hop.
+- **Concurrency**: `isFetchingRPC` guard + `syncEpoch` counter prevent overlapping requests and stale-network note injection after network switches.
+
+---
+
+### Phase 9.0: UI Redesign — Web Prototype Match (Completed)
+Rebuilt the entire SwiftUI interface to be pixel-identical to the web prototype.
+- **`SplashScreenView`**: Shield logo, `STARKVEIL` title, animated sweep loader bar matching the prototype's `splash-screen`.
+- **`VaultHeaderView`**: Avatar circle, `anon.stark` StarkNet ID, animated Shielded status pill badge.
+- **`ShieldedBalanceCard`**: Eye-toggle reveals/blurs STRK amount + fiat label; Send (filled) and Receive (outlined) action buttons.
+- **`TabSwitcherView`** / **`AssetsTabView`** / **`ActivityTabView`**: Asset rows + live Activity timeline matching prototype tab structure.
+- **`BottomNavView`**: Wallet, Swap, ZK Proofs, Settings with `ultraThinMaterial` blur backdrop.
+- **`STARKProofOverlay`**: Spinner + animated progress bar + monospace Cairo step log during proof generation.
+
+### Phase 9.1: SwiftData Persistence (Completed)
+- **`StoredNote`** + **`SyncCheckpoint`** SwiftData `@Model` classes persist the UTXO set and block number per `networkId`.
+- `WalletManager` loads notes on cold start, writes on `addNote()`, and deletes by `networkId` on `clearStore()`.
+- `SyncEngine` reads `SyncCheckpoint` on `startSyncing()` to resume from the exact last processed block.
+
+### Phase 9.2: AES-GCM Note Decryption (Completed)
+- **`KeychainManager`**: 32-byte IVK stored under `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — no iCloud backup, no device transfer.
+- **`NoteDecryptor`**: Per-note AES-256-GCM via HKDF-SHA256 subkeys (commitment as HKDF `info`). Foreign notes return `nil` silently — zero information leakage.
+
+### Phase 9.3: FFI STARK Proving Integration (Completed)
+- `StarkVeilProver.generateTransferProof()` Rust FFI fully wired into `WalletManager.executePrivateTransfer()` and `STARKProofOverlay`.
+- `FFIResult` marked `Sendable` for Swift 6 nonisolated conformance.
 
 ## Core Mechanics Dictionary
 
