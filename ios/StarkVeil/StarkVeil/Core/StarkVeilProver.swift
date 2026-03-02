@@ -20,7 +20,7 @@ struct TransferPayload: Codable {
     let fee: String
 }
 
-enum FFIResult: Decodable {
+enum FFIResult: Decodable, Sendable {
     case success(TransferPayload)
     case error(String)
 
