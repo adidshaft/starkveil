@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct VaultHeaderView: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var networkManager: NetworkManager
     @State private var isBreathing = false
@@ -10,7 +11,7 @@ struct VaultHeaderView: View {
             // Branded Typography
             Text("StarkVeil")
                 .font(.custom("SpaceGrotesk-Bold", size: 28, relativeTo: .title))
-                .foregroundStyle(.white)
+                .foregroundStyle(themeManager.textPrimary)
                 .tracking(1.2)
 
             Spacer()
@@ -46,9 +47,23 @@ struct VaultHeaderView: View {
 
                 Text(syncEngine.isSyncing ? "Syncing…" : "Offline")
                     .font(.caption.monospaced())
-                    .foregroundStyle(Color(white: 0.6))
+                    .foregroundStyle(themeManager.textSecondary)
             }
             .drawingGroup()
+
+            // Prototype Tool Buttons (Theme)
+            HStack(spacing: 8) {
+                Button(action: { themeManager.toggleTheme() }) {
+                    Image(systemName: themeManager.isDarkMode ? "sun.max.fill" : "moon.fill")
+                        .font(.system(size: 14))
+                        .frame(width: 32, height: 32)
+                        .background(themeManager.surface2)
+                        .foregroundStyle(themeManager.textPrimary)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(themeManager.surface1, lineWidth: 1))
+                }
+            }
+            .padding(.leading, 8)
 
             // Network Switcher
             Menu {
@@ -66,9 +81,10 @@ struct VaultHeaderView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(Color.white.opacity(0.1))
+                .background(themeManager.surface2)
                 .clipShape(Capsule())
-                .foregroundStyle(.white)
+                .foregroundStyle(themeManager.textPrimary)
+                .overlay(Capsule().stroke(themeManager.surface1, lineWidth: 1))
             }
         }
         .padding(.horizontal)

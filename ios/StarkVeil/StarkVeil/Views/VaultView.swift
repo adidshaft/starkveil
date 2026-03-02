@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct VaultView: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var walletManager: WalletManager
 
@@ -10,8 +11,8 @@ struct VaultView: View {
 
     var body: some View {
         ZStack {
-            // OLED True Black Background
-            Color.black.edgesIgnoringSafeArea(.all)
+            // Semantic Dynamic Background
+            themeManager.bgColor.edgesIgnoringSafeArea(.all)
 
             VStack(spacing: 40) {
                 VaultHeaderView()
@@ -28,8 +29,6 @@ struct VaultView: View {
                 Spacer()
             }
         }
-        // Force overall preferred Dark Mode schema
-        .preferredColorScheme(.dark)
         .onAppear {
             syncEngine.startSyncing()
         }

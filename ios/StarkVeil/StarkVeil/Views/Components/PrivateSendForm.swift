@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PrivateSendForm: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
 
     @Binding var recipientAddress: String
@@ -24,24 +25,24 @@ struct PrivateSendForm: View {
             // Address Field
             HStack {
                 Image(systemName: "person.crop.circle.badge.checkmark")
-                    .foregroundStyle(Color(white: 0.5))
+                    .foregroundStyle(themeManager.textSecondary)
                 TextField("Recipient (0x...)", text: $recipientAddress)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(themeManager.textPrimary)
             }
             .padding()
-            .background(Color(white: 0.15))
+            .background(themeManager.surface1)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             // Amount Field
             HStack {
                 Text("$")
-                    .foregroundStyle(Color(white: 0.5))
+                    .foregroundStyle(themeManager.textSecondary)
                 TextField("Amount", text: $transferAmount)
                     .keyboardType(.decimalPad)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(themeManager.textPrimary)
             }
             .padding()
-            .background(Color(white: 0.15))
+            .background(themeManager.surface1)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             // Error Display
@@ -64,12 +65,11 @@ struct PrivateSendForm: View {
                     }
                     .font(.headline.weight(.heavy))
                     .tracking(1.0)
-                    .foregroundStyle(.black)
+                    .foregroundStyle(themeManager.bgColor)
                     .frame(maxWidth: .infinity)
                     .padding()
-                    .background(canSend ? Color(red: 0.8, green: 0.9, blue: 1.0) : Color.gray)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .shadow(color: canSend ? Color.white.opacity(0.3) : .clear, radius: 8)
+                    .background(canSend ? themeManager.textPrimary : themeManager.surface2)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: walletManager.isProving)

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ShieldedBalanceCard: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
     @State private var isBalanceRevealed = false
 
@@ -10,17 +11,16 @@ struct ShieldedBalanceCard: View {
 
     var body: some View {
         VStack(spacing: 15) {
-            Text("Shielded Balance")
-                .font(.subheadline)
+            Text("SHIELDED BALANCE")
+                .font(.system(size: 12, weight: .bold, design: .default))
                 .tracking(2.0)
-                .foregroundStyle(Color(white: 0.5))
+                .foregroundStyle(themeManager.textSecondary)
 
             ZStack {
                 if isBalanceRevealed {
                     Text("$\(walletManager.balance, specifier: "%.2f")")
-                        .font(.system(size: 48, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .shadow(color: Color.white.opacity(0.3), radius: 10)
+                        .font(.system(size: 42, weight: .bold, design: .monospaced))
+                        .foregroundStyle(themeManager.textPrimary)
                         // contentTransition gives digit-by-digit morphing on iOS 16+
                         .contentTransition(.numericText())
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
@@ -28,8 +28,8 @@ struct ShieldedBalanceCard: View {
                     // .monospaced keeps glyph width consistent with the balance text
                     // to prevent ZStack layout shift on reveal
                     Text("••••••")
-                        .font(.system(size: 48, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 42, weight: .bold, design: .monospaced))
+                        .foregroundStyle(themeManager.textPrimary)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
             }
@@ -43,25 +43,17 @@ struct ShieldedBalanceCard: View {
 
             Text("Hold to decrypt")
                 .font(.caption2.monospaced())
-                .foregroundStyle(Color.white.opacity(0.3))
+                .foregroundStyle(themeManager.textSecondary)
         }
         .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .fill(Color(white: 0.05))
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(themeManager.surface1.opacity(0.85)) // Glass effect mapping
                 .overlay(
-                    RoundedRectangle(cornerRadius: 32, style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.white.opacity(0.2), Color.clear]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(themeManager.surface2, lineWidth: 1)
                 )
-                .shadow(color: Color.black.opacity(0.5), radius: 20, y: 10)
         )
         .padding(.horizontal)
         .onAppear {

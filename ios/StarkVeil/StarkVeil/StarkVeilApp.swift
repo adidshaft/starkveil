@@ -11,6 +11,7 @@ import Combine
 //   • Child views get both objects via environmentObject injection.
 
 class AppCoordinator: ObservableObject {
+    let themeManager = AppThemeManager()
     let networkManager = NetworkManager()
     let walletManager = WalletManager()
     let syncEngine: SyncEngine
@@ -61,9 +62,11 @@ struct StarkVeilApp: App {
     var body: some Scene {
         WindowGroup {
             VaultView()
+                .environmentObject(coordinator.themeManager)
                 .environmentObject(coordinator.networkManager)
                 .environmentObject(coordinator.walletManager)
                 .environmentObject(coordinator.syncEngine)
+                .preferredColorScheme(coordinator.themeManager.colorScheme)
         }
     }
 }
