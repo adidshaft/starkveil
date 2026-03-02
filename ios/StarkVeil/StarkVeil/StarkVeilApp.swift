@@ -74,16 +74,20 @@ class AppCoordinator: ObservableObject {
 @main
 struct StarkVeilApp: App {
     @StateObject private var coordinator = AppCoordinator()
-    @State private var isWalletSetUp = KeychainManager.hasWallet
+    @State private var isWalletSetUp     = KeychainManager.hasWallet
+    // Phase 11: separate the "account deployed on Starknet" state from "seed phrase stored"
+    @State private var isAccountDeployed = KeychainManager.isAccountDeployed
 
     var body: some Scene {
         WindowGroup {
-            if isWalletSetUp {
+            if isWalletSetUp && isAccountDeployed {
+                // ── Full VaultView (normal operation) ─────────────────
                 BiometricGateView(
                     appSettings: coordinator.appSettings,
                     onWalletDeleted: {
                         withAnimation(.easeInOut(duration: 0.4)) {
-                            isWalletSetUp = false
+                            isWalletSetUp     = false
+                            isAccountDeployed = false
                         }
                     }
                 )
@@ -93,10 +97,27 @@ struct StarkVeilApp: App {
                 .environmentObject(coordinator.syncEngine)
                 .environmentObject(coordinator.appSettings)
                 .transition(.opacity)
+
+            } else if isWalletSetUp && !isAccountDeployed {
+                // ── Phase 11: account needed ───────────────────────────
+                // Seed is set up but the Starknet account contract is not deployed yet.
+                // Show the activation flow (fund address → deploy → enter vault).
+                AccountActivationView {
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        isAccountDeployed = true
+                    }
+                }
+                .environmentObject(coordinator.themeManager)
+                .environmentObject(coordinator.networkManager)
+                .transition(.opacity)
+
             } else {
+                // ── Onboarding (new install / wallet deleted) ──────────
                 WalletOnboardingView {
                     withAnimation(.easeInOut(duration: 0.4)) {
                         isWalletSetUp = true
+                        // After onboarding, always go through activation before vault
+                        isAccountDeployed = false
                     }
                 }
                 .environmentObject(coordinator.themeManager)

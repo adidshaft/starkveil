@@ -167,4 +167,99 @@ class RPCClient {
         guard let result = response.result else { throw RPCClientError.invalidResponse }
         return result.transaction_hash
     }
+
+    // MARK: - starknet_addDeployAccountTransaction  (Phase 11)
+
+    /// Broadcasts an OZ v0.8 deploy account transaction.
+    /// The deployer must pre-fund the counterfactual address with enough ETH for gas
+    /// before calling this. Returns the transaction hash.
+    @discardableResult
+    func deployAccount(
+        rpcUrl: URL,
+        classHash: String,
+        constructorCalldata: [String],   // OZ v0.8: [publicKey]
+        contractAddressSalt: String,     // = publicKey (OZ convention)
+        maxFee: String = "0x2386f26fc10000", // 0.01 ETH — sufficient for deploy on Sepolia
+        signature: [String] = ["0x0", "0x0"],
+        nonce: String = "0x0"
+    ) async throws -> String {
+        struct DeployAccountTx: Encodable {
+            let type: String = "DEPLOY_ACCOUNT"
+            let max_fee: String
+            let version: String = "0x1"
+            let signature: [String]
+            let nonce: String
+            let contract_address_salt: String
+            let constructor_calldata: [String]
+            let class_hash: String
+        }
+        struct Params: Encodable { let deploy_account_transaction: DeployAccountTx }
+        let tx = DeployAccountTx(
+            max_fee: maxFee,
+            signature: signature,
+            nonce: nonce,
+            contract_address_salt: contractAddressSalt,
+            constructor_calldata: constructorCalldata,
+            class_hash: classHash
+        )
+        let payload = RPCRequest(method: "starknet_addDeployAccountTransaction",
+                                 params: Params(deploy_account_transaction: tx))
+        struct TxResult: Decodable { let transaction_hash: String }
+        let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        guard let result = response.result else { throw RPCClientError.invalidResponse }
+        return result.transaction_hash
+    }
+
+    // MARK: - starknet_getClassAt  (Phase 11 — checks deployment status)
+
+    /// Returns true if a contract class is deployed at the given address.
+    /// Used to determine if the user's account needs to be deployed.
+    func isContractDeployed(rpcUrl: URL, address: String) async -> Bool {
+        struct Params: Encodable {
+            let block_id: String = "latest"
+            let contract_address: String
+        }
+        let payload = RPCRequest(method: "starknet_getClassAt",
+                                 params: Params(contract_address: address))
+        // If the RPC returns any result (class hash), the account is deployed.
+        // An error means the address has no contract yet.
+        struct ClassResult: Decodable { let class_hash: String? }
+        let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<ClassResult>
+        return response?.result != nil && response?.error == nil
+    }
+
+    // MARK: - starknet_call: getBalance  (Phase 11 — ETH balance for gas estimation)
+
+    /// Queries the ETH balance of an address via the ETH ERC-20 contract.
+    /// Returns the balance in wei as a hex string ("0x...").
+    func getETHBalance(rpcUrl: URL, address: String) async throws -> String {
+        let ethTokenAddress = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7" // Starknet ETH ERC-20
+        let balanceOfSelector = "0x02e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e" // keccak("balanceOf")
+        struct Params: Encodable {
+            let request: CallRequest
+            let block_id: String
+            struct CallRequest: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let payload = RPCRequest(
+            method: "starknet_call",
+            params: Params(
+                request: Params.CallRequest(
+                    contract_address: ethTokenAddress,
+                    entry_point_selector: balanceOfSelector,
+                    calldata: [address]
+                ),
+                block_id: "latest"
+            )
+        )
+        struct CallResult: Decodable { let result: [String]? }
+        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        return response.result?.first ?? "0x0"
+    }
 }

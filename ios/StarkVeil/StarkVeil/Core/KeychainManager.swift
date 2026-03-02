@@ -19,7 +19,9 @@ enum KeychainManager {
     private static let service = "io.starkveil"
 
     private enum Account: String {
-        case masterSeed = "master_seed"
+        case masterSeed       = "master_seed"
+        case accountAddress   = "account_address"    // Phase 11: computed Starknet address
+        case accountDeployed  = "account_deployed"   // Phase 11: "1" once deploy tx confirmed
     }
 
     // MARK: - Public API
@@ -47,9 +49,34 @@ enum KeychainManager {
         load(account: .masterSeed)
     }
 
+    // MARK: - Phase 11: Account Abstraction
+
+    /// Stores (or overwrites) the deterministic Starknet account address.
+    static func storeAccountAddress(_ address: String) throws {
+        guard let data = address.data(using: .utf8) else { return }
+        try store(data, account: .accountAddress)
+    }
+
+    /// Returns the stored account address, or nil if not yet computed.
+    static func accountAddress() -> String? {
+        guard let data = load(account: .accountAddress) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Marks the account as deployed on-chain (called after deploy tx is confirmed).
+    static func markAccountDeployed() throws {
+        try store(Data([1]), account: .accountDeployed)
+    }
+
+    /// True once the user has broadcast (and confirmed) the deploy account transaction.
+    static var isAccountDeployed: Bool {
+        guard let data = load(account: .accountDeployed) else { return false }
+        return data.first == 1
+    }
+
     /// Wipes all StarkVeil Keychain items (used during wallet reset / re-import).
     static func deleteWallet() {
-        let accounts: [Account] = [.masterSeed]
+        let accounts: [Account] = [.masterSeed, .accountAddress, .accountDeployed]
         for account in accounts {
             let query: [CFString: Any] = [
                 kSecClass: kSecClassGenericPassword,

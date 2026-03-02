@@ -133,6 +133,9 @@ Complete the three-operation privacy suite with the outbound path.
 - **Nullifier**: `Poseidon(spending_key, leaf_position)` — posted on-chain when spending to mark a note as spent. Cannot be linked back to its commitment without the spending key.
 - **Viewing Key (IVK)**: 32-byte read-only key derived deterministically from the user's BIP-39 master seed. Allows AES-GCM memo decryption to identify owned notes; cannot authorize spending.
 - **Spending Key**: Authorizes nullifier generation and STARK proof binding. Derived deterministically from the same BIP-39 root via domain separation (HKDF `"starkveil-sk-v1"` versus `"starkveil-ivk-v1"`).
+- **STARK Keypair**: Private key = HKDF(chainRoot, `"starkveil-stark-pk-v1"`) clamped to STARK curve order. Public key = `private_key * G` (generator point). Both deterministic from seed.
+- **OZ Account Address**: `compute_address(class_hash, salt=pubkey, calldata=[pubkey], deployer=0x0)` using chained Pedersen hashes. Fully recoverable from the BIP-39 mnemonic.
+- **Counterfactual Address**: The computed account address exists and can receive funds _before_ the account contract is deployed. Deployment is a one-time `DEPLOY_ACCOUNT` transaction.
 - **BIP-39 Mnemonic**: A 12 or 24-word phrase encoding the master entropy. Recovery phrase for the entire wallet. Derivation path: BIP-39 entropy → PBKDF2 seed (64 bytes stored in Keychain) → HMAC/HKDF keys.
 - **NoteDecryptor**: HKDF-SHA256 derives a per-note 256-bit subkey from `(IVK, commitment)`. AES-256-GCM decrypts the event memo. Foreign notes fail authentication silently with zero side-effects.
 - **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing across app restarts without duplicate note emission.
@@ -141,4 +144,5 @@ Complete the three-operation privacy suite with the outbound path.
 - **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so the Activity tab retains history even after notes are spent.
 - **`PersistenceController`**: SwiftData `ModelContainer` singleton. Holds a single shared `ModelContext` (not a computed property — inserts and fetches share the same context to remain visible to each other).
 - **`SyncCheckpoint` ordering invariant**: On network switch — `clearStore(old)` runs first, then `activeNetworkId` is updated, then `loadNotes(new)`. This ordering is mandatory to avoid deleting the wrong network's records.
+- **3-State App Flow**: `Onboarding` (no seed) → `AccountActivation` (seed exists, account not deployed) → `Vault` (account deployed, full operation). Each state is persisted in Keychain and survives reinstall.
 

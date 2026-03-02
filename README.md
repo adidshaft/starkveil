@@ -1,6 +1,6 @@
 # StarkVeil: Native iOS Shielded Pool
 
-StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet via a StarkVeil Shielded Note model. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs), bringing Zero-Knowledge STARK proof synthesis directly to the `A`-series silicon inside the iPhone via a Rust SDK bridging layer.
+StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
 **Current status (Phase 10 Complete — 10.1 BIP-39 Wallet · 10.2 Unshield · 10.3 Typed Activity Feed):** Full JSON-RPC sync, SwiftData UTXO + Event persistence, AES-GCM note decryption, live FFI STARK proving, BIP-39 mnemonic generation and recovery, complete Deposit → Private Transfer → Unshield privacy loop, and a persistent colour-coded Activity Feed. 14 critical/high bugs resolved across three audit passes. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
 
