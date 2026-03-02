@@ -148,7 +148,7 @@ class WalletManager: ObservableObject {
                 notes.remove(at: memIdx)
             }
             if let dbIdx = remainingStored.firstIndex(where: {
-                $0.value == inputNote.value && $0.assetId == inputNote.asset_id && $0.memo == inputNote.memo
+                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo
             }) {
                 let stored = remainingStored.remove(at: dbIdx)
                 ctx.delete(stored)
@@ -260,7 +260,7 @@ class WalletManager: ObservableObject {
         let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
         if let allStored = try? ctx.fetch(desc),
            let stored = allStored.first(where: {
-               $0.value == inputNote.value && $0.assetId == inputNote.asset_id && $0.memo == inputNote.memo
+               $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo
            }) {
             ctx.delete(stored)
         }
