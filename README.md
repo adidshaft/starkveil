@@ -50,21 +50,21 @@ sncast --profile katana_test invoke \
 *Your deployed contract address will be located in the receipt `event data[0]`.*
 
 ### 3. Build the STARK Rust Prover for iOS
-Navigate to the `prover/` directory and use the pre-configured bash script to trigger `cargo` targeting Apple ARM architecture.
+Navigate to the `prover/` directory and use the pre-configured bash script to trigger `cargo` targeting Apple ARM architecture and automatically generate the universal `StarkVeilProver.xcframework` bundle.
 ```bash
-cd ../prover
+cd prover
 ./build_ios.sh
 ```
-*This generates `/prover/target/aarch64-apple-ios/release/libstarkveil_prover.a`.*
+*This generates `/prover/target/StarkVeilProver.xcframework`.*
 
 ### 4. Run the Xcode Simulator
-The Xcode project `ios/StarkVeil/StarkVeil.xcodeproj` is fully configured. It statically maps to the Rust binary and the `starkveil_prover.h` bridging headers.
+The Xcode project `ios/StarkVeil/StarkVeil.xcodeproj` is fully configured. It statically maps to the newly generated Rust `.xcframework`.
 1. Open the project in Xcode.
-2. Select **iPhone 15 Simulator** as the target.
+2. Select **iPhone 15 Simulator** or a **Physical Device** as the target.
 3. Hit **Command + R** to build and run the SwiftUI cypherpunk visual interface.
 
 ---
 
 ## Technical Edge Cases
 - **Poseidon Zero Hashes**: For the STARK proof to cryptographically verify on iOS, the Merkle tree `get_zero_hash()` constants in `.cairo` and the Rust STARK circuits must match exactly.
-- **CoreData Isolation**: `WalletManager.swift` does not use CoreData in the repo right now to prevent hackathon scoping bloat, but relies on strictly bound `@MainActor` `[Notes]` loops across Combine publishers. Expect state to reset upon quitting the Simulator.
+- **Strict Thread Isolation**: `WalletManager.swift` utilizes explicit `@MainActor` thread-safe Combine pipelines when intercepting network toggle transitions between Mainnet and Sepolia. This rigorously guarantees UTXOs do not leak dynamically across the chain environments.

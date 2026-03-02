@@ -36,10 +36,15 @@ We started with a vision of a cypherpunk, native Starknet iOS wallet offering co
 - **Decision**: Handled a deployment chain mismatch by identifying that Katana 1.7.1 outputs RPC 0.9.0 logic, therefore enforcing `snfoundryup -v 0.50.0` for `sncast` contract deployments.
 - **Why**: The zero-hashes are absolutely essential: if the iOS Prover and the Katana Smart Contract do not agree on the exact mathematical state of an "Empty" Merkle Tree, the ZK Proofs will permanently fail to verify on-chain.
 
+## Phase 7: Real Network Integration & Switcher
+- **Action**: Developed the `NetworkEnvironment` manager to support dynamic switching between `Mainnet` and `Sepolia Testnet` from `VaultHeaderView`.
+- **Decision**: Enforced a synchronous `clearStore()` State-flush across `WalletManager` (via `SyncEngine`) intercepting thread transitions securely.
+- **Why**: Hard state isolation guarantees preventing transparent testnet and mainnet notes from mathematically colliding inside the UTXO array, protecting the integrity of the generated STARK proofs.
+
 ---
 
 ## Current State of the Product
-StarkVeil is currently a functionally complete Sandbox engineered perfectly for Hackathon evaluation. 
+StarkVeil has officially moved past the isolated sandbox stage into Phase 7 integration.
 1. The **Smart Contracts** compile flawlessly and are configured for local Katana deployment.
-2. The **Rust Prover SDK** builds directly to an iOS compatible static C-library with accurately mapped FFI boundaries.
-3. The **SwiftUI Application** is fully wired. Bridging headers seamlessly link the UI to the underlying Rust math engine. Xcode will successfully build and launch the application natively onto an iOS Simulator to demo the complex private transfer cycles.
+2. The **Rust Prover SDK** now outputs a universal `StarkVeilProver.xcframework` natively supporting both iOS Simulators and Physical Devices.
+3. The **SwiftUI Application** provides a cypherpunk Vault interface coupled with a meticulously wired network-state manager, primed for direct Starknet RPC integration.

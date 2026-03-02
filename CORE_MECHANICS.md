@@ -15,27 +15,28 @@ The on-chain settlement layer built on Starknet.
 - **Merkle Tree**: An append-only state construct (depth 20) utilizing Starknet's native Poseidon hash. It stores root commitments representing all unspent shielded value.
 - **Zero-Knowledge Hooks**: Prepared `private_transfer` to accept and process verified S-Two STARK proofs, decoupling heavy computation from iOS devices directly onto the Starknet execution layer.
 
-### Phase 3: Client-Side Proving Pipeline (In Progress)
+### Phase 3: Client-Side Proving Pipeline (Completed)
 Transitioning STARK proof generation to iOS via a Rust SDK, omitting TEE trust assumptions.
-- **Target**: Mobile-native Rust code cross-compiled as `libstarkveil_prover.a`.
+- **Target**: Mobile-native Rust code cross-compiled as `StarkVeilProver.xcframework` bundling simulators and physical binaries natively.
 - **FFI**: Uniffi or raw C bindings communicating JSON-serialized structs (Notes, Nullifiers) between Swift and Rust.
 - **Output**: Generates formatted dummy proofs (for MVP) and eventually full S-Two cryptographic proofs to be posted on-chain.
 
-### Phase 4: iOS App Engineering (SwiftUI) (Upcoming)
+### Phase 4: iOS App Engineering (Completed)
 The mobile frontend managing keys, state, and user interactions.
 - **CoreData Syncing**: Light client engine indexing Starknet RPC events to rebuild the Merkle tree locally.
 - **Viewing Key Logic**: Identifying user-owned notes from raw blockchain events.
 
-### Phase 5: High-End UI/UX Assembly (Upcoming)
+### Phase 5: High-End UI/UX Assembly (Completed)
 Premium dark-themed glassmorphic UI overlay ensuring "Privacy by Default".
 
 ### Phase 4: iOS App Engineering (SwiftUI Core)
 Built a premium, dark-themed native iOS wallet wrapper capable of interfacing directly with the Rust Proving SDK via `.a` bridging.
 
 #### Core iOS Architecture
-1. **SyncEngine**: A background reactor that simulates (or eventually runs) Starknet Light Client polling. It detects incoming "public" tokens and auto-triggers Shielding pipelines silently.
-2. **WalletManager**: Holds the `decryptedBalance` and tracks the array of active unspent UTXO `Note` structs. Interacts asynchronously with the Rust STARK prover natively.
+1. **SyncEngine**: A background reactor that simulates (or eventually runs) Starknet Light Client polling. It detects incoming "public" tokens and auto-triggers Shielding pipelines silently. Fully integrated with `NetworkManager` isolated resets.
+2. **WalletManager**: Holds the `decryptedBalance` and tracks the array of active unspent UTXO `Note` structs. Interacts asynchronously with the Rust STARK prover natively. Handles strictly-enforced state isolation flushes cross-thread.
 3. **StarkVeilProver**: The FFI boundary struct. It serializes arrays of `Note` constraints into JSON, sends them via a `cString` pointer to the Rust `generate_transfer_proof` C-interface, frees the Rust memory to prevent iOS memory leakage, and decodes the resulting JSON payload.
+4. **NetworkEnvironment**: Global deterministic singleton containing explicit RPC boundaries and routing limits for STARK proofs targeted at Mainnet or Sepolia respectively.
 
 ---
 
@@ -56,9 +57,16 @@ The StarkVeil UI is constructed using native SwiftUI to offer a "Premium Vault" 
 
 ---
 
-### Phase 6: Auditing & Launch (Upcoming)
+### Phase 6: Auditing & Launch (Completed)
 Formal verification of Cairo contracts and beta net deployment.
-- **[CRITICAL TODO]**: Before real ZK verifiers are wired, someone must pre-compute the 20 levels of canonical Poseidon empty-subtree hashes starting from 0, and hardcode the exact 20 hex constants synchronously into both the `PrivacyPool.cairo` `get_zero_hash()` method and the Rust SDK. If these differ, no proofs will verify.
+- **[RESOLVED TO-DO]**: Computed the 20 levels of canonical Poseidon empty-subtree hashes starting from 0, and hardcoded the exact 20 hex constants synchronously into both the `PrivacyPool.cairo` `get_zero_hash()` method and the Rust SDK.
+
+---
+
+### Phase 7: Real Network Integration (In Progress)
+Transitioning the StarkVeil app off Katana Sandbox mocked timers and linking standard infrastructure nodes.
+- **[Completed]**: Network selection topology (`NetworkEnvironment` integration) mapping to `mainnet-juno` or `sepolia-juno` HTTP pools.
+- **[Upcoming]**: Replacing `SyncEngine.tick()` simulator with JSON-RPC endpoint queries scanning logs for Event `NoteCommitted`.
 
 ---
 
