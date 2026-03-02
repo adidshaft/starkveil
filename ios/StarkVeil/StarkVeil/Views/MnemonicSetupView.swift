@@ -218,7 +218,11 @@ struct MnemonicSetupView: View {
             do {
                 let keys = try KeyDerivationEngine.deriveKeys(from: mnemonic)
                 try KeychainManager.storeMasterSeed(keys.masterSeed)
-                await MainActor.run { onComplete() }
+                await MainActor.run {
+                    mnemonic.removeAll(keepingCapacity: false)
+                    confirmedWords.removeAll(keepingCapacity: false)
+                    onComplete()
+                }
             } catch {
                 await MainActor.run {
                     isSaving = false

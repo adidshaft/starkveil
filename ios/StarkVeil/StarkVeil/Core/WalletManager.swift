@@ -73,7 +73,11 @@ class WalletManager: ObservableObject {
         // Persist to SwiftData
         let ctx = persistence.context
         ctx.insert(StoredNote(from: note, networkId: activeNetworkId))
-        try? ctx.save()
+        do {
+            try ctx.save()
+        } catch {
+            print("[WalletManager] CRITICAL: SwiftData save failed in addNote: \(error)")
+        }
     }
 
     func clearStore() {
@@ -88,7 +92,11 @@ class WalletManager: ObservableObject {
         let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
         if let stored = try? ctx.fetch(descriptor) {
             stored.forEach { ctx.delete($0) }
-            try? ctx.save()
+            do {
+                try ctx.save()
+            } catch {
+                print("[WalletManager] CRITICAL: SwiftData save failed in clearStore: \(error)")
+            }
         }
     }
 
@@ -125,20 +133,24 @@ class WalletManager: ObservableObject {
         // --- Back on main actor ---
         print("STARK Proof generated: \(result.proof)")
 
-        // Remove spent notes from UTXO set (in-memory)
-        let spentValues = Set(inputNotes.map { $0.value })
-        notes.removeAll { spentValues.contains($0.value) }
-
-        // Mirror the spend to SwiftData so spent notes don't reappear on next launch.
-        // Fetch all stored notes for this network, then delete the ones that were spent.
-        // (#Predicate does not support Set.contains — filter in Swift after fetch.)
+        // Remove exactly the spent notes to prevent destroying other notes with the same value (Audit Bug 2)
         let ctx = persistence.context
         let netId = activeNetworkId
         let allStoredDescriptor = FetchDescriptor<StoredNote>(
             predicate: #Predicate { $0.networkId == netId }
         )
-        if let allStored = try? ctx.fetch(allStoredDescriptor) {
-            for stored in allStored where spentValues.contains(stored.value) {
+        var remainingStored = (try? ctx.fetch(allStoredDescriptor)) ?? []
+
+        for inputNote in inputNotes {
+            if let memIdx = notes.firstIndex(where: {
+                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo && $0.owner_ivk == inputNote.owner_ivk
+            }) {
+                notes.remove(at: memIdx)
+            }
+            if let dbIdx = remainingStored.firstIndex(where: {
+                $0.value == inputNote.value && $0.assetId == inputNote.asset_id && $0.memo == inputNote.memo
+            }) {
+                let stored = remainingStored.remove(at: dbIdx)
                 ctx.delete(stored)
             }
         }
@@ -158,7 +170,11 @@ class WalletManager: ObservableObject {
             ctx.insert(StoredNote(from: changeNote, networkId: activeNetworkId))
         }
 
-        try? ctx.save()
+        do {
+            try ctx.save()
+        } catch {
+            print("[WalletManager] CRITICAL: SwiftData save failed in executePrivateTransfer: \(error)")
+        }
         recomputeBalance()
 
         // Use the first returned nullifier as a proxy tx-hash until real RPC is wired
@@ -203,28 +219,26 @@ class WalletManager: ObservableObject {
         // Generate proof off the main actor (Rust FFI blocks the thread)
         let result = try await StarkVeilProver.generateTransferProof(notes: [inputNote])
 
-        // Back on main actor — remove the spent note
-        notes.removeAll { $0.value == inputNote.value }
-        let ctx = persistence.context
-        let netId = activeNetworkId
-        let spentValue = inputNote.value
-        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
-        if let allStored = try? ctx.fetch(desc) {
-            for s in allStored where s.value == spentValue { ctx.delete(s) }
-        }
-        try? ctx.save()
-        recomputeBalance()
-
-        // Build calldata for PrivacyPool.unshield(proof, nullifier, recipient, amount, asset)
-        // Format: [selector("unshield"), proof_len, ...proof, nullifier, recipient, amount_low, amount_high, asset_id]
+        // Back on main actor — build and submit RPC before local deletion (Audit Bug 1)
+        // Format for V1 Invoke __execute__: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data] (Audit Bug 5)
         let amountU256Low  = String(format: "0x%llx", UInt64(amount * 1e18) & 0xFFFFFFFFFFFFFFFF)
         let amountU256High = "0x0"
         let proofCalldata = result.proof.flatMap { [$0] }
         let nullifier = result.nullifiers.first ?? "0x0"
-        let unshieldSelector = "0x" + String(format: "%llx", 0x15d40a3d673baee5a4dd5f) // selectors.unshield
-        var calldata: [String] = [contractAddress, "0x1", unshieldSelector]
-        calldata.append(contentsOf: [String(proofCalldata.count)] + proofCalldata)
-        calldata += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
+        let unshieldSelector = "0x15d40a3d673baee5a4dd5f" // selectors.unshield (Audit Bug 4 fixed)
+        
+        var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
+        callPayload += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
+        
+        var calldata: [String] = [
+            "0x1",              // call_array_len
+            contractAddress,    // to
+            unshieldSelector,   // selector
+            "0x0",              // data_offset
+            String(callPayload.count), // data_len
+            String(callPayload.count)  // calldata_len
+        ]
+        calldata.append(contentsOf: callPayload)
 
         // Submit via RPC — sender is the wallet's own felt252 address (owner_ivk proxies it for now)
         let senderAddress = inputNote.owner_ivk
@@ -233,6 +247,30 @@ class WalletManager: ObservableObject {
             senderAddress: senderAddress,
             calldata: calldata
         )
+
+        // RPC Confirmed: Remove EXACTLY ONE matching spent note (Audit Bug 2)
+        if let memIdx = notes.firstIndex(where: {
+            $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo && $0.owner_ivk == inputNote.owner_ivk
+        }) {
+            notes.remove(at: memIdx)
+        }
+        
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+        if let allStored = try? ctx.fetch(desc),
+           let stored = allStored.first(where: {
+               $0.value == inputNote.value && $0.assetId == inputNote.asset_id && $0.memo == inputNote.memo
+           }) {
+            ctx.delete(stored)
+        }
+        
+        do {
+            try ctx.save()
+        } catch {
+            print("[WalletManager] CRITICAL: SwiftData save failed in executeUnshield: \(error)")
+        }
+        recomputeBalance()
 
         lastUnshieldTxHash = txHash
     }

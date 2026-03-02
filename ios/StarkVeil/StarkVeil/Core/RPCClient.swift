@@ -107,7 +107,7 @@ class RPCClient {
         senderAddress: String,
         calldata: [String],
         maxFee: String = "0x0",
-        signature: [String] = [],
+        signature: [String] = ["0x0", "0x0"],
         nonce: String = "0x0"
     ) async throws -> String {
         struct Params: Encodable {

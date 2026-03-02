@@ -13,7 +13,9 @@ struct UnshieldFormView: View {
     @State private var selectedNote: Note? = nil
     @State private var errorMessage: String? = nil
 
-    private var rpcUrl: URL { URL(string: networkManager.activeNetwork.rpcURL)! }
+    private var rpcUrl: URL { 
+        URL(string: networkManager.activeNetwork.rpcURL) ?? URL(string: "http://127.0.0.1:5050")! 
+    }
     private var contractAddress: String { networkManager.activeNetwork.privacyPoolAddress }
 
     var body: some View {

@@ -16,7 +16,7 @@ import CryptoKit
 // Security properties:
 // - IVK ≠ SK: different HKDF info strings guarantee key separation.
 // - IVK compromise does not reveal SK (one-way HKDF).
-// - SK is stored in Keychain alongside IVK for future Secure Enclave migration.
+// - SK is re-derived on demand alongside IVK, prior to Secure Enclave migration.
 // - The mnemonic itself is NEVER stored; only the 64-byte seed reaches Keychain.
 
 enum KeyDerivationEngine {
