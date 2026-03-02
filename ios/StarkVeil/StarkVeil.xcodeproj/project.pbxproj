@@ -7,10 +7,8 @@
 	objects = {
 
 		5C2D834F2C904F231334051A /* StarkVeilProver.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C20017E841B20A3917E22340 /* StarkVeilProver.xcframework */; };
-		9A3B5C7D8E9F0A1B2C3D4E5F /* NetworkEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A2B4C6D8E0F1A3B5C7D9E0F /* NetworkEnvironment.swift */; };
 
 /* Begin PBXFileReference section */
-		8A2B4C6D8E0F1A3B5C7D9E0F /* NetworkEnvironment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NetworkEnvironment.swift; sourceTree = "<group>"; };
 		ABF20A642F54CB82009C7826 /* StarkVeil.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StarkVeil.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C20017E841B20A3917E22340 /* StarkVeilProver.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = StarkVeilProver.xcframework; path = ../../prover/target/StarkVeilProver.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -132,7 +130,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9A3B5C7D8E9F0A1B2C3D4E5F /* NetworkEnvironment.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
