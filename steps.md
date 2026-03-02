@@ -68,8 +68,31 @@ We started with a vision of a cypherpunk, native Starknet iOS wallet offering co
 
 ---
 
+## Phase 9 Security Audit (Second Pass — Claude CLI)
+A second-pass audit of the Phase 9 implementation identified 5 critical bugs:
+- **`PersistenceController`**: `context` computed property was creating a new isolated `ModelContext` on every call — inserts in one context were invisible to fetches in another. Fixed by storing a single `let context` initialized once at startup.
+- **`AppCoordinator` clearStore ordering (CRITICAL)**: `activeNetworkId` was being set **before** `clearStore()`, causing the deletion to target the *new* network's records instead of the old ones. Fixed to: `clearStore()` → `activeNetworkId = new` → `loadNotes()`.
+- **`WalletManager.executePrivateTransfer` SwiftData sync (CRITICAL)**: Spent notes were only removed from the in-memory array; corresponding `StoredNote` records survived on disk, causing phantom balances on every relaunch. Fixed by fetching, deleting, and saving through `ModelContext`.
+- **`KeychainManager` security regressions**: The `Data(repeating: 0xAB, count: 32)` fallback produced a trivially guessable IVK, silently decryptable by any attacker. Replaced with `precondition` crash (OS RNG failure is catastrophic). Silent `try?` on Keychain writes swallowed failures, causing a new IVK on next cold start. Replaced with explicit `do/catch`.
+- **`SyncEngine` checkpoint dead code**: `saveCheckpoint` and `loadCheckpoint` were defined but never called, causing block-10 re-scans on every launch with duplicate note emission. Fixed by wiring both calls inside the epoch-guarded `MainActor.run` block.
+
+## Phase 10.1: BIP-39 Seed Phrase Wallet (Planned)
+- **Action**: Implement deterministic key derivation so the IVK and spending key are derived from a user-controlled 12/24-word mnemonic phrase rather than a random per-device secret.
+- **Decision**: Use BIP-39 entropy → mnemonic → PBKDF2 seed → SLIP-0010 (Ed25519 HD derivation) → StarkNet-compatible key pair. `KeychainManager` stores only the encrypted seed; IVK and spending key are re-derived on demand.
+- **Why**: Without a mnemonic, a user who loses their iPhone permanently loses all shielded notes as the IVK cannot be recovered. Seed-phrase recovery is the industry standard for self-custodial wallets.
+
+## Phase 10.2: Unshield Operation — Private → Public (Planned)
+- **Action**: Implement the complete unshield flow wiring `PrivacyPool.unshield()` from the iOS app.
+- **Decision**: The "Receive" button (bottom sheet) will be repurposed as the Unshield entry point. User selects a note, enters a public recipient address, and the app generates an S-Two STARK proof binding `(amount, asset, recipient)` together, then submits via `starknet_addInvokeTransaction`.
+- **Why**: The Cairo contract already has `unshield()` and its ZK verifier path is complete. Without an iOS equivalent, shielded funds are permanently locked once deposited — the wallet is receive-only, defeating its purpose as a full cypherpunk payment instrument.
+
+---
+
 ## Current State of the Product
-StarkVeil is fully engineered across all 9 phases — from cryptographic primitives to a production-quality iOS interface.
+StarkVeil is fully engineered through Phase 9 (second-pass security audit complete).
 1. The **Smart Contracts** compile and are deployed to Sepolia Testnet (`PrivacyPool` at `0x74b2fe0e…`).
 2. The **Rust Prover SDK** outputs a universal `StarkVeilProver.xcframework` for physical iOS devices.
-3. The **SwiftUI Application** provides a cypherpunk Vault interface that is visually identical to the web prototype, featuring: Splash Screen, avatar header, eye-toggle balance card, Assets/Activity tabs, bottom navigation, live STARK Proof overlay, SwiftData persistence, AES-GCM note decryption, and a real-time JSON-RPC sync engine polling the Starknet blockchain.
+3. The **SwiftUI Application** UI is visually identical to the web prototype: Splash Screen, avatar header, eye-toggle balance card, Assets/Activity tabs, bottom navigation, live STARK Proof overlay.
+4. **Phase 9 backend**: SwiftData UTXO persistence (scoped by networkId), AES-GCM note decryption with Keychain-protected IVK, real JSON-RPC sync engine polling Starknet, and end-to-end FFI STARK proof generation.
+5. **Audit hardened**: 5 critical bugs resolved (SwiftData context singleton, clearStore ordering, spent-note disk sync, Keychain IVK fallback, checkpoint dead code).
+6. **Next**: Phase 10.1 (BIP-39 seed phrase wallet) and Phase 10.2 (Unshield operation).

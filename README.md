@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet via a Zcash-style UTXO model. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs), bringing Zero-Knowledge STARK proof synthesis directly to the `A`-series silicon inside the iPhone via a Rust SDK bridging layer.
 
-**Current status (Phase 9 — Production Ready):** Full Starknet JSON-RPC sync engine, SwiftData UTXO persistence, AES-GCM note decryption via CryptoKit, and live FFI STARK proof generation on-device. The iOS UI precisely matches the `StarkVeil_UI_Prototype` web reference.
+**Current status (Phase 9 — Audit Hardened, Phase 10 In Progress):** Full JSON-RPC sync, SwiftData persistence, AES-GCM note decryption, live FFI STARK proving. 5 critical security bugs resolved by second-pass audit. UI matches web prototype. **Next:** Phase 10.1 (BIP-39 seed phrase wallet) and Phase 10.2 (Unshield operation).
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -370,8 +370,11 @@ Converts a shielded note back to a public ERC-20 balance. The recipient and amou
 | **Thread isolation** | `WalletManager: @MainActor`, `dispatchPrecondition` | UTXO mutations are race-condition-free |
 | **Network UTXO isolation** | `clearStore()` via `MainActor.assumeIsolated` on `networkChanged` | Mainnet notes never contaminate Sepolia view |
 | **Persisted UTXO isolation** | `StoredNote` scoped by `networkId` in SwiftData | Notes survive app restarts without cross-network leakage |
+| **clearStore ordering** | `clearStore(old)` → `activeNetworkId = new` → `loadNotes(new)` | Strict ordering prevents deleting wrong network's records |
 | **IVK key protection** | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | No iCloud backup; no device transfer; no background access |
 | **Per-note key separation** | HKDF-SHA256 with commitment as `info` param | Compromise of one memo key cannot attack any other note |
 | **Foreign note rejection** | AES-GCM authentication tag mismatch → `nil` returned silently | Other users' notes leave zero trace in local state |
+| **IVK recoverability** *(Phase 10.1)* | BIP-39 mnemonic → PBKDF2 → SLIP-0010 HD derivation | IVK reconstructable from recovery phrase on any new device |
+| **Unshield commitment** *(Phase 10.2)* | Proof binds `(amount, asset, recipient)` as public inputs | Proof cannot redirect funds to a different recipient after generation |
 | **No server trust** | Rust prover statically linked into app binary | Proof generated entirely on-device |
 | **No TEE dependency** | A-series silicon + Rust STARK circuits | Privacy does not rely on Intel SGX or any cloud enclave |

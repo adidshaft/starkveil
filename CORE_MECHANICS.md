@@ -101,14 +101,43 @@ Rebuilt the entire SwiftUI interface to be pixel-identical to the web prototype.
 - `StarkVeilProver.generateTransferProof()` Rust FFI fully wired into `WalletManager.executePrivateTransfer()` and `STARKProofOverlay`.
 - `FFIResult` marked `Sendable` for Swift 6 nonisolated conformance.
 
+---
+
+### Phase 9 — Security Audit (Second Pass, Completed)
+Five critical bugs identified and fixed after a second Claude CLI audit:
+1. **`PersistenceController` context singleton** — computed property was creating isolated `ModelContext` instances; fixed to `let context` stored once.
+2. **`clearStore()` ordering inversion** — `activeNetworkId` was set before `clearStore()` ran, deleting the wrong network's notes. Fixed ordering.
+3. **`executePrivateTransfer` SwiftData sync** — spent notes only removed from memory; phantom balances appeared on relaunch. Fixed with full `ModelContext` delete + change note insert.
+4. **`KeychainManager` IVK fallback** — `0xAB` repeating fallback was trivially guessable. Replaced with `precondition` crash on OS RNG failure.
+5. **Checkpoint dead code** — `saveCheckpoint` / `loadCheckpoint` never called; duplicate notes emitted on every cold start. Fixed by wiring both into `tick()`'s epoch-guarded `MainActor.run`.
+
+---
+
+### Phase 10.1: BIP-39 Seed Phrase Wallet (Planned)
+Deterministic key derivation replacing random per-device IVK.
+- **`KeyDerivationEngine.swift`**: BIP-39 entropy → mnemonic → PBKDF2 seed → SLIP-0010 HD path → StarkNet-compatible IVK + spending key.
+- **`MnemonicSetupView`** / **`WalletImportView`**: First-launch flow for generating or restoring a seed phrase.
+- IVK derived deterministically — user can restore all shielded notes on a new device using only the 12-word phrase.
+
+### Phase 10.2: Unshield Operation — Private → Public (Planned)
+Complete the three-operation privacy suite with the outbound path.
+- **`UnshieldFormView`**: User selects a UTXO note, enters a public recipient address, app generates an S-Two STARK proof binding `(amount, asset, recipient)` and calls `PrivacyPool.unshield()`.
+- **`RPCClient`** extension: submit the invoke transaction via `starknet_addInvokeTransaction`.
+- **`ActivityTabView`** update: show Unshield rows with recipient address (the only public field).
+
+
 ## Core Mechanics Dictionary
 
-- **Note (`Note`)**: The fundamental unit of value inside the shielded pool. A public encapsulation of `Hash(value, asset_id, owner_ivk, memo)`.
-- **Note Commitment**: The Poseidon hash of a fully constructed `Note`. This is inserted into the Merkle Tree on-chain.
-- **Nullifier**: A cryptographic hash derived from a spending key and the note's position. Used to publicly flag a note as "spent" without tracking its origin. `Hash(spending_key, note_position)`.
-- **Viewing Key (IVK)**: A decentralized read-only key stored on iOS iCloud. Allows reconstruction of note values for auditing but cannot authorize spending.
-- **Spending Key**: Safely isolated inside the iOS Secure Enclave.
-- **Private Transfer Proof**: The STARK equation proving:
-  1. The unspent status of the consumed Note's Nullifier.
-  2. Conservation of Balance (Inputs = Outputs + Fee).
-  3. Range bounds (Amounts > 0 and within limit).
+- **Note (`Note`)**: The fundamental unit of shielded value. Fields: `value`, `asset_id`, `owner_ivk`, `memo`. Persisted via `StoredNote` in SwiftData, scoped by `networkId`.
+- **Note Commitment**: `Poseidon(value, asset_id, owner_ivk, memo)` — written on-chain. Reveals nothing about owner, amount, or asset.
+- **Nullifier**: `Poseidon(spending_key, leaf_position)` — posted on-chain when spending to mark a note as spent. Cannot be linked back to its commitment without the spending key.
+- **Viewing Key (IVK)**: 32-byte read-only key stored in iOS Keychain under `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. In Phase 10.1 will be derived from a BIP-39 seed phrase. Allows AES-GCM memo decryption to identify owned notes; cannot authorize spending.
+- **Spending Key**: Authorizes nullifier generation and STARK proof binding. Isolated in iOS Secure Enclave. In Phase 10.1 will be derived from the same BIP-39 root.
+- **BIP-39 Mnemonic** *(Phase 10.1)*: A 12 or 24-word phrase encoding the master entropy. Recovery phrase for the entire wallet. Derivation path: BIP-39 entropy → PBKDF2 seed → SLIP-0010 HD → StarkNet keypair.
+- **NoteDecryptor**: HKDF-SHA256 derives a per-note 256-bit subkey from `(IVK, commitment)`. AES-256-GCM decrypts the event memo. Foreign notes fail authentication silently with zero side-effects.
+- **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing across app restarts without duplicate note emission.
+- **Private Transfer Proof**: STARK circuit asserting: (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, (3) nullifiers derive from spending keys owning the inputs.
+- **Unshield Proof** *(Phase 10.2)*: STARK circuit binding `(amount, asset, recipient)` as public inputs. Proves note ownership and unspent status, authorizes ERC-20 release to a named public recipient.
+- **`PersistenceController`**: SwiftData `ModelContainer` singleton. Holds a single shared `ModelContext` (not a computed property — inserts and fetches share the same context to remain visible to each other).
+- **`SyncCheckpoint` ordering invariant**: On network switch — `clearStore(old)` runs first, then `activeNetworkId` is updated, then `loadNotes(new)`. This ordering is mandatory to avoid deleting the wrong network's records.
+
