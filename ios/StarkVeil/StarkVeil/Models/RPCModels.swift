@@ -23,10 +23,9 @@ struct RPCError: Decodable {
 // MARK: - starknet_blockNumber
 
 struct BlockNumberParams: Encodable {
-    // Empty params for starknet_blockNumber
+    // Empty params for starknet_blockNumber — encodes as [] rather than {}
     func encode(to encoder: Encoder) throws {
-        var container = encoder.unkeyedContainer()
-        // Ensure params encode as an empty array [] rather than {}
+        _ = encoder.unkeyedContainer()
     }
 }
 
@@ -49,16 +48,23 @@ enum BlockId: Encodable {
     case number(Int)
     
     func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
+        // IMPORTANT: an Encoder allows only ONE top-level container per encode(to:) call.
+        // Acquiring singleValueContainer() unconditionally and then calling
+        // encoder.container(keyedBy:) for the .number case triggers
+        // preconditionFailure("Attempt to encode value through multiple containers")
+        // inside Foundation's JSONEncoder — crashing silently inside the catch block.
+        // Each case must acquire its own container independently.
         switch self {
         case .latest:
+            var container = encoder.singleValueContainer()
             try container.encode("latest")
         case .pending:
+            var container = encoder.singleValueContainer()
             try container.encode("pending")
         case .number(let n):
-            // Starknet RPC expects block_number wrapping integer
-            var nested = encoder.container(keyedBy: CodingKeys.self)
-            try nested.encode(n, forKey: .block_number)
+            // Starknet RPC expects {"block_number": N} for numeric block identifiers
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(n, forKey: .block_number)
         }
     }
     

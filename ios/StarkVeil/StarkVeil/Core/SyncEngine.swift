@@ -15,8 +15,16 @@ class SyncEngine: ObservableObject {
     private let networkManager: NetworkManager
     private let rpcClient: RPCClient
     
-    // Concurrency lock for slow RPC responses
+    // Concurrency guard: prevents overlapping HTTP requests when an RPC node
+    // responds slower than the 5 s poll interval. Read and written exclusively
+    // on the main thread (timer fires on RunLoop.main; reset via await MainActor.run).
     private var isFetchingRPC = false
+
+    // Epoch counter: incremented on every network switch.
+    // Each Task captures its epoch at launch and abandons its results if the epoch
+    // no longer matches — preventing stale-network notes from landing in the
+    // WalletManager after clearStore() has already been called for the new network.
+    private var syncEpoch: Int = 0
 
     // MARK: - Lifecycle
 
@@ -62,18 +70,27 @@ class SyncEngine: ObservableObject {
     }
 
     private func handleNetworkChange() {
-        // Stop current syncing immediately
-        if isSyncing {
-            stopSyncing()
-        }
-        
-        // Reset block height
+        if isSyncing { stopSyncing() }
+
+        // Reset the fetch guard immediately so the new network's first tick is not
+        // blocked by the previous network's in-flight Task. Without this, the old
+        // Task holds isFetchingRPC = true until it finishes (potentially tens of seconds),
+        // suppressing the first poll on the newly selected network.
+        isFetchingRPC = false
+
+        // Advance the epoch. Any Task that was launched before this point captured
+        // the old epoch value. Their MainActor.run blocks check syncEpoch == capturedEpoch
+        // before emitting notes or updating currentBlockNumber, so stale results from
+        // the old network are silently discarded after clearStore() has run.
+        syncEpoch += 1
+
         currentBlockNumber = 0
-        
-        // Notify subscribers (like WalletManager) to flush their UTXOs
+
+        // Notify subscribers (AppCoordinator → WalletManager.clearStore()) to flush UTXOs.
+        // This call is synchronous via MainActor.assumeIsolated in AppCoordinator — clearStore()
+        // completes before networkChanged.send() returns, which is before startSyncing() runs.
         networkChanged.send()
-        
-        // Restart on new network
+
         startSyncing()
     }
 
@@ -83,62 +100,91 @@ class SyncEngine: ObservableObject {
     private func tick() {
         guard !isFetchingRPC else { return }
         isFetchingRPC = true
-        
+
+        // Capture all main-actor state before yielding to the cooperative thread pool.
+        // networkManager.activeNetwork is @Published on a non-@MainActor class — reading
+        // it from inside a plain Task body (which runs on the cooperative pool) is an
+        // unsynchronized access. Capturing here, where tick() is guaranteed on the main
+        // thread, eliminates that race entirely.
+        let capturedEpoch    = syncEpoch
+        let rpcUrl           = networkManager.activeNetwork.rpcUrl
+        let networkName      = networkManager.activeNetwork.rawValue
+        let contractAddress  = networkManager.activeNetwork.contractAddress
+        let currentBlock     = currentBlockNumber
+
         Task {
-            defer { 
-                Task { @MainActor in self.isFetchingRPC = false }
-            }
-            
             do {
-                let rpcUrl = networkManager.activeNetwork.rpcUrl
                 let latestBlock = try await rpcClient.fetchLatestBlockNumber(rpcUrl: rpcUrl)
-                
-                let current = await MainActor.run { self.currentBlockNumber }
-                
-                if latestBlock > current {
-                    // For the very first sync, jump to latest - 10 to simulate some past blocks
-                    let fromBlock = current == 0 ? max(0, latestBlock - 10) : current + 1
-                    
+
+                if latestBlock > currentBlock {
+                    // For the very first sync, scan the last 10 blocks to catch recent events.
+                    let fromBlock = currentBlock == 0 ? max(0, latestBlock - 10) : currentBlock + 1
+
                     let events = try await rpcClient.fetchEvents(
                         rpcUrl: rpcUrl,
                         fromBlock: fromBlock,
                         toBlock: latestBlock,
-                        contractAddress: networkManager.activeNetwork.contractAddress
+                        contractAddress: contractAddress
                     )
-                    
+
+                    // Decode all notes off the main thread. O(events) work stays on the
+                    // cooperative pool; a single MainActor hop delivers the full batch.
+                    // The previous per-event await MainActor.run pattern caused O(N) context
+                    // switches between the pool and the main thread for every page.
+                    //
+                    // Cairo Shielded event layout:
+                    //   data[0] = asset (ContractAddress)
+                    //   data[1] = amount.low  (u256 low 128 bits)
+                    //   data[2] = amount.high (u256 high 128 bits)
+                    //   data[3] = commitment  (felt252 hash)
+                    //   data[4] = leaf_index  (u32)
+                    var decodedNotes: [(note: Note, blockNumber: Int)] = []
                     for event in events {
-                        // Cairo Struct: `Shielded { asset, amount: u256(low, high), commitment, leaf_index }`
-                        // data[0] = asset, data[1] = amount.low, data[2] = amount.high
-                        // data[3] = commitment, data[4] = leaf_index
-                        if event.data.count >= 5 {
-                            let amountHex = event.data[1]
-                            let commitment = event.data[3]
-                            
-                            // Decode hex string to integer, divide by natively 18 decimals (mock logic for hackathon)
-                            guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
-                            let amountDouble = Double(amountInt) / 1e18
-                            
-                            // Mocking the IVK Cyphertext Decryption since we lack AES bounds over raw starknet getEvents
-                            let note = Note(
-                                value: String(format: "%.9f", amountDouble > 0 ? amountDouble : Double.random(in: 0.1...5.0)),
-                                asset_id: "0xSTRK", // We strictly mocked strongly typed asset mappings
-                                owner_ivk: "0xMockIVK",
-                                memo: "RPC Shielded: \(commitment.prefix(10))..."
-                            )
-                            
-                            await MainActor.run {
-                                self.noteDetected.send(note)
-                                print("[SyncEngine] Block \(event.block_number) [\(self.networkManager.activeNetwork.rawValue)]: Decoded Note (\(note.value) STRK)")
-                            }
-                        }
+                        guard event.data.count >= 5 else { continue }
+                        let amountHex  = event.data[1]
+                        let commitment = event.data[3]
+
+                        guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
+                        let amountDouble = Double(amountInt) / 1e18
+
+                        // Mocking IVK ciphertext decryption — in production, owner_ivk decryption
+                        // happens here using the user's incoming viewing key over the encrypted memo.
+                        let note = Note(
+                            value: String(format: "%.9f", amountDouble > 0 ? amountDouble : Double.random(in: 0.1...5.0)),
+                            asset_id: "0xSTRK",
+                            owner_ivk: "0xMockIVK",
+                            memo: "RPC Shielded: \(commitment.prefix(10))..."
+                        )
+                        decodedNotes.append((note: note, blockNumber: event.block_number))
                     }
-                    
+
+                    // Single MainActor hop for the entire batch.
+                    // Epoch guard: if the network switched while we were fetching, syncEpoch
+                    // no longer matches capturedEpoch. Returning here discards the stale
+                    // Sepolia/Mainnet results without touching the now-cleared WalletManager.
                     await MainActor.run {
+                        guard self.syncEpoch == capturedEpoch else { return }
+                        for entry in decodedNotes {
+                            self.noteDetected.send(entry.note)
+                            print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(entry.note.value) STRK)")
+                        }
                         self.currentBlockNumber = latestBlock
                     }
                 }
             } catch {
                 print("[SyncEngine] RPC Sync Error: \(error.localizedDescription)")
+            }
+
+            // Reset the fetch guard on the MainActor after all work is complete.
+            // Using await MainActor.run (vs the previous defer + nested Task { @MainActor in })
+            // eliminates the window where the outer Task had exited but isFetchingRPC was
+            // still true, which was causing the very next 5 s tick to be skipped spuriously.
+            // Epoch guard: a network switch already set isFetchingRPC = false and advanced
+            // syncEpoch — do not overwrite that with a stale Task's reset.
+            await MainActor.run {
+                if self.syncEpoch == capturedEpoch {
+                    self.isFetchingRPC = false
+                }
             }
         }
     }

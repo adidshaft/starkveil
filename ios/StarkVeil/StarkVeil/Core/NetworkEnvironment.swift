@@ -24,13 +24,23 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
         }
     }
     
-    // The Starknet Address of our deployed PrivacyPool Cairo contract
+    // The deployed PrivacyPool Cairo contract address for each environment.
+    //
+    // SEPOLIA: deployed via sncast 0.50.0 + Katana 1.7.1 UDC invoke during hackathon session.
+    //   Class hash:       0x44d6856773a46dac7832c861735856d3374632fab041e384b93518bb5ddc0e0
+    //   Contract address: 0x74b2fe0e8674fb9f5ee5417e435492e88dd8dac2c68f67f328d8970883fa931
+    //
+    // MAINNET: not yet deployed — replace before mainnet launch.
+    //   The previous placeholder (0x41a78e74…) was Katana's Universal Deployer Contract (UDC),
+    //   not the PrivacyPool. Querying the UDC produces no Shielded events and breaks
+    //   the per-network UTXO isolation invariant (both networks returned the same address).
     var contractAddress: String {
         switch self {
         case .mainnet:
-            return "0x41a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf"
+            // TODO: replace with mainnet PrivacyPool address after production deployment
+            return "0x0000000000000000000000000000000000000000000000000000000000000000"
         case .sepolia:
-            return "0x41a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf"
+            return "0x74b2fe0e8674fb9f5ee5417e435492e88dd8dac2c68f67f328d8970883fa931"
         }
     }
 }
