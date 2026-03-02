@@ -176,13 +176,21 @@ class SyncEngine: ObservableObject {
                         guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
                         let amountDouble = Double(amountInt) / 1e18
 
-                        // Mocking IVK ciphertext decryption — in production, owner_ivk decryption
-                        // happens here using the user's incoming viewing key over the encrypted memo.
+                        // Derive the real IVK from the Keychain so the stored note is scannable
+                        // and can be recognised by NoteDecryptor in future phases.
+                        let ivkHex: String
+                        if let ivkData = KeychainManager.ownerIVK() {
+                            ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
+                        } else {
+                            // Wallet not yet initialised (shouldn't occur after onboarding)
+                            continue
+                        }
+
                         let note = Note(
                             value: String(format: "%.9f", amountDouble > 0 ? amountDouble : Double.random(in: 0.1...5.0)),
                             asset_id: "0xSTRK",
-                            owner_ivk: "0xMockIVK",
-                            memo: "RPC Shielded: \(commitment.prefix(10))..."
+                            owner_ivk: ivkHex,
+                            memo: "Shielded: \(commitment.prefix(10))…"
                         )
                         decodedNotes.append((note: note, blockNumber: event.block_number))
                     }

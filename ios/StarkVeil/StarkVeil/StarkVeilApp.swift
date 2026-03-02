@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import LocalAuthentication
 
 // MARK: - App Coordinator
 //
@@ -15,6 +16,7 @@ class AppCoordinator: ObservableObject {
     let networkManager = NetworkManager()
     let walletManager = WalletManager()
     let syncEngine: SyncEngine
+    let appSettings = AppSettings()
 
     private var notePipeline: AnyCancellable?
     private var networkPipeline: AnyCancellable?
@@ -77,12 +79,20 @@ struct StarkVeilApp: App {
     var body: some Scene {
         WindowGroup {
             if isWalletSetUp {
-                VaultView()
-                    .environmentObject(coordinator.themeManager)
-                    .environmentObject(coordinator.networkManager)
-                    .environmentObject(coordinator.walletManager)
-                    .environmentObject(coordinator.syncEngine)
-                    .transition(.opacity)
+                BiometricGateView(
+                    appSettings: coordinator.appSettings,
+                    onWalletDeleted: {
+                        withAnimation(.easeInOut(duration: 0.4)) {
+                            isWalletSetUp = false
+                        }
+                    }
+                )
+                .environmentObject(coordinator.themeManager)
+                .environmentObject(coordinator.networkManager)
+                .environmentObject(coordinator.walletManager)
+                .environmentObject(coordinator.syncEngine)
+                .environmentObject(coordinator.appSettings)
+                .transition(.opacity)
             } else {
                 WalletOnboardingView {
                     withAnimation(.easeInOut(duration: 0.4)) {
@@ -91,6 +101,84 @@ struct StarkVeilApp: App {
                 }
                 .environmentObject(coordinator.themeManager)
                 .transition(.opacity)
+            }
+        }
+    }
+}
+
+// MARK: - Biometric Gate
+
+/// Blocks access to the wallet until local authentication passes.
+/// Only shown when the user has enabled Biometric Lock in Settings.
+/// H2 fix: Previously the toggle was purely decorative — now it actually gates the UI.
+private struct BiometricGateView: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
+    let appSettings: AppSettings
+    let onWalletDeleted: () -> Void
+
+    @State private var isAuthenticated = false
+    @State private var authError: String? = nil
+
+    var body: some View {
+        if !appSettings.isBiometricLockEnabled || isAuthenticated {
+            VaultView(onWalletDeleted: onWalletDeleted)
+        } else {
+            lockScreen
+                .onAppear(perform: authenticate)
+        }
+    }
+
+    private var lockScreen: some View {
+        ZStack {
+            themeManager.bgColor.ignoresSafeArea()
+            VStack(spacing: 28) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 56))
+                    .foregroundStyle(themeManager.textPrimary)
+                Text("StarkVeil Locked")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(themeManager.textPrimary)
+                if let err = authError {
+                    Text(err)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                }
+                Button(action: authenticate) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "faceid")
+                        Text("Unlock with Biometrics")
+                    }
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(themeManager.bgColor)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 14)
+                    .background(themeManager.textPrimary)
+                    .clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    private func authenticate() {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            // Device has no biometrics/passcode — let through
+            isAuthenticated = true
+            return
+        }
+        context.evaluatePolicy(
+            .deviceOwnerAuthentication,
+            localizedReason: "Unlock StarkVeil to access your shielded wallet."
+        ) { success, err in
+            DispatchQueue.main.async {
+                if success {
+                    withAnimation { isAuthenticated = true }
+                } else {
+                    authError = err?.localizedDescription ?? "Authentication failed."
+                }
             }
         }
     }

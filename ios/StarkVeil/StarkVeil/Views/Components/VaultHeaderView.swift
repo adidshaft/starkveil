@@ -5,24 +5,33 @@ struct VaultHeaderView: View {
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var networkManager: NetworkManager
     @State private var isBreathing = false
+    @State private var showWalletInfo = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Avatar circle (user-ninja equivalent)
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [themeManager.surface2, themeManager.surface1],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+            // Avatar circle — taps open WalletInfoView
+            Button(action: { showWalletInfo = true }) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [themeManager.surface2, themeManager.surface1],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
-                    .frame(width: 44, height: 44)
-                    .overlay(Circle().stroke(themeManager.surface2, lineWidth: 1))
-                Image(systemName: "person.fill.viewfinder")
-                    .font(.system(size: 18))
-                    .foregroundStyle(themeManager.textSecondary)
+                        .frame(width: 44, height: 44)
+                        .overlay(Circle().stroke(themeManager.surface2, lineWidth: 1))
+                    Image(systemName: "person.fill.viewfinder")
+                        .font(.system(size: 18))
+                        .foregroundStyle(themeManager.textSecondary)
+                }
+            }
+            .sheet(isPresented: $showWalletInfo) {
+                WalletInfoView()
+                    .environmentObject(themeManager)
+                    .environmentObject(networkManager)
+                    .environmentObject(syncEngine)
             }
 
             // StarkNet ID + Shielded status pill

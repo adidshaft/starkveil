@@ -1,29 +1,31 @@
 import SwiftUI
 
+/// Main wallet balance card — 4-action grid.
+/// Send / Unshield are live. Shield/Receive show a coming-soon toast
+/// until Phase 11 (Account Abstraction) is wired.
 struct ShieldedBalanceCard: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
+
     @Binding var isBalanceVisible: Bool
     @Binding var showSendSheet: Bool
     @Binding var showUnshieldSheet: Bool
 
-    @State private var impact = UIImpactFeedbackGenerator(style: .medium)
+    @State private var impact       = UIImpactFeedbackGenerator(style: .medium)
+    @State private var toastMessage: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            // Card header row
+            // ── Balance header ────────────────────────────────────────
             HStack {
                 Text("SHIELDED BALANCE")
                     .font(.system(size: 12, weight: .bold))
                     .tracking(2)
                     .foregroundStyle(themeManager.textSecondary)
                 Spacer()
-                // Eye-toggle button (matching the prototype's toggle-visibility)
                 Button(action: {
                     impact.impactOccurred()
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        isBalanceVisible.toggle()
-                    }
+                    withAnimation(.easeInOut(duration: 0.3)) { isBalanceVisible.toggle() }
                 }) {
                     Image(systemName: isBalanceVisible ? "eye" : "eye.slash")
                         .font(.system(size: 13))
@@ -33,65 +35,78 @@ struct ShieldedBalanceCard: View {
                         .clipShape(Circle())
                 }
             }
-            .padding(.bottom, 20)
+            .padding(.bottom, 16)
 
-            // Balance amount with blur-redaction
+            // ── Balance amount ────────────────────────────────────────
             HStack(alignment: .lastTextBaseline, spacing: 8) {
-                Text(isBalanceVisible ? String(format: "%.2f", walletManager.balance) : "••••••")
-                    .font(.system(size: 42, weight: .bold, design: .default))
-                    .foregroundStyle(themeManager.textPrimary)
-                    .contentTransition(.numericText())
-                    .blur(radius: isBalanceVisible ? 0 : 8)
-                    .opacity(isBalanceVisible ? 1 : 0.6)
-                    .animation(.easeInOut(duration: 0.3), value: isBalanceVisible)
-
+                if isBalanceVisible {
+                    Text(String(format: "%.2f", walletManager.balance))
+                        .font(.system(size: 42, weight: .bold))
+                        .foregroundStyle(themeManager.textPrimary)
+                        .contentTransition(.numericText())
+                } else {
+                    Text("– – – – – –")
+                        .font(.system(size: 32, weight: .bold, design: .monospaced))
+                        .foregroundStyle(themeManager.textSecondary)
+                }
                 Text("STRK")
                     .font(.system(size: 20, weight: .regular))
                     .foregroundStyle(themeManager.textSecondary)
                     .offset(y: -4)
             }
+            .animation(.easeInOut(duration: 0.3), value: isBalanceVisible)
 
-            // Fiat sub-label
-            Text(isBalanceVisible ? String(format: "$%.2f USD", walletManager.balance * 0.63) : "$•••••• USD")
-                .font(.system(size: 16, design: .monospaced))
+            // USD fiat conversion row (approximate)
+            Text(isBalanceVisible
+                 ? String(format: "$%.2f USD", walletManager.balance * 0.63)
+                 : "$– – – – – – USD")
+                .font(.system(size: 15, design: .monospaced))
                 .foregroundStyle(themeManager.textSecondary)
-                .blur(radius: isBalanceVisible ? 0 : 6)
                 .animation(.easeInOut(duration: 0.3), value: isBalanceVisible)
-                .padding(.top, 10)
-                .padding(.bottom, 30)
+                .padding(.top, 6)
+                .padding(.bottom, 24)
 
-            // Action buttons: Send (filled) + Receive (outlined)
+            // ── Action grid ───────────────────────────────────────────
+            // Shield / Receive require a Starknet account address (Phase 11).
+            // They are visible but show a contextual tooltip until wired.
             HStack(spacing: 12) {
-                Button(action: { showSendSheet = true }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Send")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(themeManager.bgColor)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(themeManager.textPrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
+                actionButton(
+                    icon: "arrow.down.circle.fill",
+                    label: "Receive",
+                    isLive: false,
+                    action: { showToast("Receive address coming in Phase 11") }
+                )
+                actionButton(
+                    icon: "plus.circle.fill",
+                    label: "Shield",
+                    isLive: false,
+                    action: { showToast("Shielding requires account abstraction (Phase 11)") }
+                )
+                actionButton(
+                    icon: "arrow.up.circle.fill",
+                    label: "Send",
+                    isLive: true,
+                    action: { showSendSheet = true }
+                )
+                actionButton(
+                    icon: "lock.open.fill",
+                    label: "Unshield",
+                    isLive: true,
+                    action: { showUnshieldSheet = true }
+                )
+            }
 
-                Button(action: { showUnshieldSheet = true }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Receive")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(themeManager.textPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(themeManager.textPrimary, lineWidth: 1)
-                    )
-                }
+            // Toast overlay
+            if let msg = toastMessage {
+                Text(msg)
+                    .font(.system(size: 12))
+                    .foregroundStyle(themeManager.bgColor)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(themeManager.textPrimary.opacity(0.88))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.top, 12)
             }
         }
         .padding(24)
@@ -105,5 +120,41 @@ struct ShieldedBalanceCard: View {
         )
         .padding(.horizontal, 20)
         .onAppear { impact.prepare() }
+    }
+
+    // MARK: - Helpers
+
+    private func showToast(_ msg: String) {
+        withAnimation(.spring(response: 0.3)) { toastMessage = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            withAnimation(.easeOut(duration: 0.3)) { toastMessage = nil }
+        }
+    }
+
+    private func actionButton(
+        icon: String,
+        label: String,
+        isLive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: {
+            impact.impactOccurred()
+            action()
+        }) {
+            VStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(themeManager.surface2)
+                        .frame(width: 52, height: 52)
+                    Image(systemName: icon)
+                        .font(.system(size: 20))
+                        .foregroundStyle(isLive ? themeManager.textPrimary : themeManager.textSecondary.opacity(0.5))
+                }
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isLive ? themeManager.textSecondary : themeManager.textSecondary.opacity(0.45))
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

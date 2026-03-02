@@ -1,5 +1,5 @@
 # StarkVeil: The Bulletproof Starknet Privacy Wallet
-**Vision**: A truly cypherpunk, native Starknet iOS wallet offering complete financial privacy by default. Using native STARK proving infrastructure and Cairo, StarkVeil enforces a Zcash-style shielded pool without any trusted execution environments (TEEs) or off-chain data availability hacks.
+**Vision**: A truly cypherpunk, native Starknet iOS wallet offering complete financial privacy by default. Using native STARK proving infrastructure and Cairo, StarkVeil enforces a StarkVeil shielded pool without any trusted execution environments (TEEs) or off-chain data availability hacks.
 
 **Target UX**: A dark-themed, glassmorphic UI that feels premium, seamless, and deeply responsive. The user never sees complex "shielding" steps—everything public is instantly auto-shielded.
 
@@ -9,7 +9,7 @@
 
 The core philosophy of StarkVeil is **trustless computation** utilizing Starknet's S-two prover and Cairo capability, steering completely clear of Encifher's threshold ElGamal over TEEs stack.
 
-*   **Shielded Notes Model**: Adopt a Zcash-style UTXO model to handle private notes.
+*   **Shielded Notes Model**: Adopt a StarkVeil Shielded Note model to handle private notes.
     *   **Note structure**: `Poseidon(value, asset_id, owner_ivk, memo)`
     *   **Nullifiers (Double-spend protection)**: `Poseidon(spending_key, note_position)`
 *   **Keys and Stealth Addresses**:

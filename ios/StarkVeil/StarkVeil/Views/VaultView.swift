@@ -5,6 +5,7 @@ struct VaultView: View {
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
+    @EnvironmentObject private var appSettings: AppSettings
 
     // Splash gate
     @State private var showSplash = true
@@ -23,8 +24,12 @@ struct VaultView: View {
     @State private var recipientAddress = ""
     @State private var errorMessage: String? = nil
 
-    // Unshield sheet
+    // Transaction sheets
+    @State private var showSendSheet     = false
     @State private var showUnshieldSheet = false
+
+    // Wallet deleted callback
+    var onWalletDeleted: (() -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -50,36 +55,25 @@ struct VaultView: View {
 
             // ── Main Content ─────────────────────────────────────────
             VStack(spacing: 0) {
-                // Header
+                // Header always shown on all tabs
                 VaultHeaderView()
                     .padding(.top, 12)
-                    .padding(.bottom, 28)
-
-                // Balance card
-                ShieldedBalanceCard(
-                    isBalanceVisible: $isBalanceVisible,
-                    showSendSheet: $showSendSheet,
-                    showUnshieldSheet: $showUnshieldSheet
-                )
-                .padding(.bottom, 28)
-
-                // Tab switcher
-                TabSwitcherView(selectedTab: $vaultTab)
                     .padding(.bottom, 20)
 
-                // Tab content
-                ScrollView(showsIndicators: false) {
-                    if vaultTab == .assets {
-                        AssetsTabView(isBalanceVisible: isBalanceVisible)
-                            .padding(.top, 4)
-                    } else {
-                        ActivityTabView(isBalanceVisible: isBalanceVisible)
-                            .padding(.top, 4)
-                    }
+                // Tab body
+                switch bottomTab {
+                case .wallet:
+                    walletTabContent
+                case .swap:
+                    SwapView()
+                        .padding(.bottom, 60)
+                case .zkProofs:
+                    ZKProofsView()
+                        .padding(.bottom, 60)
+                case .settings:
+                    SettingsView(onWalletDeleted: onWalletDeleted)
+                        .padding(.bottom, 60)
                 }
-                .padding(.bottom, 60) // Room for the bottom nav
-
-                Spacer(minLength: 0)
             }
 
             // ── Bottom Nav (always on top of content) ────────────────
@@ -89,7 +83,7 @@ struct VaultView: View {
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // ── STARK Proof overlay (shown during sends) ─────────────
+            // ── STARK Proof overlay (shown during sends / swaps) ─────
             if walletManager.isProving {
                 STARKProofOverlay()
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
@@ -136,7 +130,36 @@ struct VaultView: View {
                 .environmentObject(networkManager)
         }
     }
+
+    // MARK: - Wallet tab layout (extracted to keep body readable)
+    @ViewBuilder
+    private var walletTabContent: some View {
+        // Balance card
+        ShieldedBalanceCard(
+            isBalanceVisible: $isBalanceVisible,
+            showSendSheet:     $showSendSheet,
+            showUnshieldSheet: $showUnshieldSheet
+        )
+        .padding(.bottom, 28)
+
+        // Tab switcher
+        TabSwitcherView(selectedTab: $vaultTab)
+            .padding(.bottom, 20)
+
+        // Tab content
+        ScrollView(showsIndicators: false) {
+            if vaultTab == .assets {
+                AssetsTabView(isBalanceVisible: isBalanceVisible)
+                    .padding(.top, 4)
+            } else {
+                ActivityTabView(isBalanceVisible: isBalanceVisible)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.bottom, 60)
+    }
 }
+
 
 // MARK: - Send Sheet (moved out of main scroll)
 
@@ -148,6 +171,8 @@ private struct SendSheetView: View {
     @Binding var errorMessage: String?
     @Binding var isPresented: Bool
 
+    @State private var memo = ""
+
     var parsedAmount: Double? {
         guard let v = Double(transferAmount), v > 0, v.isFinite, v <= walletManager.balance else { return nil }
         return v
@@ -156,75 +181,164 @@ private struct SendSheetView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                // Address field
-                HStack {
-                    Image(systemName: "person.crop.circle.badge.checkmark")
-                        .foregroundStyle(themeManager.textSecondary)
-                    TextField("Recipient (0x...)", text: $recipientAddress)
-                        .foregroundStyle(themeManager.textPrimary)
-                }
-                .padding()
-                .background(themeManager.surface1)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            ZStack {
+                themeManager.bgColor.ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 20) {
 
-                // Amount field
-                HStack {
-                    Text("STRK").foregroundStyle(themeManager.textSecondary)
-                    TextField("Amount", text: $transferAmount)
-                        .keyboardType(.decimalPad)
-                        .foregroundStyle(themeManager.textPrimary)
-                }
-                .padding()
-                .background(themeManager.surface1)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                // Error
-                if let msg = walletManager.transferError ?? errorMessage {
-                    Text(msg).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
-                }
-
-                // Send button
-                Button(action: sendAction) {
-                    if walletManager.isProving {
-                        ProofSynthesisSkeleton()
-                    } else {
+                        // ZODL big dashes / amount display
                         HStack(spacing: 10) {
-                            Image(systemName: "paperplane.fill")
-                            Text("Private Send")
+                            Image(systemName: "shield.lefthalf.filled")
+                                .font(.system(size: 28))
+                                .foregroundStyle(themeManager.textSecondary)
+                            if transferAmount.isEmpty {
+                                Text("– – – – – –")
+                                    .font(.system(size: 32, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(themeManager.textSecondary)
+                            } else {
+                                Text(transferAmount)
+                                    .font(.system(size: 32, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(themeManager.textPrimary)
+                                    .contentTransition(.numericText())
+                            }
                         }
-                        .font(.headline.weight(.heavy))
-                        .tracking(1.0)
-                        .foregroundStyle(themeManager.bgColor)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(canSend ? themeManager.textPrimary : themeManager.surface2)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                }
-                .disabled(!canSend)
-                .animation(.easeInOut(duration: 0.3), value: walletManager.isProving)
+                        .padding(.top, 4)
 
-                if let hash = walletManager.lastProvedTxHash {
-                    HStack {
-                        Image(systemName: "checkmark.shield.fill")
-                        Text("Sent! \(hash.prefix(10))…")
-                    }
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.green)
-                }
+                        // Send to label + address
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Send to")
+                                .font(.system(size: 13))
+                                .foregroundStyle(themeManager.textSecondary)
+                            HStack {
+                                Image(systemName: "person.crop.circle.badge.checkmark")
+                                    .foregroundStyle(themeManager.textSecondary)
+                                TextField("Shielded address (0x...)", text: $recipientAddress)
+                                    .foregroundStyle(themeManager.textPrimary)
+                                    .autocorrectionDisabled()
+                                    .autocapitalization(.none)
+                                    .font(.system(size: 14, design: .monospaced))
+                                Spacer()
+                                Button(action: { /* QR scan — future */ }) {
+                                    Image(systemName: "qrcode.viewfinder")
+                                        .font(.system(size: 18))
+                                        .foregroundStyle(themeManager.textSecondary)
+                                }
+                            }
+                            .padding(14)
+                            .background(themeManager.surface1)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
+                        }
 
-                Spacer()
+                        // Amount
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Amount")
+                                .font(.system(size: 13))
+                                .foregroundStyle(themeManager.textSecondary)
+                            HStack {
+                                Image(systemName: "shield.lefthalf.filled")
+                                    .foregroundStyle(themeManager.textSecondary).frame(width: 20)
+                                TextField("0.0", text: $transferAmount)
+                                    .keyboardType(.decimalPad)
+                                    .foregroundStyle(themeManager.textPrimary)
+                                    .font(.system(size: 16, design: .monospaced))
+                                Spacer()
+                                Text("STRK")
+                                    .foregroundStyle(themeManager.textSecondary)
+                                    .font(.system(size: 13))
+                            }
+                            .padding(14)
+                            .background(themeManager.surface1)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
+                        }
+
+                        // Encrypted memo (ZODL-style)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Message")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(themeManager.textSecondary)
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(themeManager.textSecondary)
+                            }
+                            ZStack(alignment: .topLeading) {
+                                if memo.isEmpty {
+                                    Text("Write encrypted message here…")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(themeManager.textSecondary.opacity(0.45))
+                                        .padding(.top, 12)
+                                        .padding(.leading, 2)
+                                }
+                                TextEditor(text: $memo)
+                                    .foregroundStyle(themeManager.textPrimary)
+                                    .font(.system(size: 14))
+                                    .scrollContentBackground(.hidden)
+                                    .background(Color.clear)
+                                    .frame(minHeight: 100, maxHeight: 140)
+                            }
+                            HStack {
+                                Spacer()
+                                Text("\(memo.count)/512")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(themeManager.textSecondary.opacity(0.5))
+                            }
+                        }
+                        .padding(14)
+                        .background(themeManager.surface1)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
+                        .onChange(of: memo) { _, new in if new.count > 512 { memo = String(new.prefix(512)) } }
+
+                        // Error
+                        if let msg = walletManager.transferError ?? errorMessage {
+                            Text(msg).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
+                        }
+
+                        // Review / Send button
+                        Button(action: sendAction) {
+                            if walletManager.isProving {
+                                ProofSynthesisSkeleton()
+                            } else {
+                                Text("Review")
+                                    .font(.headline.weight(.heavy))
+                                    .tracking(0.5)
+                                    .foregroundStyle(canSend ? themeManager.bgColor : themeManager.textSecondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(canSend ? themeManager.textPrimary : themeManager.surface2)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                        }
+                        .disabled(!canSend)
+                        .animation(.easeInOut(duration: 0.3), value: walletManager.isProving)
+
+                        if let hash = walletManager.lastProvedTxHash {
+                            HStack {
+                                Image(systemName: "checkmark.shield.fill")
+                                Text("Sent! \(hash.prefix(10))…")
+                            }
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.green)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 40)
+                }
             }
-            .padding(.horizontal)
-            .padding(.top, 20)
-            .background(themeManager.bgColor.ignoresSafeArea())
-            .navigationTitle("Private Send")
+            .navigationTitle("SEND")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isPresented = false }
-                        .foregroundStyle(themeManager.textSecondary)
+                    Button { isPresented = false } label: {
+                        Image(systemName: "arrow.backward")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(themeManager.textPrimary)
+                    }
                 }
             }
         }
@@ -263,5 +377,6 @@ struct VaultView_Previews: PreviewProvider {
             .environmentObject(networkManager)
             .environmentObject(WalletManager())
             .environmentObject(SyncEngine(networkManager: networkManager))
+            .environmentObject(AppSettings())
     }
 }

@@ -83,7 +83,7 @@ struct ActivityRowView: View {
                         .foregroundStyle(themeManager.textPrimary)
                     Spacer()
                     Text(isBalanceVisible ? "\(amountPrefix)\(event.amount) STRK" : "••••••")
-                        .font(.system(size: 14, design: .monospaced, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
                         .foregroundStyle(amountColor)
                         .blur(radius: isBalanceVisible ? 0 : 5)
                         .animation(.easeInOut(duration: 0.3), value: isBalanceVisible)
@@ -147,16 +147,4 @@ private extension Date {
     }
 }
 
-// MARK: - Color(hex:) helper (if not already in codebase)
 
-private extension Color {
-    init(hex: String) {
-        let h = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: h).scanHexInt64(&int)
-        let r = Double((int >> 16) & 0xFF) / 255
-        let g = Double((int >> 8)  & 0xFF) / 255
-        let b = Double( int        & 0xFF) / 255
-        self.init(red: r, green: g, blue: b)
-    }
-}

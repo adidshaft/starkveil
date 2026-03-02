@@ -8,7 +8,7 @@ We started with a vision of a cypherpunk, native Starknet iOS wallet offering co
 ---
 
 ## Phase 1: Cryptographic Architecture
-- **Decision**: We adopted a Zcash-style UTXO model mapping `Notes` and `Nullifiers`.
+- **Decision**: We adopted a StarkVeil Shielded Note model mapping `Notes` and `Nullifiers`.
 - **Why**: This is the industry gold standard for privacy. It keeps the sender, receiver, and transfer amount mathematically masked on the public Starknet ledger, converting transparent balances into opaque cryptographic commitments.
 
 ## Phase 2: On-Chain Shielded Pool (Cairo)

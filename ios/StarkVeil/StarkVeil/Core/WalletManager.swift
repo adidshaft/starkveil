@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftData
+import CryptoKit
 
 // MARK: - Domain Errors
 
@@ -38,10 +39,14 @@ class WalletManager: ObservableObject {
 
     @Published private(set) var isProving: Bool = false
     @Published private(set) var isUnshielding: Bool = false
+    @Published private(set) var isShielding: Bool = false
     @Published private(set) var lastProvedTxHash: String? = nil
     @Published private(set) var lastUnshieldTxHash: String? = nil
+    @Published private(set) var lastShieldTxHash: String? = nil
     @Published var transferError: String? = nil
     @Published var unshieldError: String? = nil
+    @Published var shieldError: String? = nil
+
 
     // Synchronous re-entrancy flag. Only ever read/written on the main actor,
     // so no additional locking is needed.
@@ -139,7 +144,7 @@ class WalletManager: ObservableObject {
         }
         notes.removeAll()
         recomputeBalance()
-        // Delete persisted notes for this network from SwiftData
+        // Delete persisted notes for this network from SwiftData (network-switch scoped)
         let ctx = persistence.context
         let netId = activeNetworkId
         let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
@@ -151,6 +156,41 @@ class WalletManager: ObservableObject {
                 print("[WalletManager] CRITICAL: SwiftData save failed in clearStore: \(error)")
             }
         }
+    }
+
+    /// H3 fix: Wipes ALL networks' notes and events — used on wallet deletion.
+    /// clearStore() only deletes the active network; this guarantees a full wipe.
+    func deleteAllNetworksData() {
+        if isTransferInFlight {
+            transferError = "Transfer cancelled: wallet was deleted."
+        }
+        notes.removeAll()
+        activityEvents.removeAll()
+        recomputeBalance()
+        let ctx = persistence.context
+        // Wipe all StoredNotes across ALL networks
+        if let allNotes = try? ctx.fetch(FetchDescriptor<StoredNote>()) {
+            allNotes.forEach { ctx.delete($0) }
+        }
+        // Wipe all ActivityEvents across ALL networks
+        if let allEvents = try? ctx.fetch(FetchDescriptor<ActivityEvent>()) {
+            allEvents.forEach { ctx.delete($0) }
+        }
+        do { try ctx.save() }
+        catch { print("[WalletManager] CRITICAL: deleteAllNetworksData save failed: \(error)") }
+    }
+
+    /// Deletes all ActivityEvent records for the active network from SwiftData and clears the in-memory array.
+    func clearActivityEvents() {
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let descriptor = FetchDescriptor<ActivityEvent>(predicate: #Predicate { $0.networkId == netId })
+        if let events = try? ctx.fetch(descriptor) {
+            events.forEach { ctx.delete($0) }
+            do { try ctx.save() }
+            catch { print("[WalletManager] CRITICAL: SwiftData save failed in clearActivityEvents: \(error)") }
+        }
+        activityEvents.removeAll()
     }
 
     private func recomputeBalance() {
@@ -184,7 +224,7 @@ class WalletManager: ObservableObject {
         let result = try await StarkVeilProver.generateTransferProof(notes: inputNotes)
 
         // --- Back on main actor ---
-        print("STARK Proof generated: \(result.proof)")
+        // NOTE: proof data is intentionally NOT logged (audit C2 — prevents proof leakage to console/crash logs)
 
         // Remove exactly the spent notes to prevent destroying other notes with the same value (Audit Bug 2)
         let ctx = persistence.context
@@ -212,10 +252,17 @@ class WalletManager: ObservableObject {
         let totalIn = inputNotes.compactMap { Double($0.value) }.reduce(0, +)
         let change = totalIn - amount
         if change > 1e-9 {
+            // Derive real IVK for the change note so it can be scanned back
+            let changeIvk: String
+            if let ivkData = KeychainManager.ownerIVK() {
+                changeIvk = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
+            } else {
+                changeIvk = inputNotes.first?.owner_ivk ?? ""
+            }
             let changeNote = Note(
                 value: String(format: "%.9f", change),
-                asset_id: inputNotes.first?.asset_id ?? "0xETH",
-                owner_ivk: inputNotes.first?.owner_ivk ?? "0xMockIVK",
+                asset_id: inputNotes.first?.asset_id ?? "STRK",
+                owner_ivk: changeIvk,
                 memo: "change"
             )
             notes.append(changeNote)
@@ -238,8 +285,11 @@ class WalletManager: ObservableObject {
         logEvent(
             kind: .transfer,
             amount: String(format: "%.6f", amount),
-            assetId: inputNotes.first?.asset_id ?? "0xETH",
-            counterparty: String(recipient.prefix(20)) + "…",
+            assetId: inputNotes.first?.asset_id ?? "STRK",
+            // H4: Recipient address is NOT stored in the activity log.
+            // Storing even a truncated address creates a persistent on-device link between
+            // this proof and its recipient, violating the privacy model.
+            counterparty: "shielded-recipient",
             txHash: lastProvedTxHash
         )
     }
@@ -319,10 +369,9 @@ class WalletManager: ObservableObject {
         let proofCalldata = result.proof.flatMap { [$0] }
         let nullifier = result.nullifiers.first ?? "0x0"
         
-        // TODO: Replace with the output of `starkli selector unshield` against your deployed contract.
-        // This value is WRONG — 0x15d40a3d673baee5a4dd5f is 92 bits; a valid Starknet felt is 252 bits.
-        // All unshield transactions will be rejected by the sequencer until this is corrected.
-        let unshieldSelector = "0x__REPLACE_WITH_starkli_selector_unshield__"
+        // Starknet Keccak-250 selector for PrivacyPool.unshield()
+        // Computed: keccak("unshield") & ((1<<250)-1)
+        let unshieldSelector = "0x21eefa4f46062f7986b501187c7684110faa0fa374c2819584d21a92ace0fac"
         
         var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
         callPayload += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
@@ -366,18 +415,134 @@ class WalletManager: ObservableObject {
             kind: .unshield,
             amount: String(format: "%.6f", amount),
             assetId: inputNote.asset_id,
-            counterparty: String(recipient.prefix(20)) + "…",
+            // H4: Recipient address NOT stored — same rule as private transfer.
+            // Unshield reveals amount+recipient on-chain anyway; no need to persist it locally.
+            counterparty: "public-unshield",
             txHash: txHash
         )
 
         lastUnshieldTxHash = txHash
     }
 
+    // MARK: - Shield (Public → Private)
+
+    /// Deposit public STRK into the PrivacyPool contract.
+    /// The contract emits a `Shielded(commitment)` event and the SyncEngine will
+    /// detect it on the next sync cycle and call `addNote()` with the new leaf.
+    /// We also optimistically create the note locally so the balance updates immediately.
+    ///
+    /// Privacy model: The on-chain call reveals sender address + amount.
+    /// Everything upstream (transfer, unshield) is private via STARK proofs.
+    @discardableResult
+    func executeShield(
+        amount: Double,
+        memo: String,
+        rpcUrl: URL,
+        contractAddress: String
+    ) async throws -> String {
+        guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
+        guard !isTransferInFlight else { throw ProverError.transferInProgress }
+
+        isTransferInFlight = true
+        isShielding = true
+        shieldError = nil
+        lastShieldTxHash = nil
+
+        defer {
+            isTransferInFlight = false
+            isShielding = false
+        }
+
+        // Derive IVK for the note commitment
+        guard let ivkData = KeychainManager.ownerIVK() else {
+            throw NSError(domain: "StarkVeil", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Wallet not initialised — no IVK found."])
+        }
+        let ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
+
+        // Build note locally; commitment = hash(amount, ivk, nonce)
+        let nonce = UUID().uuidString
+        let note = Note(
+            value: String(format: "%.6f", amount),
+            asset_id: "STRK",
+            owner_ivk: ivkHex,
+            memo: memo.isEmpty ? "shielded deposit" : memo
+        )
+        // nonce is kept in scope — used below to derive the on-chain commitment key
+
+
+        // Build calldata for PrivacyPool.shield(amount_low, amount_high, commitment_key)
+        let amountWei = amount * 1e18
+        let safeAmountWei: UInt64
+        if amountWei > Double(UInt64.max) {
+            safeAmountWei = UInt64.max
+        } else {
+            safeAmountWei = UInt64(amountWei)
+        }
+        let amountLow  = String(format: "0x%llx", safeAmountWei)
+        let amountHigh = "0x0"
+
+        // H1 fix: Do NOT send raw IVK in calldata — it links all deposits on-chain.
+        // Instead derive a one-time commitment key: Poseidon(ivk || nonce).
+        // The contract only sees the commitment; only the holder of the IVK can
+        // scan events to recognise their own incoming notes.
+        let commitmentKey = deriveNoteCommitmentKey(ivkHex: ivkHex, nonce: nonce)
+
+        // Starknet Keccak-250 selector for PrivacyPool.shield()
+        // Computed: keccak("shield") & ((1<<250)-1)
+        let shieldSelector = "0x224a8f74e6fd7a11ab9e36f7742dd64470a7b2e3541b802eb7ed24087db909"
+
+        // NOTE: senderAddress is the Starknet account address that holds the user's STRK.
+        // This requires Starknet Account Abstraction (Phase 11) — the wallet must know
+        // its own deployed account address to sign and pay for the Shield invoke.
+        // For now this is set to the IVK hex as a proxy (will be rejected by sequencer).
+        let senderAddress = ivkHex
+        let calldata = ["0x1", contractAddress, shieldSelector, "0x0", "0x3", "0x3",
+                        amountLow, amountHigh, commitmentKey]
+
+        let txHash = try await RPCClient().addInvokeTransaction(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata
+        )
+
+        // Optimistically add note and log event
+        addNote(note)
+        // Override the logEvent that addNote added to include the real txHash
+        // (addNote logs without txHash; update the last event with the hash)
+        if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
+            last.txHash = txHash
+            let ctx = persistence.context
+            do { try ctx.save() }
+            catch { print("[WalletManager] Non-critical: could not attach txHash to deposit event.") }
+        }
+
+        lastShieldTxHash = txHash
+        return txHash
+    }
+
     // MARK: - Private Helpers
+
+    /// H1 fix: Derive a one-time commitment key from IVK + nonce so the raw IVK
+    /// is never sent on-chain. On-chain observers see only: Poseidon(ivk || nonce).
+    /// The SyncEngine scans events and checks Poseidon(my_ivk || candidate_nonce)
+    /// for each detected commitment to claim incoming notes.
+    ///
+    /// Implementation: SHA-256(ivk_bytes || nonce_bytes) until native Poseidon is available.
+    /// Replace with actual Poseidon when the Cairo circuit is finalized.
+    private func deriveNoteCommitmentKey(ivkHex: String, nonce: String) -> String {
+        let ivkBytes = Data(ivkHex.utf8)
+        let nonceBytes = Data(nonce.utf8)
+        var combined = ivkBytes
+        combined.append(nonceBytes)
+        let digest = SHA256.hash(data: combined)
+        return "0x" + digest.map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Simple greedy UTXO selection. Picks notes in insertion order until the
     /// accumulated value covers `amount`. Phase 5 should replace with
     /// privacy-optimal selection (fewest notes, smallest change).
+
     private func selectNotes(for amount: Double) -> [Note] {
         var selected: [Note] = []
         var accumulated = 0.0

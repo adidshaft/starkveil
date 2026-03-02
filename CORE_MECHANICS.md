@@ -6,7 +6,7 @@ This document serves as the central source of truth for the StarkVeil project's 
 
 ### Phase 1: Cryptographic Architecture (Completed)
 Defined the visibility surfaces, threat models, and fundamental data structures.
-- **UTXO Model**: Zcash-style `Note` structure containing value, asset ID, owner viewing key, and memo.
+- **UTXO Model**: StarkVeil `Note` commitment structure containing value, asset ID, owner viewing key, and memo.
 - **Nullifiers**: Used to track spent notes and prevent double spending without revealing which exact note was spent.
 
 ### Phase 2: On-Chain Shielded Pool (Cairo) (Completed)
