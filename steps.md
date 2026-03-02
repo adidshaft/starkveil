@@ -76,10 +76,12 @@ A second-pass audit of the Phase 9 implementation identified 5 critical bugs:
 - **`KeychainManager` security regressions**: The `Data(repeating: 0xAB, count: 32)` fallback produced a trivially guessable IVK, silently decryptable by any attacker. Replaced with `precondition` crash (OS RNG failure is catastrophic). Silent `try?` on Keychain writes swallowed failures, causing a new IVK on next cold start. Replaced with explicit `do/catch`.
 - **`SyncEngine` checkpoint dead code**: `saveCheckpoint` and `loadCheckpoint` were defined but never called, causing block-10 re-scans on every launch with duplicate note emission. Fixed by wiring both calls inside the epoch-guarded `MainActor.run` block.
 
-## Phase 10.1: BIP-39 Seed Phrase Wallet (Planned)
-- **Action**: Implement deterministic key derivation so the IVK and spending key are derived from a user-controlled 12/24-word mnemonic phrase rather than a random per-device secret.
-- **Decision**: Use BIP-39 entropy → mnemonic → PBKDF2 seed → SLIP-0010 (Ed25519 HD derivation) → StarkNet-compatible key pair. `KeychainManager` stores only the encrypted seed; IVK and spending key are re-derived on demand.
-- **Why**: Without a mnemonic, a user who loses their iPhone permanently loses all shielded notes as the IVK cannot be recovered. Seed-phrase recovery is the industry standard for self-custodial wallets.
+## Phase 10.1: BIP-39 Seed Phrase Wallet (Completed)
+- **Action**: Implemented native BIP-39 mnemonic generation and PBKDF2+HKDF key derivation without any third-party dependencies.
+- **Decision**: `BIP39Wordlist.swift` (2048 words from Trezor); `BIP39.swift` handles entropy generation, checksum, mnemonic construction, PBKDF2-HMAC-SHA512 seed derivation, and checksum validation. `KeyDerivationEngine.swift` applies HMAC-SHA256 domain tagging (`"Starknet seed v0"`) then HKDF-SHA256 with distinct info strings to produce the IVK (`starkveil-ivk-v1`) and SK (`starkveil-sk-v1`). `KeychainManager` now stores the 64-byte PBKDF2 seed — the IVK is re-derived on demand, never stored separately.
+- **Why**: Without a recoverable seed phrase a lost device means permanently lost shielded funds. The domain tag ensures StarkVeil keys cannot collide with keys from other BIP-32 wallets using the same mnemonic. HKDF key separation means IVK compromise cannot reveal the SK.
+- **New files**: `BIP39.swift`, `BIP39Wordlist.swift`, `KeyDerivationEngine.swift`, `MnemonicSetupView.swift`, `WalletImportView.swift`, `WalletOnboardingView.swift`.
+- **Modified files**: `KeychainManager.swift` (seed storage), `StarkVeilApp.swift` (wallet gate).
 
 ## Phase 10.2: Unshield Operation — Private → Public (Planned)
 - **Action**: Implement the complete unshield flow wiring `PrivacyPool.unshield()` from the iOS app.
