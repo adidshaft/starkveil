@@ -108,14 +108,9 @@ struct VaultView: View {
         .onDisappear { syncEngine.stopSyncing() }
         // Send sheet
         .sheet(isPresented: $showSendSheet) {
-            SendSheetView(
-                recipientAddress: $recipientAddress,
-                transferAmount: $transferAmount,
-                errorMessage: $errorMessage,
-                isPresented: $showSendSheet
-            )
-            .environmentObject(themeManager)
-            .environmentObject(walletManager)
+            SendSheetView(isPresented: $showSendSheet)
+                .environmentObject(themeManager)
+                .environmentObject(walletManager)
         }
         .sheet(isPresented: $showUnshieldSheet) {
             UnshieldFormView(isPresented: $showUnshieldSheet)
@@ -160,11 +155,11 @@ struct VaultView: View {
 private struct SendSheetView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
-    @Binding var recipientAddress: String
-    @Binding var transferAmount: String
-    @Binding var errorMessage: String?
     @Binding var isPresented: Bool
 
+    @State private var recipientAddress = ""
+    @State private var transferAmount   = ""
+    @State private var errorMessage: String? = nil
     @State private var memo = ""
 
     var parsedAmount: Double? {
