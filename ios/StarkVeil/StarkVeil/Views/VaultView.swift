@@ -4,6 +4,7 @@ struct VaultView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var walletManager: WalletManager
+    @EnvironmentObject private var networkManager: NetworkManager
 
     // Splash gate
     @State private var showSplash = true

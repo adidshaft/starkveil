@@ -13,6 +13,40 @@ class RPCClient {
         self.urlSession = urlSession
     }
     
+    private func performRequest<T: Decodable>(url: URL, payload: Encodable) async throws -> RPCResponse<T> {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        // Encode the JSON-RPC payload
+        let encoder = JSONEncoder()
+        request.httpBody = try encoder.encode(AnyEncodable(payload))
+
+        let (data, response) = try await urlSession.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw RPCClientError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw RPCClientError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        let decoder = JSONDecoder()
+        return try decoder.decode(RPCResponse<T>.self, from: data)
+    }
+
+    // A type-erased Encodable wrapper to allow passing generic Encodable payloads
+    private struct AnyEncodable: Encodable {
+        private let _encode: (Encoder) throws -> Void
+        init(_ encodable: Encodable) {
+            self._encode = encodable.encode
+        }
+        func encode(to encoder: Encoder) throws {
+            try _encode(encoder)
+        }
+    }
+    
     // MARK: - starknet_blockNumber
     
     /// Fetches the latest confirmed block height from Starknet
