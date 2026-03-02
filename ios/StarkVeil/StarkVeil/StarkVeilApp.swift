@@ -55,9 +55,11 @@ class AppCoordinator: ObservableObject {
             .sink { [weak self] in
                 guard let self else { return }
                 MainActor.assumeIsolated {
-                    // Update networkId FIRST so clearStore() and loadNotes() target the new network
-                    self.walletManager.activeNetworkId = self.networkManager.activeNetwork.rawValue
+                    // clearStore() queries SwiftData using activeNetworkId. It MUST run before
+                    // activeNetworkId is updated so it targets the OLD network's records.
+                    // Inverting this order would delete the new network's records instead.
                     self.walletManager.clearStore()
+                    self.walletManager.activeNetworkId = self.networkManager.activeNetwork.rawValue
                     // Reload persisted notes for the new network immediately
                     self.walletManager.loadNotes(for: self.networkManager.activeNetwork.rawValue)
                 }

@@ -121,22 +121,40 @@ class WalletManager: ObservableObject {
         // --- Back on main actor ---
         print("STARK Proof generated: \(result.proof)")
 
-        // Remove spent notes from UTXO set
+        // Remove spent notes from UTXO set (in-memory)
         let spentValues = Set(inputNotes.map { $0.value })
         notes.removeAll { spentValues.contains($0.value) }
+
+        // Mirror the spend to SwiftData so spent notes don't reappear on next launch.
+        // Fetch all stored notes for this network, then delete the ones that were spent.
+        // (#Predicate does not support Set.contains — filter in Swift after fetch.)
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let allStoredDescriptor = FetchDescriptor<StoredNote>(
+            predicate: #Predicate { $0.networkId == netId }
+        )
+        if let allStored = try? ctx.fetch(allStoredDescriptor) {
+            for stored in allStored where spentValues.contains(stored.value) {
+                ctx.delete(stored)
+            }
+        }
 
         // Add a change note if the selected notes exceed the transfer amount
         let totalIn = inputNotes.compactMap { Double($0.value) }.reduce(0, +)
         let change = totalIn - amount
         if change > 1e-9 {
-            notes.append(Note(
+            let changeNote = Note(
                 value: String(format: "%.9f", change),
                 asset_id: inputNotes.first?.asset_id ?? "0xETH",
                 owner_ivk: inputNotes.first?.owner_ivk ?? "0xMockIVK",
                 memo: "change"
-            ))
+            )
+            notes.append(changeNote)
+            // Persist the change note so it survives relaunch
+            ctx.insert(StoredNote(from: changeNote, networkId: activeNetworkId))
         }
 
+        try? ctx.save()
         recomputeBalance()
 
         // Use the first returned nullifier as a proxy tx-hash until real RPC is wired

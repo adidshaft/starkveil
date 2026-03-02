@@ -133,7 +133,13 @@ class SyncEngine: ObservableObject {
         let rpcUrl           = networkManager.activeNetwork.rpcUrl
         let networkName      = networkManager.activeNetwork.rawValue
         let contractAddress  = networkManager.activeNetwork.contractAddress
-        let currentBlock     = currentBlockNumber
+        // On cold start currentBlockNumber == 0. Consult the persisted checkpoint so
+        // we resume from where the last session left off rather than always scanning
+        // the last 10 blocks. When no checkpoint exists, loadCheckpoint returns 0
+        // and the fromBlock calculation below falls back to latestBlock - 10 as before.
+        let currentBlock = currentBlockNumber > 0
+            ? currentBlockNumber
+            : loadCheckpoint(for: networkName)
 
         Task {
             do {
@@ -192,6 +198,9 @@ class SyncEngine: ObservableObject {
                             print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(entry.note.value) STRK)")
                         }
                         self.currentBlockNumber = latestBlock
+                        // Persist the checkpoint so the next cold start resumes from here
+                        // instead of re-scanning the last 10 blocks and re-emitting duplicates.
+                        self.saveCheckpoint(networkId: networkName, block: latestBlock)
                     }
                 }
             } catch {

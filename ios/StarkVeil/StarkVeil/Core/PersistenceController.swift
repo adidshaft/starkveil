@@ -8,6 +8,11 @@ class PersistenceController {
     static let shared = PersistenceController()
 
     let container: ModelContainer
+    /// Single shared context. All callers (WalletManager @MainActor, SyncEngine on main thread)
+    /// access SwiftData from the main thread, so one context shared across the app is correct.
+    /// Creating a new ModelContext on every access (the previous approach) produces divergent
+    /// in-memory state — inserts in one context are invisible to fetches in another until save.
+    let context: ModelContext
 
     private init() {
         let schema = Schema([StoredNote.self, SyncCheckpoint.self])
@@ -19,9 +24,6 @@ class PersistenceController {
             // during development than to silently lose user data at runtime.
             fatalError("[Persistence] Failed to create ModelContainer: \(error)")
         }
-    }
-
-    var context: ModelContext {
-        ModelContext(container)
+        context = ModelContext(container)
     }
 }

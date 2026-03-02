@@ -19,17 +19,29 @@ enum KeychainManager {
     static func ownerIVK() -> Data {
         if let existing = load() { return existing }
         let fresh = freshIVK()
-        try? store(fresh)
+        do {
+            try store(fresh)
+        } catch {
+            // If the Keychain write fails the IVK will not survive relaunch — the next
+            // cold start will generate a different IVK, making all notes encrypted with
+            // this one permanently undecryptable. Crash loudly in debug so this is caught
+            // during development; log loudly in production so it surfaces in crash reports.
+            assertionFailure("[KeychainManager] Keychain write failed: \(error). IVK will not persist — encrypted notes will be undecryptable after relaunch.")
+            print("[KeychainManager] CRITICAL: Keychain write failed: \(error)")
+        }
         return fresh
     }
 
     private static func freshIVK() -> Data {
         var bytes = [UInt8](repeating: 0, count: 32)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        guard status == errSecSuccess else {
-            // Fallback: deterministic bytes derived from device identity (not production-safe)
-            return Data(repeating: 0xAB, count: 32)
-        }
+        // SecRandomCopyBytes failure means the OS's RNG is broken. A predictable
+        // fallback key (e.g. 0xAB * 32) would be trivially guessable and would silently
+        // decrypt all shielded notes for any attacker who knows the fallback. Crash instead.
+        precondition(
+            status == errSecSuccess,
+            "[KeychainManager] SecRandomCopyBytes failed with status \(status). System RNG unavailable — cannot generate a safe IVK."
+        )
         return Data(bytes)
     }
 
