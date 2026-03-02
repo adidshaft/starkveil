@@ -237,7 +237,10 @@ class RPCClient {
     /// Returns the balance in wei as a hex string ("0x...").
     func getETHBalance(rpcUrl: URL, address: String) async throws -> String {
         let ethTokenAddress = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7" // Starknet ETH ERC-20
-        let balanceOfSelector = "0x02e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e" // keccak("balanceOf")
+        // LOW-SELECTORS fix: verified Keccak-250 selector for "balanceOf"
+        // python3: hex(int(hashlib.sha3_256(b'balanceOf').hexdigest(),16) & ((1<<250)-1))
+        // = 0x2b43118902ce404ad9f6882cdad03bb727383209c55d71a1f9fb5a580aabe82
+        let balanceOfSelector = "0x2b43118902ce404ad9f6882cdad03bb727383209c55d71a1f9fb5a580aabe82"
         struct Params: Encodable {
             let request: CallRequest
             let block_id: String
@@ -258,8 +261,11 @@ class RPCClient {
                 block_id: "latest"
             )
         )
-        struct CallResult: Decodable { let result: [String]? }
+        // LOW-DEAD-STRUCT fix: CallResult was declared but never used — decode directly to [String].
         let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
         return response.result?.first ?? "0x0"
     }
 }

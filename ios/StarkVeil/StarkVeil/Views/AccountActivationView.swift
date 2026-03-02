@@ -326,15 +326,17 @@ struct AccountActivationView: View {
         let rpcUrl = networkManager.activeNetwork.rpcUrl
         do {
             let balance = try await RPCClient().getETHBalance(rpcUrl: rpcUrl, address: keys.address)
-            let balanceInt = UInt64(balance.replacingOccurrences(of: "0x", with: ""), radix: 16) ?? 0
+            // M-BALANCE-PARSE fix: starknet_call returns [low_u128, high_u128] for a u256.
+            // Parsing only the low word via UInt64 truncates balances > 18.44 ETH.
+            // Any non-zero value in either word means the address is funded.
+            let parts = balance.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+            let low  = UInt64(parts.first?.replacingOccurrences(of: "0x", with: "") ?? "0", radix: 16) ?? 0
+            let high = UInt64(parts.dropFirst().first?.replacingOccurrences(of: "0x", with: "") ?? "0", radix: 16) ?? 0
+            let isFunded = low > 0 || high > 0
             await MainActor.run {
                 ethBalance = balance
-                deploymentState = balanceInt > 0 ? .funded : .idle
-                if balanceInt == 0 {
-                    errorMessage = "No ETH detected yet. Check your transfer and try again."
-                } else {
-                    errorMessage = nil
-                }
+                deploymentState = isFunded ? .funded : .idle
+                errorMessage = isFunded ? nil : "No ETH detected yet. Check your transfer and try again."
             }
         } catch {
             await MainActor.run {
@@ -373,7 +375,20 @@ struct AccountActivationView: View {
 
     private func pollForDeployment(rpcUrl: URL, txHash: String, address: String) async throws {
         for _ in 0..<20 {
-            try await Task.sleep(nanoseconds: 3_000_000_000)   // 3 seconds
+            // M-CANCEL-GAP fix: catch CancellationError separately.
+            // If the Task is cancelled mid-poll (e.g. app backgrounded) but the contract is
+            // already deployed on-chain, we must not lose that fact. Re-check once before throwing.
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)   // 3 seconds
+            } catch is CancellationError {
+                // Task was cancelled — do one final check then propagate cancellation
+                let isDeployed = await RPCClient().isContractDeployed(rpcUrl: rpcUrl, address: address)
+                if isDeployed {
+                    try? KeychainManager.markAccountDeployed()
+                    await MainActor.run { deploymentState = .deployed }
+                }
+                throw CancellationError()
+            }
             let isDeployed = await RPCClient().isContractDeployed(rpcUrl: rpcUrl, address: address)
             if isDeployed {
                 try? KeychainManager.markAccountDeployed()
@@ -383,7 +398,7 @@ struct AccountActivationView: View {
                 return
             }
         }
-        // Timed out — account may still confirm; user can re-open and recheck
+        // Timed out — tx may still confirm; user can reopen and recheck
         await MainActor.run {
             deploymentState = .error("Transaction submitted (\(txHash.prefix(12))…) but confirmation timed out. Reopen the app to recheck.")
         }

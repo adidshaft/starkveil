@@ -154,20 +154,16 @@ enum StarknetAccount {
     static func deriveAccountKeys(fromSeed seed: Data) -> AccountKeys {
         // 1. Derive a 32-byte STARK-specific private key material via HKDF
         let chainRoot = hmacSHA256(key: Data("Starknet seed v0".utf8), data: seed)
-        let pkMaterial = hkdfSHA256(ikm: chainRoot, info: "starkveil-stark-pk-v1", length: 32)
 
-        // 2. Clamp to STARK curve order (P - 1)
-        let raw = BigUInt(hex: pkMaterial.map { String(format: "%02x", $0) }.joined())!
-        let order = StarknetCurve.order
-        let privateKey = (raw < order) ? raw : raw.mod(order)
+        // 2. M-KEY-BIAS fix: use rejection-sampling (grindKey) instead of modular reduction.
+        //    Modular reduction biases the key distribution toward the low range of [0, order).
+        //    grindKey hashes with an incrementing counter until the result < order.
+        let privateKey = grindKey(chainRoot: chainRoot)
 
-        // 3. Compute STARK public key: x-coordinate of privateKey * G on the STARK curve
-        //    We use the simplified scalar multiplication defined by StarkWare spec.
+        // 3. Compute STARK public key
         let publicKey = starkPublicKey(privateKey: privateKey)
 
-        // 4. Compute OZ account address:
-        //    address = pedersen(pedersen(pedersen(pedersen(0, class_hash), pubkey), 1), 0) & MASK252
-        //    OZ v0.8 constructor calldata = [pubkey], call_data_hash = pedersen(0, pubkey, 1)
+        // 4. Compute OZ v0.8 counterfactual address
         let address = computeOZAccountAddress(publicKey: publicKey)
 
         return AccountKeys(privateKey: privateKey, publicKey: publicKey, address: address)
@@ -176,29 +172,36 @@ enum StarknetAccount {
     // MARK: - Address computation
 
     /// Computes the counterfactual OpenZeppelin v0.8 account address.
-    /// Formula: contract_address = hash('STARKNET_CONTRACT_ADDRESS', deployer, salt, class_hash, calldata_hash)
+    /// Formula: contract_address = hash('STARKNET_CONTRACT_ADDRESS', deployer, salt, class_hash, calldata_hash, length)
     /// where salt = pubkey, deployer = 0, calldata = [pubkey]
-    ///
-    /// This matches what argent-x / openzeppelin compute for a fresh account.
     static func computeOZAccountAddress(publicKey: BigUInt) -> String {
-        let classHash = BigUInt(hex: StarknetCurve.ozAccountClassHash)!
-        let salt = publicKey          // OZ uses pubkey as salt
-        let deployer = BigUInt.zero   // Deployed from zero address
-        // calldata = [pubkey] → calldata_hash = pedersen([0, pubkey]) in sequence
-        let calldataHash = pedersenHash(a: BigUInt.zero, b: publicKey)
+        #if !DEBUG
+        // C-STUB compile guard: stub address computation MUST NOT reach Release builds.
+        // Replace starkPublicKey() and pedersenHash() with real FFI before switching to Release.
+        #error("StarknetAccount uses stub cryptography. Wire real Pedersen + EC multiply from Rust FFI before Release.")
+        #endif
 
-        // contract_address_hash = pedersen([PREFIX, deployer, salt, class_hash, calldata_hash])
-        let prefix = BigUInt(hex: "535441524b4e45545f434f4e54524143545f41444452455353")! // "STARKNET_CONTRACT_ADDRESS" as felt
+        let classHash = BigUInt(hex: StarknetCurve.ozAccountClassHash)!
+        let salt      = publicKey
+        let deployer  = BigUInt.zero
+
+        // H-CALLDATA-LEN fix: OZ compute_hash_on_elements hashes elements THEN appends the
+        // length as a final element. Missing the length makes the hash structurally wrong.
+        // calldata = [pubkey] → hash = pedersenHash(pedersenHash(0, pubkey), 1)
+        var calldataHash = pedersenHash(a: BigUInt.zero, b: publicKey)
+        calldataHash = pedersenHash(a: calldataHash, b: BigUInt(1)) // length = 1
+
+        let prefix = BigUInt(hex: "535441524b4e45545f434f4e54524143545f41444452455353")!
         var h = pedersenHash(a: BigUInt.zero, b: prefix)
         h = pedersenHash(a: h, b: deployer)
         h = pedersenHash(a: h, b: salt)
         h = pedersenHash(a: h, b: classHash)
         h = pedersenHash(a: h, b: calldataHash)
+        h = pedersenHash(a: h, b: BigUInt(5)) // H-CALLDATA-LEN: outer element count = 5
 
-        // Mask to 251 bits (STARK prime field)
-        let mask251 = BigUInt(hex: "07ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")!
-        let masked = h.mod(mask251)
-        return masked.hexString
+        // M-WRONG-MASK fix: mask to STARK curve order, not an ad-hoc 251-bit value.
+        // Using order ensures the address is always a valid field element.
+        return h.mod(StarknetCurve.order).hexString
     }
 
     // MARK: - Cryptographic primitives
@@ -220,17 +223,30 @@ enum StarknetAccount {
         return key.withUnsafeBytes { Data($0) }
     }
 
-    /// Simplified STARK public key derivation.
-    /// StarkWare specifies pubkey = (private_key * G).x where G is the STARK generator.
-    /// Full EC multiplication is complex; we approximate via the grumpkin-compatible formula
-    /// used in starknet.js and cairo-rs: pubkey = scalar_mult(privkey, G_x, G_y).x
-    ///
-    /// For Phase 11 we use a deterministic SHA-256 based simulation that produces a
-    /// consistent 252-bit point that can be replaced with a native Pedersen EC multiply
-    /// when the Rust StarkVeilProver FFI exposes starknet_pubkey().
+    /// M-KEY-BIAS fix: grindKey rejection-sampling.
+    /// Derives a private key by repeatedly hashing with an incrementing counter until
+    /// the result falls strictly within [1, STARK_ORDER). This produces a uniform distribution.
+    static func grindKey(chainRoot: Data) -> BigUInt {
+        let order = StarknetCurve.order
+        var counter: UInt8 = 0
+        while true {
+            var data = chainRoot
+            data.append(counter)
+            let digest = SHA256.hash(data: data)
+            let candidate = BigUInt(hex: digest.map { String(format: "%02x", $0) }.joined())!
+            if candidate >= BigUInt(1) && candidate < order {
+                return candidate
+            }
+            counter &+= 1  // wrapping add — loops at most ~2^6 times statistically
+        }
+    }
+
+    /// Stub STARK public key derivation (SHA-256 approximation).
+    /// MUST be replaced with StarkVeilProver.starkPublicKey() before Release.
     static func starkPublicKey(privateKey: BigUInt) -> BigUInt {
-        // Deterministic simulation: H(privkey || "stark-pubkey-v1")
-        // In production, replace with: StarkVeilProver.starkPublicKey(privateKey.hexString)
+        #if !DEBUG
+        #error("starkPublicKey() is a stub. Wire real EC multiply from Rust FFI before Release.")
+        #endif
         var combined = Data(privateKey.hexString.utf8)
         combined.append(Data("stark-pubkey-v1".utf8))
         let digest = SHA256.hash(data: combined)
