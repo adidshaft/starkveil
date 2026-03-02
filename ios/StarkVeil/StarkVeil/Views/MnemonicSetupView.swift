@@ -214,9 +214,14 @@ struct MnemonicSetupView: View {
         }
 
         isSaving = true
+        var mnemonicSnapshot = mnemonic
+
         Task.detached(priority: .userInitiated) {
+            defer {
+                mnemonicSnapshot.removeAll(keepingCapacity: false)
+            }
             do {
-                let keys = try KeyDerivationEngine.deriveKeys(from: mnemonic)
+                let keys = try KeyDerivationEngine.deriveKeys(from: mnemonicSnapshot)
                 try KeychainManager.storeMasterSeed(keys.masterSeed)
                 await MainActor.run {
                     mnemonic.removeAll(keepingCapacity: false)

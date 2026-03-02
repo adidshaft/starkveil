@@ -12,6 +12,7 @@ final class StoredNote {
     var memo: String
     var createdAt: Date
     var networkId: String // "Mainnet" or "Sepolia Testnet"
+    var isPendingSpend: Bool = false
 
     init(from note: Note, networkId: String) {
         self.id = UUID()

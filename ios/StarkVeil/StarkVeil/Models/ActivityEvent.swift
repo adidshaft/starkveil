@@ -1,0 +1,46 @@
+import Foundation
+import SwiftData
+
+// MARK: - ActivityEvent Kind
+
+enum ActivityKind: String, Codable {
+    case deposit   = "deposit"   // Shielded: incoming from chain
+    case transfer  = "transfer"  // Private transfer to another shielded address
+    case unshield  = "unshield"  // Unshield to a public recipient
+}
+
+// MARK: - ActivityEvent Model
+
+/// A persistent record of every privacy-pool operation the user performed.
+/// Stored independently of the live UTXO set so spent notes don't vanish from history.
+@Model
+final class ActivityEvent {
+    @Attribute(.unique) var id: UUID
+    var kindRaw: String           // ActivityKind.rawValue
+    var amount: String            // human-readable, e.g. "1.5"
+    var assetId: String
+    var counterparty: String      // recipient address (unshield) or shielded memo (transfer)
+    var txHash: String?           // on-chain tx hash, nil until confirmed
+    var timestamp: Date
+    var networkId: String
+
+    init(
+        kind: ActivityKind,
+        amount: String,
+        assetId: String,
+        counterparty: String,
+        txHash: String? = nil,
+        networkId: String
+    ) {
+        self.id = UUID()
+        self.kindRaw = kind.rawValue
+        self.amount = amount
+        self.assetId = assetId
+        self.counterparty = counterparty
+        self.txHash = txHash
+        self.timestamp = Date()
+        self.networkId = networkId
+    }
+
+    var kind: ActivityKind { ActivityKind(rawValue: kindRaw) ?? .deposit }
+}

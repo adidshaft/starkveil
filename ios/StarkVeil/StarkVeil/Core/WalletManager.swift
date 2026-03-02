@@ -33,6 +33,9 @@ class WalletManager: ObservableObject {
     // Derived: sum of note values. Updated by recomputeBalance() after any note change.
     @Published private(set) var balance: Double = 0.0
 
+    // Activity feed — persisted, shown in the Activity tab
+    @Published private(set) var activityEvents: [ActivityEvent] = []
+
     @Published private(set) var isProving: Bool = false
     @Published private(set) var isUnshielding: Bool = false
     @Published private(set) var lastProvedTxHash: String? = nil
@@ -53,6 +56,7 @@ class WalletManager: ObservableObject {
 
     init() {
         loadNotes(for: activeNetworkId)
+        loadEvents(for: activeNetworkId)
     }
 
     func loadNotes(for networkId: String) {
@@ -61,8 +65,56 @@ class WalletManager: ObservableObject {
             predicate: #Predicate { $0.networkId == networkId },
             sortBy: [SortDescriptor(\.createdAt)]
         )
-        notes = (try? ctx.fetch(descriptor))?.map { $0.toNote() } ?? []
+        guard let all = try? ctx.fetch(descriptor) else {
+            notes = []; recomputeBalance(); return
+        }
+
+        let pending = all.filter { $0.isPendingSpend }
+        if !pending.isEmpty {
+            pending.forEach { ctx.delete($0) }
+            do { try ctx.save() }
+            catch { print("[WalletManager] CRITICAL: Could not purge pending-spend notes: \(error)") }
+        }
+
+        notes = all.filter { !$0.isPendingSpend }.map { $0.toNote() }
         recomputeBalance()
+        loadEvents(for: networkId)
+    }
+
+    // MARK: - Event Loading
+
+    func loadEvents(for networkId: String) {
+        let ctx = persistence.context
+        let descriptor = FetchDescriptor<ActivityEvent>(
+            predicate: #Predicate { $0.networkId == networkId },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        activityEvents = (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    @discardableResult
+    private func logEvent(
+        kind: ActivityKind,
+        amount: String,
+        assetId: String,
+        counterparty: String,
+        txHash: String? = nil
+    ) -> ActivityEvent {
+        let ctx = persistence.context
+        let event = ActivityEvent(
+            kind: kind,
+            amount: amount,
+            assetId: assetId,
+            counterparty: counterparty,
+            txHash: txHash,
+            networkId: activeNetworkId
+        )
+        ctx.insert(event)
+        do { try ctx.save() } catch {
+            print("[WalletManager] CRITICAL: Could not save activity event: \(error)")
+        }
+        activityEvents.insert(event, at: 0)
+        return event
     }
 
     // MARK: - Note Management (called by AppCoordinator's SyncEngine pipeline)
@@ -70,7 +122,6 @@ class WalletManager: ObservableObject {
     func addNote(_ note: Note) {
         notes.append(note)
         recomputeBalance()
-        // Persist to SwiftData
         let ctx = persistence.context
         ctx.insert(StoredNote(from: note, networkId: activeNetworkId))
         do {
@@ -78,6 +129,8 @@ class WalletManager: ObservableObject {
         } catch {
             print("[WalletManager] CRITICAL: SwiftData save failed in addNote: \(error)")
         }
+        // Log a deposit event so it appears in the Activity tab
+        logEvent(kind: .deposit, amount: note.value, assetId: note.asset_id, counterparty: "Shielded Deposit")
     }
 
     func clearStore() {
@@ -148,7 +201,7 @@ class WalletManager: ObservableObject {
                 notes.remove(at: memIdx)
             }
             if let dbIdx = remainingStored.firstIndex(where: {
-                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo
+                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo && $0.owner_ivk == inputNote.owner_ivk
             }) {
                 let stored = remainingStored.remove(at: dbIdx)
                 ctx.delete(stored)
@@ -180,6 +233,15 @@ class WalletManager: ObservableObject {
         // Use the first returned nullifier as a proxy tx-hash until real RPC is wired
         lastProvedTxHash = result.nullifiers.first.map { "0x" + String($0.prefix(40)) }
             ?? "0x" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(40)
+
+        // Log the private transfer event
+        logEvent(
+            kind: .transfer,
+            amount: String(format: "%.6f", amount),
+            assetId: inputNotes.first?.asset_id ?? "0xETH",
+            counterparty: String(recipient.prefix(20)) + "…",
+            txHash: lastProvedTxHash
+        )
     }
 
     // MARK: - Unshield (Private → Public)
@@ -216,16 +278,51 @@ class WalletManager: ObservableObject {
             isUnshielding = false
         }
 
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+
+        guard let storedNote = (try? ctx.fetch(desc))?.first(where: {
+            $0.value     == inputNote.value    &&
+            $0.asset_id  == inputNote.asset_id &&
+            $0.memo      == inputNote.memo     &&
+            $0.owner_ivk == inputNote.owner_ivk
+        }) else {
+            throw ProverError.noMatchingNote
+        }
+        storedNote.isPendingSpend = true
+        do {
+            try ctx.save()
+        } catch {
+            print("[WalletManager] CRITICAL: Could not mark note as pending: \(error)")
+            throw error
+        }
+
         // Generate proof off the main actor (Rust FFI blocks the thread)
         let result = try await StarkVeilProver.generateTransferProof(notes: [inputNote])
 
         // Back on main actor — build and submit RPC before local deletion (Audit Bug 1)
         // Format for V1 Invoke __execute__: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data] (Audit Bug 5)
-        let amountU256Low  = String(format: "0x%llx", UInt64(amount * 1e18) & 0xFFFFFFFFFFFFFFFF)
-        let amountU256High = "0x0"
+        let amountWei = amount * 1e18
+        let amountU256Low: String
+        let amountU256High: String
+        if amountWei < Double(UInt64.max) {
+            amountU256Low  = String(format: "0x%llx", UInt64(amountWei))
+            amountU256High = "0x0"
+        } else {
+            let highPart = UInt64(amountWei / Double(UInt64.max))
+            let lowPart  = UInt64(amountWei.truncatingRemainder(dividingBy: Double(UInt64.max)))
+            amountU256Low  = String(format: "0x%llx", lowPart)
+            amountU256High = String(format: "0x%llx", highPart)
+        }
+
         let proofCalldata = result.proof.flatMap { [$0] }
         let nullifier = result.nullifiers.first ?? "0x0"
-        let unshieldSelector = "0x15d40a3d673baee5a4dd5f" // selectors.unshield (Audit Bug 4 fixed)
+        
+        // TODO: Replace with the output of `starkli selector unshield` against your deployed contract.
+        // This value is WRONG — 0x15d40a3d673baee5a4dd5f is 92 bits; a valid Starknet felt is 252 bits.
+        // All unshield transactions will be rejected by the sequencer until this is corrected.
+        let unshieldSelector = "0x__REPLACE_WITH_starkli_selector_unshield__"
         
         var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
         callPayload += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
@@ -255,15 +352,7 @@ class WalletManager: ObservableObject {
             notes.remove(at: memIdx)
         }
         
-        let ctx = persistence.context
-        let netId = activeNetworkId
-        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
-        if let allStored = try? ctx.fetch(desc),
-           let stored = allStored.first(where: {
-               $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo
-           }) {
-            ctx.delete(stored)
-        }
+        ctx.delete(storedNote)
         
         do {
             try ctx.save()
@@ -271,6 +360,15 @@ class WalletManager: ObservableObject {
             print("[WalletManager] CRITICAL: SwiftData save failed in executeUnshield: \(error)")
         }
         recomputeBalance()
+
+        // Log the unshield event
+        logEvent(
+            kind: .unshield,
+            amount: String(format: "%.6f", amount),
+            assetId: inputNote.asset_id,
+            counterparty: String(recipient.prefix(20)) + "…",
+            txHash: txHash
+        )
 
         lastUnshieldTxHash = txHash
     }

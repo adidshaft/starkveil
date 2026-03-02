@@ -141,6 +141,10 @@ class RPCClient {
         senderAddress: String,
         calldata: [String],
         maxFee: String = "0x0",
+        // NOTE: ["0x0", "0x0"] is a placeholder. Katana (local devnet) accepts this.
+        // Production requires: STARK-curve ECDSA signature over the Pedersen hash of the
+        // transaction fields using the account's spending key.
+        // Implement starknet_getNonce + sign(tx_hash, spendingKey) before Sepolia deployment.
         signature: [String] = ["0x0", "0x0"],
         nonce: String = "0x0"
     ) async throws -> String {
