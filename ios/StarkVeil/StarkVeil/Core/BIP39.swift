@@ -125,7 +125,8 @@ enum BIP39 {
         }
 
         let hash = SHA256.hash(data: Data(entropy))
-        let hashByte = hash.first ?? 0
+        var hashIterator = hash.makeIterator()
+        let hashByte = hashIterator.next() ?? 0
         let expectedChecksum = hashByte >> (8 - checksumBits)
         var actualChecksum: UInt8 = 0
         for i in 0..<checksumBits {
@@ -139,7 +140,9 @@ enum BIP39 {
     // MARK: - Private Helpers
 
     private static func mnemonicWords(from entropy: Data) throws -> [String] {
-        let hashByte = SHA256.hash(data: entropy).first ?? 0
+        let hashBytes = SHA256.hash(data: entropy)
+        var hashIterator = hashBytes.makeIterator()
+        let hashByte = hashIterator.next() ?? 0
         let checksumBits = entropy.count * 8 / 32
 
         var bits = [UInt8]()
