@@ -8,12 +8,14 @@ enum ProverError: LocalizedError {
     case transferInProgress
     case invalidAmount
     case insufficientBalance
+    case noMatchingNote
 
     var errorDescription: String? {
         switch self {
         case .transferInProgress:  return "A transfer is already in progress."
         case .invalidAmount:       return "Enter a valid amount greater than zero."
         case .insufficientBalance: return "Insufficient shielded balance."
+        case .noMatchingNote:      return "No single note matches the exact unshield amount. Try the exact note value."
         }
     }
 }
@@ -32,9 +34,11 @@ class WalletManager: ObservableObject {
     @Published private(set) var balance: Double = 0.0
 
     @Published private(set) var isProving: Bool = false
+    @Published private(set) var isUnshielding: Bool = false
     @Published private(set) var lastProvedTxHash: String? = nil
-    // Exposed so VaultView can display it without a separate @State errorMessage
+    @Published private(set) var lastUnshieldTxHash: String? = nil
     @Published var transferError: String? = nil
+    @Published var unshieldError: String? = nil
 
     // Synchronous re-entrancy flag. Only ever read/written on the main actor,
     // so no additional locking is needed.
@@ -160,6 +164,77 @@ class WalletManager: ObservableObject {
         // Use the first returned nullifier as a proxy tx-hash until real RPC is wired
         lastProvedTxHash = result.nullifiers.first.map { "0x" + String($0.prefix(40)) }
             ?? "0x" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(40)
+    }
+
+    // MARK: - Unshield (Private → Public)
+
+    /// Selects a note that exactly matches `amount`, generates a STARK unshield proof,
+    /// removes the note from the UTXO set (in-memory + SwiftData), and submits the
+    /// signed invoke transaction to the Starknet sequencer via RPC.
+    ///
+    /// The proof binds `(amount, asset_id, recipient)` as public inputs — the
+    /// sequencer verifier will reject _any_ modification to those fields.
+    func executeUnshield(
+        recipient: String,
+        amount: Double,
+        rpcUrl: URL,
+        contractAddress: String
+    ) async throws {
+        guard !isTransferInFlight else { throw ProverError.transferInProgress }
+        guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
+        guard amount <= balance else { throw ProverError.insufficientBalance }
+
+        // For unshield we require _exactly_ one matching note so the proof circuit
+        // has a single clean input. Greedy multi-note unshield is a future improvement.
+        guard let inputNote = notes.first(where: { Double($0.value).map { abs($0 - amount) < 1e-9 } ?? false })
+            ?? selectNotes(for: amount).first
+        else { throw ProverError.noMatchingNote }
+
+        isTransferInFlight = true
+        isUnshielding = true
+        lastUnshieldTxHash = nil
+        unshieldError = nil
+
+        defer {
+            isTransferInFlight = false
+            isUnshielding = false
+        }
+
+        // Generate proof off the main actor (Rust FFI blocks the thread)
+        let result = try await StarkVeilProver.generateTransferProof(notes: [inputNote])
+
+        // Back on main actor — remove the spent note
+        notes.removeAll { $0.value == inputNote.value }
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let spentValue = inputNote.value
+        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+        if let allStored = try? ctx.fetch(desc) {
+            for s in allStored where s.value == spentValue { ctx.delete(s) }
+        }
+        try? ctx.save()
+        recomputeBalance()
+
+        // Build calldata for PrivacyPool.unshield(proof, nullifier, recipient, amount, asset)
+        // Format: [selector("unshield"), proof_len, ...proof, nullifier, recipient, amount_low, amount_high, asset_id]
+        let amountU256Low  = String(format: "0x%llx", UInt64(amount * 1e18) & 0xFFFFFFFFFFFFFFFF)
+        let amountU256High = "0x0"
+        let proofCalldata = result.proof.flatMap { [$0] }
+        let nullifier = result.nullifiers.first ?? "0x0"
+        let unshieldSelector = "0x" + String(format: "%llx", 0x15d40a3d673baee5a4dd5f) // selectors.unshield
+        var calldata: [String] = [contractAddress, "0x1", unshieldSelector]
+        calldata.append(contentsOf: [String(proofCalldata.count)] + proofCalldata)
+        calldata += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
+
+        // Submit via RPC — sender is the wallet's own felt252 address (owner_ivk proxies it for now)
+        let senderAddress = inputNote.owner_ivk
+        let txHash = try await RPCClient().addInvokeTransaction(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata
+        )
+
+        lastUnshieldTxHash = txHash
     }
 
     // MARK: - Private Helpers

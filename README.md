@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet via a Zcash-style UTXO model. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs), bringing Zero-Knowledge STARK proof synthesis directly to the `A`-series silicon inside the iPhone via a Rust SDK bridging layer.
 
-**Current status (Phase 9 — Audit Hardened, Phase 10 In Progress):** Full JSON-RPC sync, SwiftData persistence, AES-GCM note decryption, live FFI STARK proving. 5 critical security bugs resolved by second-pass audit. UI matches web prototype. **Next:** Phase 10.1 (BIP-39 seed phrase wallet) and Phase 10.2 (Unshield operation).
+**Current status (Phase 10 Complete):** Full JSON-RPC sync, SwiftData persistence, AES-GCM note decryption, live FFI STARK proving. Features a BIP-39 seed phrase wallet for deterministic key recovery and a complete Private → Public Unshield operation. UI matches web prototype. 5 critical security bugs resolved by second-pass audit.
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -374,7 +374,7 @@ Converts a shielded note back to a public ERC-20 balance. The recipient and amou
 | **IVK key protection** | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | No iCloud backup; no device transfer; no background access |
 | **Per-note key separation** | HKDF-SHA256 with commitment as `info` param | Compromise of one memo key cannot attack any other note |
 | **Foreign note rejection** | AES-GCM authentication tag mismatch → `nil` returned silently | Other users' notes leave zero trace in local state |
-| **IVK recoverability** *(Phase 10.1)* | BIP-39 mnemonic → PBKDF2 → SLIP-0010 HD derivation | IVK reconstructable from recovery phrase on any new device |
-| **Unshield commitment** *(Phase 10.2)* | Proof binds `(amount, asset, recipient)` as public inputs | Proof cannot redirect funds to a different recipient after generation |
+| **IVK recoverability** | BIP-39 mnemonic → PBKDF2 → HMAC/HKDF derivation | IVK reconstruction from recovery phrase on any new device |
+| **Unshield commitment** | Proof binds `(amount, asset, recipient)` as public inputs | Proof cannot redirect funds to a different recipient after generation |
 | **No server trust** | Rust prover statically linked into app binary | Proof generated entirely on-device |
 | **No TEE dependency** | A-series silicon + Rust STARK circuits | Privacy does not rely on Intel SGX or any cloud enclave |

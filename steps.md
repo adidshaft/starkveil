@@ -83,10 +83,12 @@ A second-pass audit of the Phase 9 implementation identified 5 critical bugs:
 - **New files**: `BIP39.swift`, `BIP39Wordlist.swift`, `KeyDerivationEngine.swift`, `MnemonicSetupView.swift`, `WalletImportView.swift`, `WalletOnboardingView.swift`.
 - **Modified files**: `KeychainManager.swift` (seed storage), `StarkVeilApp.swift` (wallet gate).
 
-## Phase 10.2: Unshield Operation — Private → Public (Planned)
-- **Action**: Implement the complete unshield flow wiring `PrivacyPool.unshield()` from the iOS app.
-- **Decision**: The "Receive" button (bottom sheet) will be repurposed as the Unshield entry point. User selects a note, enters a public recipient address, and the app generates an S-Two STARK proof binding `(amount, asset, recipient)` together, then submits via `starknet_addInvokeTransaction`.
-- **Why**: The Cairo contract already has `unshield()` and its ZK verifier path is complete. Without an iOS equivalent, shielded funds are permanently locked once deposited — the wallet is receive-only, defeating its purpose as a full cypherpunk payment instrument.
+## Phase 10.2: Unshield Operation — Private → Public (Completed)
+- **Action**: Implemented the complete unshield flow, wiring the `PrivacyPool.unshield()` capability into the iOS app.
+- **Decision**: Added `executeUnshield()` to `WalletManager` and `starknet_addInvokeTransaction` to `RPCClient`. Built `UnshieldFormView` to collect the recipient address. The app generates an S-Two STARK proof that binds the input note to the `(amount, asset_id, recipient)` public inputs, effectively transferring funds from the shielded pool to a public Starknet L2 address. Wired this flow to the "Receive" button in the `ShieldedBalanceCard`.
+- **Why**: Allows users to "cash out" of the privacy pool by sending funds to an exchange or public wallet without linking their shielded history to the destination address. The UI makes it clear that the recipient address and amount become public during this operation.
+- **New files**: `UnshieldFormView.swift`.
+- **Modified files**: `WalletManager.swift`, `RPCClient.swift`, `ShieldedBalanceCard.swift`, `VaultView.swift`.
 
 ---
 

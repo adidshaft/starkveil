@@ -22,6 +22,9 @@ struct VaultView: View {
     @State private var recipientAddress = ""
     @State private var errorMessage: String? = nil
 
+    // Unshield sheet
+    @State private var showUnshieldSheet = false
+
     var body: some View {
         ZStack(alignment: .bottom) {
             // ── Background ──────────────────────────────────────────
@@ -54,7 +57,8 @@ struct VaultView: View {
                 // Balance card
                 ShieldedBalanceCard(
                     isBalanceVisible: $isBalanceVisible,
-                    showSendSheet: $showSendSheet
+                    showSendSheet: $showSendSheet,
+                    showUnshieldSheet: $showUnshieldSheet
                 )
                 .padding(.bottom, 28)
 
@@ -123,6 +127,12 @@ struct VaultView: View {
             )
             .environmentObject(themeManager)
             .environmentObject(walletManager)
+        }
+        .sheet(isPresented: $showUnshieldSheet) {
+            UnshieldFormView(isPresented: $showUnshieldSheet)
+                .environmentObject(themeManager)
+                .environmentObject(walletManager)
+                .environmentObject(networkManager)
         }
     }
 }

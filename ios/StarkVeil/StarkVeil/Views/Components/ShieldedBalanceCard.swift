@@ -5,6 +5,7 @@ struct ShieldedBalanceCard: View {
     @EnvironmentObject private var walletManager: WalletManager
     @Binding var isBalanceVisible: Bool
     @Binding var showSendSheet: Bool
+    @Binding var showUnshieldSheet: Bool
 
     @State private var impact = UIImpactFeedbackGenerator(style: .medium)
 
@@ -75,7 +76,7 @@ struct ShieldedBalanceCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
 
-                Button(action: {}) {
+                Button(action: { showUnshieldSheet = true }) {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.down")
                             .font(.system(size: 13, weight: .semibold))

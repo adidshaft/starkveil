@@ -86,27 +86,47 @@ class RPCClient {
         return allEvents
     }
     
-    // MARK: - HTTP Engine
-    
-    private func performRequest<T: Encodable, U: Decodable>(url: URL, payload: T) async throws -> U {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let encoder = JSONEncoder()
-        request.httpBody = try encoder.encode(payload)
-        
-        let (data, urlResponse) = try await urlSession.data(for: request)
-        
-        guard let httpRes = urlResponse as? HTTPURLResponse else {
-            throw RPCClientError.invalidResponse
+    // MARK: - starknet_addInvokeTransaction
+
+    /// Struct matching the Starknet JSON-RPC `INVOKE_TXN_V1` spec.
+    struct InvokeTransaction: Encodable {
+        let type: String = "INVOKE"
+        let sender_address: String
+        let calldata: [String]
+        let max_fee: String
+        let version: String = "0x1"
+        let signature: [String]
+        let nonce: String
+    }
+
+    /// Submits a signed invoke transaction to the Starknet sequencer.
+    /// Returns the transaction hash on success.
+    @discardableResult
+    func addInvokeTransaction(
+        rpcUrl: URL,
+        senderAddress: String,
+        calldata: [String],
+        maxFee: String = "0x0",
+        signature: [String] = [],
+        nonce: String = "0x0"
+    ) async throws -> String {
+        struct Params: Encodable {
+            let invoke_transaction: InvokeTransaction
         }
-        
-        guard (200...299).contains(httpRes.statusCode) else {
-            throw RPCClientError.httpError(statusCode: httpRes.statusCode)
+        let tx = InvokeTransaction(
+            sender_address: senderAddress,
+            calldata: calldata,
+            max_fee: maxFee,
+            signature: signature,
+            nonce: nonce
+        )
+        let payload = RPCRequest(method: "starknet_addInvokeTransaction", params: Params(invoke_transaction: tx))
+        struct TxResult: Decodable { let transaction_hash: String }
+        let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
         }
-        
-        let decoder = JSONDecoder()
-        return try decoder.decode(U.self, from: data)
+        guard let result = response.result else { throw RPCClientError.invalidResponse }
+        return result.transaction_hash
     }
 }
