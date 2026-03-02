@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet via a Zcash-style UTXO model. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs), bringing Zero-Knowledge STARK proof synthesis directly to the `A`-series silicon inside the iPhone via a Rust SDK bridging layer.
 
-**Current status (Phase 10 Complete):** Full JSON-RPC sync, SwiftData persistence, AES-GCM note decryption, live FFI STARK proving. Features a BIP-39 seed phrase wallet for deterministic key recovery and a complete Private → Public Unshield operation. UI matches web prototype. 5 critical security bugs resolved by second-pass audit.
+**Current status (Phase 10 Complete — 10.1 BIP-39 Wallet · 10.2 Unshield · 10.3 Typed Activity Feed):** Full JSON-RPC sync, SwiftData UTXO + Event persistence, AES-GCM note decryption, live FFI STARK proving, BIP-39 mnemonic generation and recovery, complete Deposit → Private Transfer → Unshield privacy loop, and a persistent colour-coded Activity Feed. 14 critical/high bugs resolved across three audit passes. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.

@@ -90,13 +90,28 @@ A second-pass audit of the Phase 9 implementation identified 5 critical bugs:
 - **New files**: `UnshieldFormView.swift`.
 - **Modified files**: `WalletManager.swift`, `RPCClient.swift`, `ShieldedBalanceCard.swift`, `VaultView.swift`.
 
+## Phase 10.3: Activity Feed — Typed, Persistent Event Log (Completed)
+- **Action**: Introduced a first-class `ActivityEvent` SwiftData model and rebuilt the `ActivityTabView` to show a typed, persistent history of all privacy-pool operations.
+- **Decision**: Created `ActivityEvent.swift` with `ActivityKind` enum (`deposit`, `transfer`, `unshield`). Registered the model in `PersistenceController`. Added `logEvent()` to `WalletManager`, called on `addNote` (deposit), `executePrivateTransfer`, and `executeUnshield`. Rebuilt `ActivityTabView`/`ActivityRowView` to render typed rows with colour-coded icons (green deposit, neutral transfer, amber unshield), counterparty address, relative timestamp, and optional tx-hash badge.
+- **Why**: Without a typed history, the UI only showed the live UTXO set. Spent notes would vanish from the Activity tab, making it impossible to audit past transactions. The event log outlives the UTXO set.
+- **New files**: `ActivityEvent.swift`.
+- **Modified files**: `ActivityTabView.swift`, `WalletManager.swift`, `PersistenceController.swift`.
+
 ---
 
 ## Current State of the Product
-StarkVeil is fully engineered through Phase 9 (second-pass security audit complete).
+StarkVeil is fully engineered through Phase 10 (BIP-39 wallet, Unshield operation, typed Activity feed).
 1. The **Smart Contracts** compile and are deployed to Sepolia Testnet (`PrivacyPool` at `0x74b2fe0e…`).
 2. The **Rust Prover SDK** outputs a universal `StarkVeilProver.xcframework` for physical iOS devices.
-3. The **SwiftUI Application** UI is visually identical to the web prototype: Splash Screen, avatar header, eye-toggle balance card, Assets/Activity tabs, bottom navigation, live STARK Proof overlay.
-4. **Phase 9 backend**: SwiftData UTXO persistence (scoped by networkId), AES-GCM note decryption with Keychain-protected IVK, real JSON-RPC sync engine polling Starknet, and end-to-end FFI STARK proof generation.
-5. **Audit hardened**: 5 critical bugs resolved (SwiftData context singleton, clearStore ordering, spent-note disk sync, Keychain IVK fallback, checkpoint dead code).
+3. The **SwiftUI Application** UI is visually identical to the web prototype, with a fully operational Privacy Suite: Deposit (Shield), Private Transfer, and Unshield.
+4. **Phase 10 complete**: BIP-39 mnemonic generation and recovery, PBKDF2+HKDF key derivation, typed Activity feed, and 9 security audit bugs resolved.
+5. **Audit hardened**: 14 critical/high/medium bugs resolved across Phases 8, 9, and 10 (SwiftData context singleton, clearStore ordering, spent-note disk sync, Keychain IVK fallback, unshield UTXO ordering, calldata layout, mnemonic memory wipe, and more).
+
+## Next Steps: End-to-End Sepolia Testing
+1. **Run** Katana or connect to Sepolia RPC.
+2. **Launch** the app on device — go through BIP-39 wallet creation.
+3. **Shield** funds by calling the `PrivacyPool.shield()` Cairo function externally — the `SyncEngine` will pick up the event.
+4. **Verify** the note appears in the Assets tab and the Activity tab shows a green Deposit row.
+5. **Send** a private transfer — verify the Activity tab shows a blue Transfer row and the balance updates.
+6. **Unshield** to a public address — verify the Activity tab shows an amber Unshield row with the tx hash.
 6. **Next**: Phase 10.1 (BIP-39 seed phrase wallet) and Phase 10.2 (Unshield operation).

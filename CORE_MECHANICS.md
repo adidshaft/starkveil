@@ -138,6 +138,7 @@ Complete the three-operation privacy suite with the outbound path.
 - **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing across app restarts without duplicate note emission.
 - **Private Transfer Proof**: STARK circuit asserting: (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, (3) nullifiers derive from spending keys owning the inputs.
 - **Unshield Proof**: STARK circuit binding `(amount, asset, recipient)` as public inputs. Proves note ownership and unspent status, authorizes ERC-20 release to a named public recipient.
+- **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so the Activity tab retains history even after notes are spent.
 - **`PersistenceController`**: SwiftData `ModelContainer` singleton. Holds a single shared `ModelContext` (not a computed property — inserts and fetches share the same context to remain visible to each other).
 - **`SyncCheckpoint` ordering invariant**: On network switch — `clearStore(old)` runs first, then `activeNetworkId` is updated, then `loadNotes(new)`. This ordering is mandatory to avoid deleting the wrong network's records.
 
