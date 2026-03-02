@@ -1,70 +1,88 @@
 import Foundation
 import Security
 
-/// Thin, zero-dependency wrapper around iOS Keychain Services.
-/// Stores and retrieves the user's 32-byte Incoming Viewing Key (IVK)
-/// used to decrypt shielded note memos from Starknet event payloads.
+/// Keychain wrapper for StarkVeil.
+/// Stores two items:
+///   - Master seed (64 bytes): the PBKDF2 output from the BIP-39 mnemonic. All other keys
+///     are re-derived from this on demand. Never stored in plaintext anywhere else.
+///   - IVK cache (32 bytes): cached derivation of the IVK, re-written after any seed change.
 ///
 /// Security model:
 /// - `kSecAttrAccessible = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
-///   ensures the IVK is only accessible after the first unlock (never in background),
-///   cannot be backed up to iCloud or transferred to another device.
-/// - The IVK is a symmetric secret that does NOT allow spending — only decryption.
-///   The spending key remains in the Secure Enclave (future phase).
+///   denies iCloud backup and cross-device transfer.
+/// - The mnemonic itself is NEVER stored — only the 64-byte derived seed.
+/// - IVK and spending key are re-derived on demand from the seed via KeyDerivationEngine.
 enum KeychainManager {
-    private static let serviceKey = "io.starkveil.owner_ivk"
-    private static let accountKey = "default"
 
-    /// Returns the existing IVK from Keychain, or generates and stores a fresh one.
-    static func ownerIVK() -> Data {
-        if let existing = load() { return existing }
-        let fresh = freshIVK()
-        do {
-            try store(fresh)
-        } catch {
-            // If the Keychain write fails the IVK will not survive relaunch — the next
-            // cold start will generate a different IVK, making all notes encrypted with
-            // this one permanently undecryptable. Crash loudly in debug so this is caught
-            // during development; log loudly in production so it surfaces in crash reports.
-            assertionFailure("[KeychainManager] Keychain write failed: \(error). IVK will not persist — encrypted notes will be undecryptable after relaunch.")
-            print("[KeychainManager] CRITICAL: Keychain write failed: \(error)")
+    // MARK: - Keys
+
+    private static let service = "io.starkveil"
+
+    private enum Account: String {
+        case masterSeed = "master_seed"
+    }
+
+    // MARK: - Public API
+
+    /// True if a master seed is already stored (wallet has been set up).
+    static var hasWallet: Bool {
+        load(account: .masterSeed) != nil
+    }
+
+    /// Stores the master seed (64-byte PBKDF2 output) derived from the user's mnemonic.
+    /// Overwrites any previously stored seed.
+    static func storeMasterSeed(_ seed: Data) throws {
+        try store(seed, account: .masterSeed)
+    }
+
+    /// Loads the stored master seed and derives the IVK on demand.
+    /// Returns `nil` if no wallet has been set up yet.
+    static func ownerIVK() -> Data? {
+        guard let seed = load(account: .masterSeed) else { return nil }
+        return KeyDerivationEngine.ivk(fromMasterSeed: seed)
+    }
+
+    /// Returns the raw master seed for key re-derivation (e.g. spending key).
+    static func masterSeed() -> Data? {
+        load(account: .masterSeed)
+    }
+
+    /// Wipes all StarkVeil Keychain items (used during wallet reset / re-import).
+    static func deleteWallet() {
+        let accounts: [Account] = [.masterSeed]
+        for account in accounts {
+            let query: [CFString: Any] = [
+                kSecClass: kSecClassGenericPassword,
+                kSecAttrService: service,
+                kSecAttrAccount: account.rawValue
+            ]
+            SecItemDelete(query as CFDictionary)
         }
-        return fresh
     }
 
-    private static func freshIVK() -> Data {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        // SecRandomCopyBytes failure means the OS's RNG is broken. A predictable
-        // fallback key (e.g. 0xAB * 32) would be trivially guessable and would silently
-        // decrypt all shielded notes for any attacker who knows the fallback. Crash instead.
-        precondition(
-            status == errSecSuccess,
-            "[KeychainManager] SecRandomCopyBytes failed with status \(status). System RNG unavailable — cannot generate a safe IVK."
-        )
-        return Data(bytes)
-    }
+    // MARK: - Private Helpers
 
-    private static func store(_ data: Data) throws {
+    private static func store(_ data: Data, account: Account) throws {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
-            kSecAttrService: serviceKey,
-            kSecAttrAccount: accountKey,
+            kSecAttrService: service,
+            kSecAttrAccount: account.rawValue,
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         SecItemDelete(query as CFDictionary)
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Keychain write failed for '\(account.rawValue)'. Status: \(status)."])
         }
     }
 
-    private static func load() -> Data? {
+    private static func load(account: Account) -> Data? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
-            kSecAttrService: serviceKey,
-            kSecAttrAccount: accountKey,
+            kSecAttrService: service,
+            kSecAttrAccount: account.rawValue,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne
         ]

@@ -72,20 +72,26 @@ class AppCoordinator: ObservableObject {
 @main
 struct StarkVeilApp: App {
     @StateObject private var coordinator = AppCoordinator()
+    @State private var isWalletSetUp = KeychainManager.hasWallet
 
     var body: some Scene {
         WindowGroup {
-            VaultView()
+            if isWalletSetUp {
+                VaultView()
+                    .environmentObject(coordinator.themeManager)
+                    .environmentObject(coordinator.networkManager)
+                    .environmentObject(coordinator.walletManager)
+                    .environmentObject(coordinator.syncEngine)
+                    .transition(.opacity)
+            } else {
+                WalletOnboardingView {
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        isWalletSetUp = true
+                    }
+                }
                 .environmentObject(coordinator.themeManager)
-                .environmentObject(coordinator.networkManager)
-                .environmentObject(coordinator.walletManager)
-                .environmentObject(coordinator.syncEngine)
-            // NOTE: .preferredColorScheme is NOT applied here.
-            // StarkVeilApp observes coordinator (AppCoordinator), which has no @Published
-            // properties — so this body never re-evaluates on theme changes. Applying
-            // .preferredColorScheme here would read .dark once at launch and freeze it.
-            // The modifier lives in VaultView instead, where @EnvironmentObject themeManager
-            // IS observed and triggers correct re-evaluation on every toggle.
+                .transition(.opacity)
+            }
         }
     }
 }
