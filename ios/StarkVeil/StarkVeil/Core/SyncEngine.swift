@@ -186,8 +186,12 @@ class SyncEngine: ObservableObject {
                             continue
                         }
 
+                        // Drop zero-value events — a zero amount cannot be spent and would
+                        // inflate the displayed balance with phantom UTXO notes. (C-NEW-1)
+                        guard amountDouble > 0 else { continue }
+
                         let note = Note(
-                            value: String(format: "%.9f", amountDouble > 0 ? amountDouble : Double.random(in: 0.1...5.0)),
+                            value: String(format: "%.9f", amountDouble),
                             asset_id: "0xSTRK",
                             owner_ivk: ivkHex,
                             memo: "Shielded: \(commitment.prefix(10))…"

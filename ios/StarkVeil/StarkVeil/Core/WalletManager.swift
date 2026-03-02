@@ -125,6 +125,18 @@ class WalletManager: ObservableObject {
     // MARK: - Note Management (called by AppCoordinator's SyncEngine pipeline)
 
     func addNote(_ note: Note) {
+        // C-NEW-2: deduplication guard — prevents phantom UTXOs from SyncEngine
+        // re-scanning already-credited blocks after a cold restart.
+        let isDuplicate = notes.contains {
+            $0.value == note.value &&
+            $0.asset_id == note.asset_id &&
+            $0.owner_ivk == note.owner_ivk &&
+            $0.memo == note.memo
+        }
+        guard !isDuplicate else {
+            print("[WalletManager] Duplicate note ignored (memo: \(note.memo.prefix(20)))")
+            return
+        }
         notes.append(note)
         recomputeBalance()
         let ctx = persistence.context
@@ -168,16 +180,17 @@ class WalletManager: ObservableObject {
         activityEvents.removeAll()
         recomputeBalance()
         let ctx = persistence.context
-        // Wipe all StoredNotes across ALL networks
-        if let allNotes = try? ctx.fetch(FetchDescriptor<StoredNote>()) {
-            allNotes.forEach { ctx.delete($0) }
-        }
-        // Wipe all ActivityEvents across ALL networks
-        if let allEvents = try? ctx.fetch(FetchDescriptor<ActivityEvent>()) {
+        // L-WIPE-SILENT fix: use proper do-catch so a fetch failure is not silently swallowed,
+        // leaving stale notes/events visible on next launch despite Keychain being wiped.
+        do {
+            let allNotes  = try ctx.fetch(FetchDescriptor<StoredNote>())
+            let allEvents = try ctx.fetch(FetchDescriptor<ActivityEvent>())
+            allNotes.forEach  { ctx.delete($0) }
             allEvents.forEach { ctx.delete($0) }
+            try ctx.save()
+        } catch {
+            print("[WalletManager] CRITICAL: deleteAllNetworksData SwiftData wipe failed: \(error). Manual clear required.")
         }
-        do { try ctx.save() }
-        catch { print("[WalletManager] CRITICAL: deleteAllNetworksData save failed: \(error)") }
     }
 
     /// Deletes all ActivityEvent records for the active network from SwiftData and clears the in-memory array.
@@ -472,15 +485,20 @@ class WalletManager: ObservableObject {
 
 
         // Build calldata for PrivacyPool.shield(amount_low, amount_high, commitment_key)
+        // M-SHIELD-AMOUNT fix: use same u256 split as executeUnshield to avoid silent cap
+        // at ~18.44 STRK (UInt64.max wei). Amounts > 18.44 STRK now encode correctly.
         let amountWei = amount * 1e18
-        let safeAmountWei: UInt64
-        if amountWei > Double(UInt64.max) {
-            safeAmountWei = UInt64.max
+        let amountLow: String
+        let amountHigh: String
+        if amountWei < Double(UInt64.max) {
+            amountLow  = String(format: "0x%llx", UInt64(amountWei))
+            amountHigh = "0x0"
         } else {
-            safeAmountWei = UInt64(amountWei)
+            let hi = UInt64(amountWei / Double(UInt64.max))
+            let lo = UInt64(amountWei.truncatingRemainder(dividingBy: Double(UInt64.max)))
+            amountLow  = String(format: "0x%llx", lo)
+            amountHigh = String(format: "0x%llx", hi)
         }
-        let amountLow  = String(format: "0x%llx", safeAmountWei)
-        let amountHigh = "0x0"
 
         // H1 fix: Do NOT send raw IVK in calldata — it links all deposits on-chain.
         // Instead derive a one-time commitment key: Poseidon(ivk || nonce).

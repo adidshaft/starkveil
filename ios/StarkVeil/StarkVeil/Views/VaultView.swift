@@ -18,12 +18,6 @@ struct VaultView: View {
     @State private var vaultTab: VaultTab = .assets
     @State private var bottomTab: BottomNavTab = .wallet
 
-    // Send sheet
-    @State private var showSendSheet = false
-    @State private var transferAmount = ""
-    @State private var recipientAddress = ""
-    @State private var errorMessage: String? = nil
-
     // Transaction sheets
     @State private var showSendSheet     = false
     @State private var showUnshieldSheet = false

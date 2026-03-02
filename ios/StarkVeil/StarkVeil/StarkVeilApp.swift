@@ -110,9 +110,11 @@ struct StarkVeilApp: App {
 
 /// Blocks access to the wallet until local authentication passes.
 /// Only shown when the user has enabled Biometric Lock in Settings.
-/// H2 fix: Previously the toggle was purely decorative — now it actually gates the UI.
+/// H2 fix: Toggle now actually gates the UI.
+/// H-LOCK fix: Re-arms lock whenever the app enters background.
 private struct BiometricGateView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
+    @Environment(\.scenePhase) private var scenePhase
     let appSettings: AppSettings
     let onWalletDeleted: () -> Void
 
@@ -122,6 +124,12 @@ private struct BiometricGateView: View {
     var body: some View {
         if !appSettings.isBiometricLockEnabled || isAuthenticated {
             VaultView(onWalletDeleted: onWalletDeleted)
+                // H-LOCK: re-arm the gate whenever the app is backgrounded
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background, appSettings.isBiometricLockEnabled {
+                        isAuthenticated = false
+                    }
+                }
         } else {
             lockScreen
                 .onAppear(perform: authenticate)
@@ -146,8 +154,10 @@ private struct BiometricGateView: View {
                         .padding(.horizontal, 40)
                 }
                 Button(action: authenticate) {
+                    // L-FACEID-ICON: show the correct icon for the device's biometry type
+                    let context = LAContext()
                     HStack(spacing: 8) {
-                        Image(systemName: "faceid")
+                        Image(systemName: context.biometryType == .touchID ? "touchid" : "faceid")
                         Text("Unlock with Biometrics")
                     }
                     .font(.system(size: 16, weight: .semibold))
@@ -165,8 +175,9 @@ private struct BiometricGateView: View {
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            // Device has no biometrics/passcode — let through
-            isAuthenticated = true
+            // L-NO-PASSCODE-MSG: warn user instead of silently unlocking
+            authError = "No device passcode or biometrics are configured. Set a passcode in iOS Settings to enable wallet lock."
+            isAuthenticated = true   // cannot block — no auth mechanism available
             return
         }
         context.evaluatePolicy(
