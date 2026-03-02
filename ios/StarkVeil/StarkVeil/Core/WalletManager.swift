@@ -46,6 +46,18 @@ class WalletManager: ObservableObject {
         recomputeBalance()
     }
 
+    func clearStore() {
+        // If a proof is in-flight, surface an error immediately so the UI stops spinning.
+        // The async executePrivateTransfer task continues to completion (Rust FFI cannot be
+        // cancelled mid-proof), but its defer block will clear isTransferInFlight/isProving,
+        // and its post-await note mutations are no-ops on an already-empty store.
+        if isTransferInFlight {
+            transferError = "Transfer cancelled: network was switched mid-proof."
+        }
+        notes.removeAll()
+        recomputeBalance()
+    }
+
     private func recomputeBalance() {
         balance = notes.compactMap { Double($0.value) }.reduce(0, +)
     }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct VaultHeaderView: View {
     @EnvironmentObject private var syncEngine: SyncEngine
+    @EnvironmentObject private var networkManager: NetworkManager
     @State private var isBreathing = false
 
     var body: some View {
@@ -48,6 +49,27 @@ struct VaultHeaderView: View {
                     .foregroundStyle(Color(white: 0.6))
             }
             .drawingGroup()
+
+            // Network Switcher
+            Menu {
+                Picker("Network", selection: $networkManager.activeNetwork) {
+                    ForEach(NetworkEnvironment.allCases) { env in
+                        Text(env.rawValue).tag(env)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(networkManager.activeNetwork.rawValue)
+                        .font(.caption2.bold())
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.1))
+                .clipShape(Capsule())
+                .foregroundStyle(.white)
+            }
         }
         .padding(.horizontal)
         .onAppear {

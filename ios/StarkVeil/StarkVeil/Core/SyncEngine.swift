@@ -8,10 +8,29 @@ class SyncEngine: ObservableObject {
     /// Emits a Note each time the light client detects a new shielded deposit.
     /// AppCoordinator subscribes and forwards these into WalletManager.addNote(_:).
     let noteDetected = PassthroughSubject<Note, Never>()
+    let networkChanged = PassthroughSubject<Void, Never>()
 
     private var timer: Timer?
+    private var networkCancellable: AnyCancellable?
+    private let networkManager: NetworkManager
 
     // MARK: - Lifecycle
+
+    init(networkManager: NetworkManager) {
+        self.networkManager = networkManager
+        
+        // Listen for network changes to reset sync state.
+        // .receive(on: RunLoop.main) is required: @Published delivers on the mutating thread,
+        // and handleNetworkChange() calls stopSyncing() which has a dispatchPrecondition(.onQueue(.main)).
+        // Without this hop, any off-main mutation of activeNetwork would crash via that precondition.
+        networkCancellable = networkManager.$activeNetwork
+            .dropFirst() // Ignore the initial value on setup
+            .receive(on: RunLoop.main)
+            .sink { [weak self] newNetwork in
+                print("[SyncEngine] Network switched to: \(newNetwork.rawValue)")
+                self?.handleNetworkChange()
+            }
+    }
 
     func startSyncing() {
         // Document the calling-thread contract loudly so future refactors don't silently break it.
@@ -37,6 +56,22 @@ class SyncEngine: ObservableObject {
         isSyncing = false
     }
 
+    private func handleNetworkChange() {
+        // Stop current syncing immediately
+        if isSyncing {
+            stopSyncing()
+        }
+        
+        // Reset block height
+        currentBlockNumber = 0
+        
+        // Notify subscribers (like WalletManager) to flush their UTXOs
+        networkChanged.send()
+        
+        // Restart on new network
+        startSyncing()
+    }
+
     // MARK: - Private
 
     /// Fires on the main thread (scheduled on RunLoop.main).
@@ -54,7 +89,7 @@ class SyncEngine: ObservableObject {
                 memo: "auto-shield"
             )
             noteDetected.send(note)
-            print("[SyncEngine] Block \(currentBlockNumber): detected deposit, emitting note (\(note.value) ETH)")
+            print("[SyncEngine] Block \(currentBlockNumber) [\(networkManager.activeNetwork.rawValue)]: detected deposit, emitting note (\(note.value) ETH)")
         }
     }
 }

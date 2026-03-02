@@ -11,12 +11,16 @@ import Combine
 //   • Child views get both objects via environmentObject injection.
 
 class AppCoordinator: ObservableObject {
+    let networkManager = NetworkManager()
     let walletManager = WalletManager()
-    let syncEngine = SyncEngine()
+    let syncEngine: SyncEngine
 
     private var notePipeline: AnyCancellable?
+    private var networkPipeline: AnyCancellable?
 
     init() {
+        // Initialize SyncEngine with the shared NetworkManager
+        self.syncEngine = SyncEngine(networkManager: networkManager)
         // SyncEngine fires noteDetected on the main thread (RunLoop.main timer).
         // We receive on RunLoop.main to make that guarantee explicit, then forward
         // into walletManager.addNote which is isolated to @MainActor.
@@ -26,6 +30,23 @@ class AppCoordinator: ObservableObject {
                 guard let self else { return }
                 Task { @MainActor in
                     self.walletManager.addNote(note)
+                }
+            }
+            
+        // When the network changes, we must flush the WalletManager so balances from
+        // Mainnet don't show up on Sepolia, etc.
+        //
+        // ORDERING CONTRACT: networkChanged is fired by SyncEngine.handleNetworkChange()
+        // synchronously, between stopSyncing() and startSyncing(). clearStore() must
+        // complete before startSyncing() arms the timer so no new-network notes can
+        // land in the old UTXO set. Task { @MainActor in } is async and breaks this
+        // ordering. MainActor.assumeIsolated is safe here because .receive(on: RunLoop.main)
+        // guarantees we are already executing on the main actor.
+        networkPipeline = syncEngine.networkChanged
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.walletManager.clearStore()
                 }
             }
     }
@@ -40,6 +61,7 @@ struct StarkVeilApp: App {
     var body: some Scene {
         WindowGroup {
             VaultView()
+                .environmentObject(coordinator.networkManager)
                 .environmentObject(coordinator.walletManager)
                 .environmentObject(coordinator.syncEngine)
         }
