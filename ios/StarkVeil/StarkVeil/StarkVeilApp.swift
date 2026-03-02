@@ -66,7 +66,12 @@ struct StarkVeilApp: App {
                 .environmentObject(coordinator.networkManager)
                 .environmentObject(coordinator.walletManager)
                 .environmentObject(coordinator.syncEngine)
-                .preferredColorScheme(coordinator.themeManager.colorScheme)
+            // NOTE: .preferredColorScheme is NOT applied here.
+            // StarkVeilApp observes coordinator (AppCoordinator), which has no @Published
+            // properties — so this body never re-evaluates on theme changes. Applying
+            // .preferredColorScheme here would read .dark once at launch and freeze it.
+            // The modifier lives in VaultView instead, where @EnvironmentObject themeManager
+            // IS observed and triggers correct re-evaluation on every toggle.
         }
     }
 }

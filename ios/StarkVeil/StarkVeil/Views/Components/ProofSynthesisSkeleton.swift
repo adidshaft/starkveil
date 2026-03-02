@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ProofSynthesisSkeleton: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
     @State private var rotation: Double = 0.0
     @State private var pulse: CGFloat = 1.0
 
@@ -39,11 +40,11 @@ struct ProofSynthesisSkeleton: View {
 
             Text("Synthesizing STARK Proof…")
                 .font(.headline.monospaced())
-                .foregroundStyle(.white)
+                .foregroundStyle(themeManager.textPrimary)
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(Color(white: 0.1))
+        .background(themeManager.surface1)
         // clipShape with .continuous matches the superellipse used in ShieldedBalanceCard
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         // Electric purple stroke — .continuous matches the background clip shape
