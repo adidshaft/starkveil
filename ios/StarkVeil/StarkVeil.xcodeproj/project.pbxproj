@@ -6,7 +6,9 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
 		5C2D834F2C904F231334051A /* StarkVeilProver.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C20017E841B20A3917E22340 /* StarkVeilProver.xcframework */; };
+/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		ABF20A642F54CB82009C7826 /* StarkVeil.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StarkVeil.app; sourceTree = BUILT_PRODUCTS_DIR; };

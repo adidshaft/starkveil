@@ -7,65 +7,71 @@ struct VaultHeaderView: View {
     @State private var isBreathing = false
 
     var body: some View {
-        HStack {
-            // Branded Typography
-            Text("StarkVeil")
-                .font(.custom("SpaceGrotesk-Bold", size: 28, relativeTo: .title))
-                .foregroundStyle(themeManager.textPrimary)
-                .tracking(1.2)
+        HStack(spacing: 12) {
+            // Avatar circle (user-ninja equivalent)
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [themeManager.surface2, themeManager.surface1],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 44, height: 44)
+                    .overlay(Circle().stroke(themeManager.surface2, lineWidth: 1))
+                Image(systemName: "person.fill.viewfinder")
+                    .font(.system(size: 18))
+                    .foregroundStyle(themeManager.textSecondary)
+            }
+
+            // StarkNet ID + Shielded status pill
+            VStack(alignment: .leading, spacing: 2) {
+                Text("anon.stark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(themeManager.textPrimary)
+                    .tracking(0.5)
+
+                // Syncing indicator as a pill badge
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(syncEngine.isSyncing ? Color.green : Color(hex: "#8A8885"))
+                        .frame(width: 6, height: 6)
+                        .scaleEffect(isBreathing ? 1.2 : 0.9)
+                        .animation(
+                            syncEngine.isSyncing ? .easeInOut(duration: 1.4).repeatForever(autoreverses: true) : .none,
+                            value: isBreathing
+                        )
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 9))
+                    Text(syncEngine.isSyncing ? "Shielded" : "Offline")
+                        .font(.system(size: 11))
+                }
+                .foregroundStyle(themeManager.bgColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(syncEngine.isSyncing ? themeManager.textPrimary : themeManager.textSecondary)
+                .clipShape(Capsule())
+            }
+            .onChange(of: syncEngine.isSyncing) { _, isSyncing in
+                isBreathing = false
+                if isSyncing { Task { @MainActor in isBreathing = true } }
+            }
 
             Spacer()
 
-            // Sync Status Indicator (Breathing Animation)
-            // drawingGroup() promotes to a single GPU layer — avoids per-frame CPU compositing
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(syncEngine.isSyncing ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                    .shadow(
-                        color: syncEngine.isSyncing ? Color.green.opacity(0.8) : Color.red.opacity(0.8),
-                        radius: isBreathing ? 6 : 2
-                    )
-                    .scaleEffect(isBreathing ? 1.2 : 0.8)
-                    // value: isBreathing is the correct pivot — the state that actually
-                    // toggles triggers the animation. .none suppresses motion when offline.
-                    .animation(
-                        syncEngine.isSyncing
-                            ? .easeInOut(duration: 1.5).repeatForever(autoreverses: true)
-                            : .none,
-                        value: isBreathing
-                    )
-                    .onChange(of: syncEngine.isSyncing) { _, isSyncing in
-                        // Reset first so SwiftUI sees a false → true (or true → false) transition.
-                        isBreathing = false
-                        if isSyncing {
-                            // One-frame delay gives SwiftUI time to commit the false state
-                            // before we drive it back to true, re-triggering the animation.
-                            Task { @MainActor in isBreathing = true }
-                        }
-                    }
-
-                Text(syncEngine.isSyncing ? "Syncing…" : "Offline")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(themeManager.textSecondary)
+            // Theme toggle (moon/sun icon button)
+            Button(action: { themeManager.toggleTheme() }) {
+                Image(systemName: themeManager.isDarkMode ? "sun.max.fill" : "moon.fill")
+                    .font(.system(size: 15))
+                    .frame(width: 44, height: 44)
+                    .background(themeManager.surface2)
+                    .foregroundStyle(themeManager.textPrimary)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(themeManager.surface2.opacity(0.8), lineWidth: 1))
             }
-            .drawingGroup()
 
-            // Prototype Tool Buttons (Theme)
-            HStack(spacing: 8) {
-                Button(action: { themeManager.toggleTheme() }) {
-                    Image(systemName: themeManager.isDarkMode ? "sun.max.fill" : "moon.fill")
-                        .font(.system(size: 14))
-                        .frame(width: 32, height: 32)
-                        .background(themeManager.surface2)
-                        .foregroundStyle(themeManager.textPrimary)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(themeManager.surface1, lineWidth: 1))
-                }
-            }
-            .padding(.leading, 8)
-
-            // Network Switcher
+            // Network switcher (QR-code/grid icon equivalent)
             Menu {
                 Picker("Network", selection: $networkManager.activeNetwork) {
                     ForEach(NetworkEnvironment.allCases) { env in
@@ -73,28 +79,22 @@ struct VaultHeaderView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
-                    Text(networkManager.activeNetwork.rawValue)
-                        .font(.caption2.bold())
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8, weight: .bold))
+                Group {
+                    if networkManager.activeNetwork == .sepolia {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                    } else {
+                        Image(systemName: "network")
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .font(.system(size: 15))
+                .frame(width: 44, height: 44)
                 .background(themeManager.surface2)
-                .clipShape(Capsule())
                 .foregroundStyle(themeManager.textPrimary)
-                .overlay(Capsule().stroke(themeManager.surface1, lineWidth: 1))
+                .clipShape(Circle())
+                .overlay(Circle().stroke(themeManager.surface2.opacity(0.8), lineWidth: 1))
             }
         }
-        .padding(.horizontal)
-        .onAppear {
-            // Only breathe if we're already syncing on mount
-            if syncEngine.isSyncing { isBreathing = true }
-        }
-        .onDisappear {
-            // Reset so onAppear fires the false→true transition correctly on re-mount
-            isBreathing = false
-        }
+        .padding(.horizontal, 20)
+        .onAppear { if syncEngine.isSyncing { isBreathing = true } }
     }
 }

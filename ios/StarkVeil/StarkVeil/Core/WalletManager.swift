@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SwiftData
 
 // MARK: - Domain Errors
 
@@ -39,23 +40,52 @@ class WalletManager: ObservableObject {
     // so no additional locking is needed.
     private var isTransferInFlight = false
 
+    // Persistence
+    private let persistence = PersistenceController.shared
+    // Set by AppCoordinator whenever the active network changes.
+    var activeNetworkId: String = NetworkEnvironment.sepolia.rawValue
+
+    // MARK: - Bootstrap (load from disk on init)
+
+    init() {
+        loadNotes(for: activeNetworkId)
+    }
+
+    func loadNotes(for networkId: String) {
+        let ctx = persistence.context
+        let descriptor = FetchDescriptor<StoredNote>(
+            predicate: #Predicate { $0.networkId == networkId },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        notes = (try? ctx.fetch(descriptor))?.map { $0.toNote() } ?? []
+        recomputeBalance()
+    }
+
     // MARK: - Note Management (called by AppCoordinator's SyncEngine pipeline)
 
     func addNote(_ note: Note) {
         notes.append(note)
         recomputeBalance()
+        // Persist to SwiftData
+        let ctx = persistence.context
+        ctx.insert(StoredNote(from: note, networkId: activeNetworkId))
+        try? ctx.save()
     }
 
     func clearStore() {
-        // If a proof is in-flight, surface an error immediately so the UI stops spinning.
-        // The async executePrivateTransfer task continues to completion (Rust FFI cannot be
-        // cancelled mid-proof), but its defer block will clear isTransferInFlight/isProving,
-        // and its post-await note mutations are no-ops on an already-empty store.
         if isTransferInFlight {
             transferError = "Transfer cancelled: network was switched mid-proof."
         }
         notes.removeAll()
         recomputeBalance()
+        // Delete persisted notes for this network from SwiftData
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+        if let stored = try? ctx.fetch(descriptor) {
+            stored.forEach { ctx.delete($0) }
+            try? ctx.save()
+        }
     }
 
     private func recomputeBalance() {

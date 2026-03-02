@@ -22,6 +22,13 @@ class AppCoordinator: ObservableObject {
     init() {
         // Initialize SyncEngine with the shared NetworkManager
         self.syncEngine = SyncEngine(networkManager: networkManager)
+
+        // Set the initial networkId so SwiftData queries target the right network on cold start
+        walletManager.activeNetworkId = networkManager.activeNetwork.rawValue
+        // Bootstrap from SwiftData (notes from previous session)
+        Task { @MainActor in
+            self.walletManager.loadNotes(for: self.networkManager.activeNetwork.rawValue)
+        }
         // SyncEngine fires noteDetected on the main thread (RunLoop.main timer).
         // We receive on RunLoop.main to make that guarantee explicit, then forward
         // into walletManager.addNote which is isolated to @MainActor.
@@ -46,8 +53,13 @@ class AppCoordinator: ObservableObject {
         networkPipeline = syncEngine.networkChanged
             .receive(on: RunLoop.main)
             .sink { [weak self] in
+                guard let self else { return }
                 MainActor.assumeIsolated {
-                    self?.walletManager.clearStore()
+                    // Update networkId FIRST so clearStore() and loadNotes() target the new network
+                    self.walletManager.activeNetworkId = self.networkManager.activeNetwork.rawValue
+                    self.walletManager.clearStore()
+                    // Reload persisted notes for the new network immediately
+                    self.walletManager.loadNotes(for: self.networkManager.activeNetwork.rawValue)
                 }
             }
     }

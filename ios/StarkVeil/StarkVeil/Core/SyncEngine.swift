@@ -1,7 +1,9 @@
 import Combine
 import Foundation
+import SwiftData
 
 class SyncEngine: ObservableObject {
+    private let persistence = PersistenceController.shared
     @Published var isSyncing = false
     @Published var currentBlockNumber: Int = 0
 
@@ -91,7 +93,28 @@ class SyncEngine: ObservableObject {
         // completes before networkChanged.send() returns, which is before startSyncing() runs.
         networkChanged.send()
 
+        // Reload persisted notes for the new network
         startSyncing()
+    }
+
+    // MARK: - Checkpoint Persistence
+
+    private func saveCheckpoint(networkId: String, block: Int) {
+        let ctx = persistence.context
+        let descriptor = FetchDescriptor<SyncCheckpoint>(predicate: #Predicate { $0.networkId == networkId })
+        if let existing = try? ctx.fetch(descriptor).first {
+            existing.lastBlockNumber = block
+            existing.updatedAt = Date()
+        } else {
+            ctx.insert(SyncCheckpoint(networkId: networkId, lastBlockNumber: block))
+        }
+        try? ctx.save()
+    }
+
+    func loadCheckpoint(for networkId: String) -> Int {
+        let ctx = persistence.context
+        let descriptor = FetchDescriptor<SyncCheckpoint>(predicate: #Predicate { $0.networkId == networkId })
+        return (try? ctx.fetch(descriptor).first?.lastBlockNumber) ?? 0
     }
 
     // MARK: - Private
