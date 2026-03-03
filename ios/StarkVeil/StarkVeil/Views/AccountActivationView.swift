@@ -117,7 +117,7 @@ struct AccountActivationView: View {
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 4) {
                     infoRow(label: "Public Key", value: keys.publicKey.hexString)
-                    infoRow(label: "Network", value: networkManager.activeNetwork.name)
+                    infoRow(label: "Network", value: networkManager.activeNetwork.rawValue)
                     infoRow(label: "Class Hash", value: StarknetCurve.ozAccountClassHash)
                 }
                 .padding(.top, 8)
@@ -153,7 +153,7 @@ struct AccountActivationView: View {
 
         case .confirming:
             if let hash = deployTxHash {
-                txHashBadge(hash: hash)
+                txHashBadge(hash)
             }
             loadingRow("Confirming on Starknet…")
 
