@@ -259,10 +259,10 @@ pub unsafe extern "C" fn stark_derive_ivk(
         Ok(s) => s, Err(_) => return ffi_error("Invalid UTF-8"),
     };
     let sk = match felt_from_hex(sk_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
-    // Domain separator: ASCII "StarkVeil IVK v1" packed as a felt252
-    // = 0x537461726b5665696c20494b4b2076 31 (hex of the ASCII string)
-    let domain = FieldElement::from_hex_be("0x537461726b5665696c20494b562076 31")
-        .unwrap_or(FieldElement::from(0x494b56_u64));  // "IVK" fallback
+    // C-DOMAIN-SPACE fix: correct ASCII hex for "StarkVeil IVK v1" with no spaces and correct byte order.
+    // S=53 t=74 a=61 r=72 k=6b V=56 e=65 i=69 l=6c SP=20 I=49 V=56 K=4b SP=20 v=76 1=31
+    let domain = FieldElement::from_hex_be("0x537461726b5665696c2049564b207631")
+        .expect("hardcoded IVK domain constant is always valid hex");
     let ivk = poseidon_hash_many(&[sk, domain]);
     let result = serde_json::json!({ "Ok": felt_to_hex(&ivk) }).to_string();
     CString::new(result).unwrap_or_else(|_| CString::new("{\"Error\":\"CString\"}").unwrap()).into_raw()

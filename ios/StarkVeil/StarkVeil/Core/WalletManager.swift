@@ -212,103 +212,6 @@ class WalletManager: ObservableObject {
         balance = notes.compactMap { Double($0.value) }.reduce(0, +)
     }
 
-    // MARK: - Transfer
-
-    func executePrivateTransfer(recipient: String, amount: Double) async throws {
-        // --- Synchronous guards (run on main actor before first suspension) ---
-        guard !isTransferInFlight else { throw ProverError.transferInProgress }
-        guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
-        guard amount <= balance else { throw ProverError.insufficientBalance }
-
-        isTransferInFlight = true
-        isProving = true
-        lastProvedTxHash = nil
-        transferError = nil
-
-        // defer runs on main actor (same isolation as the enclosing function)
-        defer {
-            isTransferInFlight = false
-            isProving = false
-        }
-
-        // Greedy note selection — Phase 5 can replace with optimal coin selection
-        let inputNotes = selectNotes(for: amount)
-
-        // --- Suspension point: proof runs on global queue in StarkVeilProver ---
-        // The main actor is released here and resumes automatically after await.
-        let result = try await StarkVeilProver.generateTransferProof(notes: inputNotes)
-
-        // --- Back on main actor ---
-        // NOTE: proof data is intentionally NOT logged (audit C2 — prevents proof leakage to console/crash logs)
-
-        // Remove exactly the spent notes to prevent destroying other notes with the same value (Audit Bug 2)
-        let ctx = persistence.context
-        let netId = activeNetworkId
-        let allStoredDescriptor = FetchDescriptor<StoredNote>(
-            predicate: #Predicate { $0.networkId == netId }
-        )
-        var remainingStored = (try? ctx.fetch(allStoredDescriptor)) ?? []
-
-        for inputNote in inputNotes {
-            if let memIdx = notes.firstIndex(where: {
-                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo && $0.owner_ivk == inputNote.owner_ivk
-            }) {
-                notes.remove(at: memIdx)
-            }
-            if let dbIdx = remainingStored.firstIndex(where: {
-                $0.value == inputNote.value && $0.asset_id == inputNote.asset_id && $0.memo == inputNote.memo && $0.owner_ivk == inputNote.owner_ivk
-            }) {
-                let stored = remainingStored.remove(at: dbIdx)
-                ctx.delete(stored)
-            }
-        }
-
-        // Add a change note if the selected notes exceed the transfer amount
-        let totalIn = inputNotes.compactMap { Double($0.value) }.reduce(0, +)
-        let change = totalIn - amount
-        if change > 1e-9 {
-            // Derive real IVK for the change note so it can be scanned back
-            let changeIvk: String
-            if let ivkData = KeychainManager.ownerIVK() {
-                changeIvk = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
-            } else {
-                changeIvk = inputNotes.first?.owner_ivk ?? ""
-            }
-            let changeNote = Note(
-                value: String(format: "%.9f", change),
-                asset_id: inputNotes.first?.asset_id ?? "STRK",
-                owner_ivk: changeIvk,
-                memo: "change"
-            )
-            notes.append(changeNote)
-            // Persist the change note so it survives relaunch
-            ctx.insert(StoredNote(from: changeNote, networkId: activeNetworkId))
-        }
-
-        do {
-            try ctx.save()
-        } catch {
-            print("[WalletManager] CRITICAL: SwiftData save failed in executePrivateTransfer: \(error)")
-        }
-        recomputeBalance()
-
-        // Use the first returned nullifier as a proxy tx-hash until real RPC is wired
-        lastProvedTxHash = result.nullifiers.first.map { "0x" + String($0.prefix(40)) }
-            ?? "0x" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(40)
-
-        // Log the private transfer event
-        logEvent(
-            kind: .transfer,
-            amount: String(format: "%.6f", amount),
-            assetId: inputNotes.first?.asset_id ?? "STRK",
-            // H4: Recipient address is NOT stored in the activity log.
-            // Storing even a truncated address creates a persistent on-device link between
-            // this proof and its recipient, violating the privacy model.
-            counterparty: "shielded-recipient",
-            txHash: lastProvedTxHash
-        )
-    }
-
     // MARK: - Unshield (Private → Public)
 
     /// Selects a note that exactly matches `amount`, generates a STARK unshield proof,
@@ -540,21 +443,46 @@ class WalletManager: ObservableObject {
         }
         let ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
 
-        // M-NONCE-REDERIVED-WRONG fix: use deterministic Poseidon(ivk, value, asset) nonce
-        // to match SyncEngine and executeUnshield. This avoids needing to pass random
-        // nonces out-of-band via encrypted memo or database migrations for this phase.
-        let noteNonce = try StarkVeilProver.poseidonHash(elements: [ivkHex, String(format: "%.6f", amount), "STRK"])
+        // C-COMMITMENT-MISMATCH fix: derive STARK keypair to get owner_pubkey,
+        // then use the 4-field Poseidon commitment that matches what execute
+        // PrivateTransfer / executeUnshield reconstructs when spending the note.
+        // The nonce is persisted in StoredNote so we never need to re-derive it.
+        guard let seed = KeychainManager.masterSeed() else {
+            throw NSError(domain: "StarkVeil", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Master seed not found in Keychain."])
+        }
+        let keys = try StarknetAccount.deriveAccountKeys(fromSeed: seed)
+        let ownerPubkeyHex = keys.publicKey.hexString
+
+        // Use a cryptographically random nonce and persist it
+        var randomBytes = [UInt8](repeating: 0, count: 32)
+        let rngStatus = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        guard rngStatus == errSecSuccess else {
+            throw NSError(domain: "StarkVeil", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "SecRandomCopyBytes failed — cannot generate safe shield nonce"])
+        }
+        randomBytes[0] &= 0x07  // clamp to STARK prime range
+        let noteNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
+
+        // 4-field Poseidon(value, asset_id, owner_pubkey, nonce) — matches contract spec
+        let commitmentKey = try StarkVeilProver.noteCommitment(
+            value: String(format: "%.6f", amount),
+            assetId: "STRK",
+            ownerPubkey: ownerPubkeyHex,
+            nonce: noteNonce
+        )
+
         let note = Note(
             value: String(format: "%.6f", amount),
             asset_id: "STRK",
             owner_ivk: ivkHex,
+            owner_pubkey: ownerPubkeyHex,
+            nonce: noteNonce,
             memo: memo.isEmpty ? "shielded deposit" : memo
         )
-        // noteNonce is a valid felt252 hex — safe to pass to Poseidon FFI
 
-        // Build calldata for PrivacyPool.shield(amount_low, amount_high, commitment_key)
-        // M-SHIELD-AMOUNT fix: use same u256 split as executeUnshield to avoid silent cap
-        // at ~18.44 STRK (UInt64.max wei). Amounts > 18.44 STRK now encode correctly.
+
+        // M-SHIELD-AMOUNT fix: u256 split for amounts > 18.44 STRK (UInt64.max wei)
         let amountWei = amount * 1e18
         let amountLow: String
         let amountHigh: String
@@ -596,14 +524,13 @@ class WalletManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Account not activated. Activate your wallet first."])
         }
 
-        // H-TRY-SWALLOW fix: try? silently swallows real FFI errors (e.g. Rust panic, bad hex).
-        // A swallowed error here means keys = nil → nil-coalesced to garbage → wrong signature.
-        // Fix: propagate the throw so the user sees a real error message.
-        guard let seed = KeychainManager.masterSeed() else {
-            throw NSError(domain: "StarkVeil", code: 11,
-                          userInfo: [NSLocalizedDescriptionKey: "Master seed not found in Keychain."])
+        // H-TRY-SWALLOW fix: keys already derived above for commitment
+        let senderAddress: String
+        guard let addr = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated. Activate your wallet first."])
         }
-        let keys = try StarknetAccount.deriveAccountKeys(fromSeed: seed)
+        senderAddress = addr
 
         // Phase 13: fetch real on-chain nonce before building tx
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
@@ -711,13 +638,14 @@ class WalletManager: ObservableObject {
         let spendingKeyHex = keys.privateKey.hexString
         let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
 
-        // 1. Derive nullifier for the input note
-        let nonceFelt = try StarkVeilProver.poseidonHash(elements: [ivkHex, inputNote.value, inputNote.asset_id])
+        // C-COMMITMENT-MISMATCH fix: use the PERSISTED nonce from StoredNote.
+        // The shield step stored the exact random nonce used in Poseidon(value,asset,pubkey,nonce).
+        // Re-deriving it (Poseidon(ivk,value,asset)) produces a different value → wrong commitment.
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
             assetId: inputNote.asset_id,
-            ownerPubkey: keys.publicKey.hexString,
-            nonce: nonceFelt
+            ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
+            nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
         )
         let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
 
@@ -726,12 +654,19 @@ class WalletManager: ObservableObject {
         if alreadySpent { throw ProverError.noteAlreadySpent }
 
         // 3. Create new output commitment for the recipient
-        // M-NONCE-REDERIVED-WRONG fix: deterministic nonce
-        let outputNonce = try StarkVeilProver.poseidonHash(elements: [recipientIVK, inputNote.value, inputNote.asset_id])
+        // H-SECRANDOM-UNCHECKED fix: check SecRandomCopyBytes return value and throw on failure
+        var outputRandomBytes = [UInt8](repeating: 0, count: 32)
+        let outputRngStatus = SecRandomCopyBytes(kSecRandomDefault, outputRandomBytes.count, &outputRandomBytes)
+        guard outputRngStatus == errSecSuccess else {
+            throw NSError(domain: "StarkVeil", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "SecRandomCopyBytes failed — cannot generate safe output nonce"])
+        }
+        outputRandomBytes[0] &= 0x07  // clamp to STARK prime range
+        let outputNonce = "0x" + outputRandomBytes.map { String(format: "%02x", $0) }.joined()
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
             assetId: inputNote.asset_id,
-            ownerPubkey: recipientAddress,  // recipient's address acts as their public key
+            ownerPubkey: recipientAddress,
             nonce: outputNonce
         )
 

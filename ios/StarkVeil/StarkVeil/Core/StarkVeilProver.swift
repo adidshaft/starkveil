@@ -7,6 +7,11 @@ struct Note: Codable {
     let value: String
     let asset_id: String
     let owner_ivk: String
+    // L-NOTE-STRUCT-MISMATCH fix: Rust types.rs uses owner_pubkey (Phase 15 field).
+    // Swift was serialising only owner_ivk, so Rust always saw owner_pubkey = None → 0x0
+    // in computeCommitment. Both fields are now passed through FFI JSON.
+    let owner_pubkey: String
+    let nonce: String
     let memo: String
 }
 
@@ -137,9 +142,11 @@ class StarkVeilProver {
     // ─────────────────────────────────────────────────────────────────────────
     // Helper: calls a Rust FFI fn that takes a single C string and returns
     // a JSON string like {"Ok": "0x..."} or {"Err": "message"}.
+    // L-CALLSINGLEARG-RETTYPE fix: fn must return UnsafeMutablePointer (not Unsafe)
+    // to match the *mut c_char return type of all Rust FFI exports.
     // ─────────────────────────────────────────────────────────────────────────
     private static func callSingleArg(
-        _ fn: (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?,
+        _ fn: (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?,
         arg: String
     ) throws -> String {
         let buf = arg.utf8CString
@@ -153,7 +160,7 @@ class StarkVeilProver {
                               userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
             }
             let json = String(cString: rawPtr)
-            free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
+            free_rust_string(rawPtr)   // no cast needed: already UnsafeMutablePointer
             return try decodeOkString(json: json)
         }
     }
