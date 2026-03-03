@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		5C2D834F2C904F231334051A /* StarkVeilProver.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C20017E841B20A3917E22340 /* StarkVeilProver.xcframework */; };
+		AB0DE6602F569B94007CBAA5 /* StarkVeilProver.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C20017E841B20A3917E22340 /* StarkVeilProver.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,7 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				5C2D834F2C904F231334051A /* StarkVeilProver.xcframework in Frameworks */,
+				AB0DE6602F569B94007CBAA5 /* StarkVeilProver.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

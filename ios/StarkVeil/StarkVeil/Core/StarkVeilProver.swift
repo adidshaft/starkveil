@@ -139,7 +139,7 @@ class StarkVeilProver {
     // a JSON string like {"Ok": "0x..."} or {"Err": "message"}.
     // ─────────────────────────────────────────────────────────────────────────
     private static func callSingleArg(
-        _ fn: (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?,
+        _ fn: (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?,
         arg: String
     ) throws -> String {
         let buf = arg.utf8CString

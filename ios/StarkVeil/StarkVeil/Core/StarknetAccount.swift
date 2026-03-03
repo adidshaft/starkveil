@@ -144,10 +144,10 @@ enum StarknetAccount {
     }
 
     /// Derives the complete STARK keypair and account address from the stored master seed.
-    /// Returns nil if the wallet has not been set up yet.
+    /// Returns nil if the wallet has not been set up yet or if FFI key derivation fails.
     static func deriveAccountKeys() -> AccountKeys? {
         guard let seed = KeychainManager.masterSeed() else { return nil }
-        return deriveAccountKeys(fromSeed: seed)
+        return try? deriveAccountKeys(fromSeed: seed)
     }
 
     /// Derives the complete STARK keypair and account address from raw seed bytes.
