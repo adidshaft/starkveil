@@ -378,3 +378,79 @@ Converts a shielded note back to a public ERC-20 balance. The recipient and amou
 | **Unshield commitment** | Proof binds `(amount, asset, recipient)` as public inputs | Proof cannot redirect funds to a different recipient after generation |
 | **No server trust** | Rust prover statically linked into app binary | Proof generated entirely on-device |
 | **No TEE dependency** | A-series silicon + Rust STARK circuits | Privacy does not rely on Intel SGX or any cloud enclave |
+
+---
+
+## Full-Stack Security & Privacy Assessment
+
+_Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
+
+### Layer 1 — Key Material & Derivation
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Master seed Keychain storage | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, no iCloud backup | ✅ |
+| Mnemonic memory wipe | Zeroed after PBKDF2 derivation, never stored to disk | ✅ |
+| IVK / SK domain separation | HKDF info: `starkveil-ivk-v1` vs `starkveil-sk-v1` | ✅ |
+| STARK private key distribution | `grindKey` rejection-sampling — uniform over `[1, order)` | ✅ Phase 5 |
+| STARK public key | Real EC scalar multiply via `starknet-crypto::get_public_key` | ✅ Phase 12 |
+| Account address | Real Cairo Pedersen hash (shift-point constants), correct length suffix | ✅ Phase 12 |
+| Wallet reset | `deleteWallet` wipes `masterSeed`, `accountAddress`, `accountDeployed` atomically | ✅ |
+
+### Layer 2 — Cryptographic Primitives
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Pedersen hash | `starknet-crypto::pedersen_hash` (not SHA-256) | ✅ Phase 12 |
+| Poseidon hash | `starknet-crypto::poseidon_hash_many` (matches Cairo contract) | ✅ Phase 12 |
+| ECDSA signing | `starknet-crypto::sign` with deterministic k = SHA-256(pk‖hash) | ✅ Phase 12 |
+| AES-GCM memo encryption | 256-bit HKDF subkey per note, random nonce | ✅ |
+| k nonce for signing | Deterministic (safe), not yet RFC 6979 | ⚠️ Phase 13 |
+
+### Layer 3 — UTXO Integrity
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Phantom balance prevention | Zero-amount events dropped at SyncEngine | ✅ Phase 4 |
+| Duplicate UTXO prevention | `addNote` deduplication by note fields | ✅ Phase 4 |
+| Shield amount correctness | High/low u128 split for values > 18.44 STRK | ✅ Phase 4 |
+| ETH balance parse | Reads both `[low_u128, high_u128]` words | ✅ Phase 5 |
+| `deleteAllNetworksData` | `do-catch` prevents silent SwiftData failures | ✅ Phase 4 |
+
+### Layer 4 — App & Session Security
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Biometric gate | Face ID / Touch ID via `LAContext` | ✅ |
+| Auto-lock on backgrounding | `scenePhase == .background` re-arms lock | ✅ Phase 4 |
+| Dynamic biometry icon | Detects Face ID vs Touch ID at runtime | ✅ Phase 4 |
+| No-passcode fallback | User-facing error when no passcode is enrolled | ✅ Phase 4 |
+| Task cancellation handling | Deploy poll catches `CancellationError`, persists confirmed state | ✅ Phase 5 |
+
+### Layer 5 — Transaction Safety
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Deploy account signature | Real STARK ECDSA via `stark_sign_transaction` FFI | ✅ Phase 12 |
+| Invoke transaction signature | Real STARK ECDSA | ✅ Phase 12 |
+| Chain nonce | `starknet_getNonce` before every tx | ❌ Phase 13 |
+| Invoke tx hash | Chained Pedersen over tx fields | ❌ Phase 13 |
+
+### Layer 6 — Privacy Properties
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Sender/recipient hiding | Shielded note model — only commitment on-chain | ✅ |
+| Amount hiding | Amount inside AES-GCM encrypted memo | ✅ |
+| Network isolation | Direct Starknet RPC — no analytics relay | ✅ |
+| No branding / metadata leaks | All Zcash references removed, novel branding | ✅ |
+| Local activity log | Amounts stored in SwiftData (risk if device seized) | ⚠️ Medium |
+
+### What Remains for Mainnet
+
+1. `starknet_getNonce` before every invoke (Phase 13) — **critical**
+2. Real invoke tx hash builder — **critical**
+3. RFC 6979 nonce via Rust `rfc6979` crate (Phase 13) — high
+4. QR code for account address — medium
+5. Mainnet contract deployment + RPC toggle — future
+

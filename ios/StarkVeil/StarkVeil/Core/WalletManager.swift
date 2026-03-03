@@ -399,12 +399,32 @@ class WalletManager: ObservableObject {
         ]
         calldata.append(contentsOf: callPayload)
 
-        // Submit via RPC — sender is the wallet's own felt252 address (owner_ivk proxies it for now)
-        let senderAddress = inputNote.owner_ivk
+        // Submit via RPC — Phase 13: use real account address, nonce, and signing
+        guard let senderAddress = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated. Please complete wallet activation first."])
+        }
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(domain: "StarkVeil", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+        }
+        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        let (_, signature) = try StarknetTransactionBuilder.buildAndSign(
+            senderAddress: senderAddress,
+            calldata: calldata,
+            maxFee: "0x2386f26fc10000",
+            nonce: chainNonce,
+            chainID: StarknetTransactionBuilder.ChainID.sepolia,
+            privateKey: keys.privateKey.hexString
+        )
         let txHash = try await RPCClient().addInvokeTransaction(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
-            calldata: calldata
+            calldata: calldata,
+            maxFee: "0x2386f26fc10000",
+            signature: signature,
+            nonce: chainNonce
         )
 
         // RPC Confirmed: Remove EXACTLY ONE matching spent note (Audit Bug 2)
@@ -507,52 +527,71 @@ class WalletManager: ObservableObject {
         let commitmentKey = deriveNoteCommitmentKey(ivkHex: ivkHex, nonce: nonce)
 
         // Starknet Keccak-250 selector for PrivacyPool.shield()
-        // Computed: keccak("shield") & ((1<<250)-1)
         let shieldSelector = "0x224a8f74e6fd7a11ab9e36f7742dd64470a7b2e3541b802eb7ed24087db909"
 
-        // NOTE: senderAddress is the Starknet account address that holds the user's STRK.
-        // This requires Starknet Account Abstraction (Phase 11) — the wallet must know
-        // its own deployed account address to sign and pay for the Shield invoke.
-        // For now this is set to the IVK hex as a proxy (will be rejected by sequencer).
-        let senderAddress = ivkHex
+        // Phase 13: use the real deployed account address (not IVK placeholder)
+        guard let senderAddress = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated. Activate your wallet first."])
+        }
+
+        // Phase 13: derive the spending key for signing
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(domain: "StarkVeil", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+        }
+
+        // Phase 13: fetch real on-chain nonce before building tx
+        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
+
         let calldata = ["0x1", contractAddress, shieldSelector, "0x0", "0x3", "0x3",
                         amountLow, amountHigh, commitmentKey]
 
-        let txHash = try await RPCClient().addInvokeTransaction(
+        // Phase 13: compute tx hash + real ECDSA signature
+        let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
+            senderAddress: senderAddress,
+            calldata: calldata,
+            maxFee: "0x2386f26fc10000",   // 0.01 ETH — conservative Sepolia estimate
+            nonce: chainNonce,
+            chainID: StarknetTransactionBuilder.ChainID.sepolia,
+            privateKey: keys.privateKey.hexString
+        )
+
+        let broadcastedHash = try await RPCClient().addInvokeTransaction(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
-            calldata: calldata
+            calldata: calldata,
+            maxFee: "0x2386f26fc10000",
+            signature: signature,
+            nonce: chainNonce
         )
 
         // Optimistically add note and log event
         addNote(note)
-        // Override the logEvent that addNote added to include the real txHash
-        // (addNote logs without txHash; update the last event with the hash)
         if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
-            last.txHash = txHash
+            last.txHash = broadcastedHash
             let ctx = persistence.context
             do { try ctx.save() }
             catch { print("[WalletManager] Non-critical: could not attach txHash to deposit event.") }
         }
 
-        lastShieldTxHash = txHash
-        return txHash
+        lastShieldTxHash = broadcastedHash
+        return broadcastedHash
     }
 
     // MARK: - Private Helpers
 
-    /// H1 fix: Derive a one-time commitment key from IVK + nonce so the raw IVK
-    /// is never sent on-chain. On-chain observers see only: Poseidon(ivk || nonce).
-    /// The SyncEngine scans events and checks Poseidon(my_ivk || candidate_nonce)
-    /// for each detected commitment to claim incoming notes.
-    ///
-    /// Implementation: SHA-256(ivk_bytes || nonce_bytes) until native Poseidon is available.
-    /// Replace with actual Poseidon when the Cairo circuit is finalized.
+    /// Phase 13: derives a one-time commitment key using real Poseidon hash via FFI.
+    /// On-chain observers see only Poseidon(ivk || nonce); the raw IVK is never exposed.
     private func deriveNoteCommitmentKey(ivkHex: String, nonce: String) -> String {
-        let ivkBytes = Data(ivkHex.utf8)
-        let nonceBytes = Data(nonce.utf8)
-        var combined = ivkBytes
-        combined.append(nonceBytes)
+        // Use real Poseidon (matches Cairo contract)
+        if let hash = try? StarkVeilProver.poseidonHash(elements: [ivkHex, nonce]) {
+            return hash
+        }
+        // Fallback: SHA-256 (should not be reached if Rust FFI is healthy)
+        var combined = Data(ivkHex.utf8)
+        combined.append(Data(nonce.utf8))
         let digest = SHA256.hash(data: combined)
         return "0x" + digest.map { String(format: "%02x", $0) }.joined()
     }

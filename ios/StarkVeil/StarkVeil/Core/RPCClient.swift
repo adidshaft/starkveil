@@ -120,6 +120,25 @@ class RPCClient {
         return allEvents
     }
     
+    // MARK: - starknet_getNonce  (Phase 13)
+
+    /// Fetches the current nonce for a Starknet account.
+    /// Must be called before every invoke or deploy transaction.
+    func getNonce(rpcUrl: URL, address: String) async throws -> String {
+        struct Params: Encodable {
+            let block_id: String = "latest"
+            let contract_address: String
+        }
+        let payload = RPCRequest(method: "starknet_getNonce",
+                                 params: Params(contract_address: address))
+        let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        guard let result = response.result else { throw RPCClientError.invalidResponse }
+        return result   // hex string e.g. "0x3"
+    }
+
     // MARK: - starknet_addInvokeTransaction
 
     /// Struct matching the Starknet JSON-RPC `INVOKE_TXN_V1` spec.
@@ -134,19 +153,16 @@ class RPCClient {
     }
 
     /// Submits a signed invoke transaction to the Starknet sequencer.
-    /// Returns the transaction hash on success.
+    /// Phase 13: nonce and signature must be computed by the caller using
+    /// StarknetTransactionBuilder.buildAndSign() before calling this.
     @discardableResult
     func addInvokeTransaction(
         rpcUrl: URL,
         senderAddress: String,
         calldata: [String],
-        maxFee: String = "0x0",
-        // NOTE: ["0x0", "0x0"] is a placeholder. Katana (local devnet) accepts this.
-        // Production requires: STARK-curve ECDSA signature over the Pedersen hash of the
-        // transaction fields using the account's spending key.
-        // Implement starknet_getNonce + sign(tx_hash, spendingKey) before Sepolia deployment.
-        signature: [String] = ["0x0", "0x0"],
-        nonce: String = "0x0"
+        maxFee: String,
+        signature: [String],
+        nonce: String
     ) async throws -> String {
         struct Params: Encodable {
             let invoke_transaction: InvokeTransaction
