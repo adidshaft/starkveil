@@ -81,20 +81,11 @@ struct AccountActivationView: View {
 
     private func addressCard(keys: StarknetAccount.AccountKeys) -> some View {
         VStack(spacing: 16) {
-            // QR placeholder (shows address as monospaced text; replace with QRCodeView once SwiftQR is linked)
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(themeManager.surface1)
-                    .frame(width: 200, height: 200)
-                VStack(spacing: 6) {
-                    Image(systemName: "qrcode")
-                        .font(.system(size: 60))
-                        .foregroundStyle(themeManager.textSecondary.opacity(0.4))
-                    Text("QR placeholder")
-                        .font(.system(size: 10))
-                        .foregroundStyle(themeManager.textSecondary.opacity(0.4))
-                }
-            }
+            // Real QR code using CoreImage — scannable address, zero external deps
+            QRCodeView(data: keys.address, size: 200)
+                .padding(12)
+                .background(Color.white)   // white border ensures scanner contrast on any bg
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             // Address display
             VStack(alignment: .leading, spacing: 8) {

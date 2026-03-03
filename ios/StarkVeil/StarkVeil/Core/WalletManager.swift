@@ -319,7 +319,8 @@ class WalletManager: ObservableObject {
         recipient: String,
         amount: Double,
         rpcUrl: URL,
-        contractAddress: String
+        contractAddress: String,
+        network: NetworkEnvironment   // M-CHAIN-ID-HARDCODED fix
     ) async throws {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }

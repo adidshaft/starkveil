@@ -198,7 +198,8 @@ struct UnshieldFormView: View {
                     recipient: recipientAddress,
                     amount: amount,
                     rpcUrl: rpcUrl,
-                    contractAddress: contractAddress
+                    contractAddress: contractAddress,
+                    network: networkManager.activeNetwork   // M-CHAIN-ID-HARDCODED fix
                 )
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 // Dismiss after short delay so user sees success state
