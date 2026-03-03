@@ -351,20 +351,40 @@ struct AccountActivationView: View {
             deploymentState = .deploying
             errorMessage = nil
         }
-        let rpcUrl = networkManager.activeNetwork.rpcUrl
+        let rpcUrl   = networkManager.activeNetwork.rpcUrl
         let pubKeyHex = keys.publicKey.hexString
+        let maxFee   = "0x2386f26fc10000"   // 0.01 ETH — sufficient for deploy on Sepolia
         do {
+            // M-DEPLOY-ZERO-SIG fix: compute real DEPLOY_ACCOUNT_V1 tx hash + ECDSA signature.
+            // Without this, the sequencer rejects the transaction immediately.
+            let deployHash = try StarknetTransactionBuilder.deployAccountHash(
+                contractAddress: keys.address,
+                constructorCalldata: [pubKeyHex],
+                classHash: StarknetCurve.ozAccountClassHash,
+                salt: pubKeyHex,
+                maxFee: maxFee,
+                nonce: "0x0",   // deploy account nonce is always 0x0
+                chainID: networkManager.activeNetwork.chainIdFelt252
+            )
+            // H-TRY-SWALLOW fix: propagate signing errors — a failed sign means
+            // we'd submit ["0x0","0x0"] and the tx would be rejected anyway.
+            let deploySig = try StarkVeilProver.signTransaction(
+                txHash: deployHash,
+                privateKey: keys.privateKey.hexString
+            )
             let txHash = try await RPCClient().deployAccount(
                 rpcUrl: rpcUrl,
                 classHash: StarknetCurve.ozAccountClassHash,
-                constructorCalldata: [pubKeyHex],   // OZ v0.8: constructor takes [publicKey]
-                contractAddressSalt: pubKeyHex       // OZ convention: salt = publicKey
+                constructorCalldata: [pubKeyHex],
+                contractAddressSalt: pubKeyHex,
+                maxFee: maxFee,
+                signature: [deploySig.r, deploySig.s],
+                nonce: "0x0"
             )
             await MainActor.run {
                 deployTxHash = txHash
                 deploymentState = .confirming
             }
-            // Poll for confirmation every 3 seconds for up to 60 seconds
             try await pollForDeployment(rpcUrl: rpcUrl, txHash: txHash, address: keys.address)
         } catch {
             await MainActor.run {

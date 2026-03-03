@@ -18,10 +18,17 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
 
     var chainId: String {
         switch self {
-        case .mainnet:
-            return "SN_MAIN"
-        case .sepolia:
-            return "SN_SEPOLIA"
+        case .mainnet: return "SN_MAIN"
+        case .sepolia: return "SN_SEPOLIA"
+        }
+    }
+
+    /// M-CHAIN-ID-HARDCODED fix: felt252-encoded chain ID for tx hash computation.
+    /// Callers pass this to StarknetTransactionBuilder instead of the hardcoded sepolia constant.
+    var chainIdFelt252: String {
+        switch self {
+        case .mainnet: return StarknetTransactionBuilder.ChainID.mainnet   // 0x534e5f4d41494e
+        case .sepolia: return StarknetTransactionBuilder.ChainID.sepolia  // 0x534e5f5345504f4c4941
         }
     }
     

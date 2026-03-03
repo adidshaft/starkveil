@@ -415,7 +415,7 @@ class WalletManager: ObservableObject {
             calldata: calldata,
             maxFee: "0x2386f26fc10000",
             nonce: chainNonce,
-            chainID: StarknetTransactionBuilder.ChainID.sepolia,
+            chainID: network.chainIdFelt252,
             privateKey: keys.privateKey.hexString
         )
         let txHash = try await RPCClient().addInvokeTransaction(
@@ -471,7 +471,8 @@ class WalletManager: ObservableObject {
         amount: Double,
         memo: String,
         rpcUrl: URL,
-        contractAddress: String
+        contractAddress: String,
+        network: NetworkEnvironment   // M-CHAIN-ID-HARDCODED fix
     ) async throws -> String {
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
@@ -493,16 +494,25 @@ class WalletManager: ObservableObject {
         }
         let ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
 
-        // Build note locally; commitment = hash(amount, ivk, nonce)
-        let nonce = UUID().uuidString
+        // C-NONCE-UUID fix: UUID().uuidString is NOT a valid felt252 hex string.
+        // Poseidon(ivkHex, UUID-string) always fails → SHA-256 fallback → wrong commitment → locked funds.
+        // Fix: generate a 32-byte cryptographically random value and encode as 0x-prefixed hex felt252.
+        var randomBytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        guard status == errSecSuccess else {
+            throw NSError(domain: "StarkVeil", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "SecRandomCopyBytes failed — cannot generate safe nonce"])
+        }
+        // Clamp to STARK_PRIME (< 2^251 + 17*2^192 + 1) by masking top 5 bits
+        randomBytes[0] &= 0x07  // ensures value < 2^251
+        let noteNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
         let note = Note(
             value: String(format: "%.6f", amount),
             asset_id: "STRK",
             owner_ivk: ivkHex,
             memo: memo.isEmpty ? "shielded deposit" : memo
         )
-        // nonce is kept in scope — used below to derive the on-chain commitment key
-
+        // noteNonce is a valid felt252 hex — safe to pass to Poseidon FFI
 
         // Build calldata for PrivacyPool.shield(amount_low, amount_high, commitment_key)
         // M-SHIELD-AMOUNT fix: use same u256 split as executeUnshield to avoid silent cap
@@ -524,7 +534,7 @@ class WalletManager: ObservableObject {
         // Instead derive a one-time commitment key: Poseidon(ivk || nonce).
         // The contract only sees the commitment; only the holder of the IVK can
         // scan events to recognise their own incoming notes.
-        let commitmentKey = deriveNoteCommitmentKey(ivkHex: ivkHex, nonce: nonce)
+        let commitmentKey = try deriveNoteCommitmentKey(ivkHex: ivkHex, nonce: noteNonce)
 
         // Starknet Keccak-250 selector for PrivacyPool.shield()
         let shieldSelector = "0x224a8f74e6fd7a11ab9e36f7742dd64470a7b2e3541b802eb7ed24087db909"
@@ -535,12 +545,14 @@ class WalletManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Account not activated. Activate your wallet first."])
         }
 
-        // Phase 13: derive the spending key for signing
-        guard let seed = KeychainManager.masterSeed(),
-              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+        // H-TRY-SWALLOW fix: try? silently swallows real FFI errors (e.g. Rust panic, bad hex).
+        // A swallowed error here means keys = nil → nil-coalesced to garbage → wrong signature.
+        // Fix: propagate the throw so the user sees a real error message.
+        guard let seed = KeychainManager.masterSeed() else {
             throw NSError(domain: "StarkVeil", code: 11,
-                          userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+                          userInfo: [NSLocalizedDescriptionKey: "Master seed not found in Keychain."])
         }
+        let keys = try StarknetAccount.deriveAccountKeys(fromSeed: seed)
 
         // Phase 13: fetch real on-chain nonce before building tx
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
@@ -554,7 +566,7 @@ class WalletManager: ObservableObject {
             calldata: calldata,
             maxFee: "0x2386f26fc10000",   // 0.01 ETH — conservative Sepolia estimate
             nonce: chainNonce,
-            chainID: StarknetTransactionBuilder.ChainID.sepolia,
+            chainID: network.chainIdFelt252,
             privateKey: keys.privateKey.hexString
         )
 
@@ -582,18 +594,13 @@ class WalletManager: ObservableObject {
 
     // MARK: - Private Helpers
 
-    /// Phase 13: derives a one-time commitment key using real Poseidon hash via FFI.
-    /// On-chain observers see only Poseidon(ivk || nonce); the raw IVK is never exposed.
-    private func deriveNoteCommitmentKey(ivkHex: String, nonce: String) -> String {
-        // Use real Poseidon (matches Cairo contract)
-        if let hash = try? StarkVeilProver.poseidonHash(elements: [ivkHex, nonce]) {
-            return hash
-        }
-        // Fallback: SHA-256 (should not be reached if Rust FFI is healthy)
-        var combined = Data(ivkHex.utf8)
-        combined.append(Data(nonce.utf8))
-        let digest = SHA256.hash(data: combined)
-        return "0x" + digest.map { String(format: "%02x", $0) }.joined()
+    /// Phase 13 / C-POSEIDON-FALLBACK fix: commitment key MUST use real Poseidon.
+    /// If Poseidon FFI fails and we fall back to SHA-256, the key won't match the
+    /// Cairo contract → the shielded funds are permanently locked on-chain.
+    /// Fix: make this function throwing — any Poseidon FFI failure aborts the shield.
+    private func deriveNoteCommitmentKey(ivkHex: String, nonce: String) throws -> String {
+        // Real Poseidon (matches Cairo poseidon_hash_span used in PrivacyPool contract)
+        return try StarkVeilProver.poseidonHash(elements: [ivkHex, nonce])
     }
 
     /// Simple greedy UTXO selection. Picks notes in insertion order until the

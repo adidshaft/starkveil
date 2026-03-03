@@ -165,7 +165,9 @@ class StarkVeilProver {
                           userInfo: [NSLocalizedDescriptionKey: "Cannot parse FFI response: \(json)"])
         }
         if let ok = dict["Ok"] as? String { return ok }
-        let errMsg = dict["Err"] as? String ?? "Unknown Rust error"
+        // H-ERR-KEY fix: Rust serde serialises the enum variant as {"Error": "..."} not {"Err": "..."}
+        // Checking only "Err" caused every Rust error to become "Unknown Rust error"
+        let errMsg = dict["Error"] as? String ?? dict["Err"] as? String ?? "Unknown Rust error: \(json)"
         throw NSError(domain: "CryptoFFI", code: 4,
                       userInfo: [NSLocalizedDescriptionKey: errMsg])
     }
@@ -238,48 +240,74 @@ class StarkVeilProver {
     /// - Parameters:
     ///   - txHash:     The Pedersen hash of the transaction fields (felt252 hex).
     ///   - privateKey: The STARK spending key (felt252 hex, from KeyDerivationEngine).
-    ///   - k:          RFC 6979 deterministic nonce; pass nil to auto-derive.
     ///
-    /// - Warning: k MUST be unique per signature. Reusing k leaks the private key.
-    static func signTransaction(txHash: String, privateKey: String, k: String? = nil) throws -> ECDSASignature {
-        let kValue: String
-        if let providedK = k {
-            kValue = providedK
-        } else {
-            // Deterministic k via SHA-256(privkey || txhash) — not full RFC 6979 but
-            // avoids nonce reuse since it is deterministic and unique per (key, txHash) pair.
-            // Phase 13: replace with the Rust rfc6979 crate for a spec-compliant nonce.
-            let combined = Data((privateKey + txHash).utf8)
-            let hash = SHA256.hash(data: combined)
-            kValue = "0x" + hash.map { String(format: "%02x", $0) }.joined()
-        }
-        let txBuf = txHash.utf8CString
-        let pkBuf = privateKey.utf8CString
-        let kBuf  = kValue.utf8CString
-        return try txBuf.withUnsafeBufferPointer { txPtr in
-            try pkBuf.withUnsafeBufferPointer { pkPtr in
-                try kBuf.withUnsafeBufferPointer { kPtr in
-                    guard let tx = txPtr.baseAddress, let pk = pkPtr.baseAddress, let kp = kPtr.baseAddress else {
-                        throw NSError(domain: "FFIError", code: 1,
-                                      userInfo: [NSLocalizedDescriptionKey: "Null C string buffer"])
+    /// C-K-RETRY fix: original SHA-256(pk||txHash) produced the same k for the same
+    /// txHash on every retry attempt — a retried failed tx would share k with the original,
+    /// enabling private key extraction from two signatures with the same k.
+    ///
+    /// C-K-DOMAIN fix: SHA-256 output is 256-bit; STARK_ORDER ≈ 2^251.6, so ~6.25% of
+    /// SHA-256 outputs exceed STARK_ORDER and cause the Rust sign() to return Err.
+    ///
+    /// Combined fix: HMAC-SHA256(key=privateKey, data=txHash||counter) in a retry loop.
+    ///   - unique per (pk, txHash, attempt) — retries produce different k values
+    ///   - clamped to [1, STARK_ORDER) by masking to 252 bits and rejecting 0
+    ///   - follows the structure of RFC 6979 without requiring the full DRBG
+    static func signTransaction(txHash: String, privateKey: String) throws -> ECDSASignature {
+        // STARK_ORDER: 2^251 + 17*2^192 + 1 (251.58-bit value, first 5 bits of a 256-bit word are 0)
+        // Masking with 0x07 in the top byte gives us < 2^251, which is safely below the order
+        // on every iteration — eliminating the 6.25% domain failure entirely.
+        let pkKey = SymmetricKey(data: Data(privateKey.utf8))
+        var counter: UInt8 = 0
+        while counter < 100 {   // bounded retry — should never exceed 1-2 iterations
+            var msg = Data(txHash.utf8)
+            msg.append(counter)
+            let mac = HMAC<SHA256>.authenticationCode(for: msg, using: pkKey)
+            var kBytes = Array(mac)
+            // Clamp: mask top 5 bits so the value is always < 2^251 ≤ STARK_ORDER
+            kBytes[0] &= 0x07
+            // Reject k = 0 (degenerate; would produce r = 0)
+            if kBytes.allSatisfy({ $0 == 0 }) { counter += 1; continue }
+            let kValue = "0x" + kBytes.map { String(format: "%02x", $0) }.joined()
+            let txBuf = txHash.utf8CString
+            let pkBuf = privateKey.utf8CString
+            let kBuf  = kValue.utf8CString
+            let result = try txBuf.withUnsafeBufferPointer { txPtr in
+                try pkBuf.withUnsafeBufferPointer { pkPtr in
+                    try kBuf.withUnsafeBufferPointer { kPtr in
+                        guard let tx = txPtr.baseAddress, let pk = pkPtr.baseAddress, let kp = kPtr.baseAddress else {
+                            throw NSError(domain: "FFIError", code: 1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Null C string buffer"])
+                        }
+                        guard let rawPtr = stark_sign_transaction(tx, pk, kp) else {
+                            throw NSError(domain: "FFIError", code: 2,
+                                          userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
+                        }
+                        let json = String(cString: rawPtr)
+                        free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
+                        return json
                     }
-                    guard let rawPtr = stark_sign_transaction(tx, pk, kp) else {
-                        throw NSError(domain: "FFIError", code: 2,
-                                      userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
-                    }
-                    let json = String(cString: rawPtr)
-                    free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
-                    guard let data = json.data(using: .utf8),
-                          let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let ok = dict["Ok"] as? [String: String],
-                          let r = ok["r"], let s = ok["s"] else {
-                        let errMsg = (try? JSONSerialization.jsonObject(with: json.data(using: .utf8) ?? Data()) as? [String: Any])?["Err"] as? String ?? json
-                        throw NSError(domain: "CryptoFFI", code: 4,
-                                      userInfo: [NSLocalizedDescriptionKey: errMsg])
-                    }
-                    return ECDSASignature(r: r, s: s)
                 }
             }
+            // Decode: {"Ok": {"r": "0x...", "s": "0x..."}} or {"Err": "..."} / {"Error": "..."}
+            guard let data = result.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw NSError(domain: "FFIError", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "Cannot parse sign result: \(result)"])
+            }
+            if let ok = dict["Ok"] as? [String: String],
+               let r = ok["r"], let s = ok["s"] {
+                return ECDSASignature(r: r, s: s)
+            }
+            // Rust Err: k may have been invalid (r=0, s=0) — retry with next counter
+            let errMsg = dict["Error"] as? String ?? dict["Err"] as? String ?? result
+            if errMsg.contains("invalid k") || errMsg.contains("ECDSA") {
+                counter += 1
+                continue
+            }
+            throw NSError(domain: "CryptoFFI", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
+        throw NSError(domain: "CryptoFFI", code: 5,
+                      userInfo: [NSLocalizedDescriptionKey: "Could not produce a valid ECDSA signature after \(counter) attempts"])
     }
 }

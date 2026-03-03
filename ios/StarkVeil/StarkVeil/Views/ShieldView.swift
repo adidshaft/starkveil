@@ -283,7 +283,8 @@ struct ShieldView: View {
                     amount: amount,
                     memo: memo.isEmpty ? "shielded deposit" : memo,
                     rpcUrl: networkManager.activeNetwork.rpcUrl,
-                    contractAddress: networkManager.activeNetwork.contractAddress
+                    contractAddress: networkManager.activeNetwork.contractAddress,
+                    network: networkManager.activeNetwork   // M-CHAIN-ID-HARDCODED fix
                 )
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 withAnimation {
