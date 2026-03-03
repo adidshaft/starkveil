@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 10 Complete — 10.1 BIP-39 Wallet · 10.2 Unshield · 10.3 Typed Activity Feed):** Full JSON-RPC sync, SwiftData UTXO + Event persistence, AES-GCM note decryption, live FFI STARK proving, BIP-39 mnemonic generation and recovery, complete Deposit → Private Transfer → Unshield privacy loop, and a persistent colour-coded Activity Feed. 14 critical/high bugs resolved across three audit passes. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
+**Current status (Phase 16 Complete — Phases 12–16 Full Privacy Suite):** Real Poseidon commitments + nullifiers via Rust FFI, IVK derivation (Incoming Viewing Key), AES-256-GCM encrypted memos on-chain, IVK trial-decryption in SyncEngine, on-chain nullifier double-spend check, private-to-private transfer with recipient IVK, deterministic note nonces, pending-spend state management, and all 11 Phase 15–16 audit vulnerabilities resolved. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -67,7 +67,166 @@ The Xcode project `ios/StarkVeil/StarkVeil.xcodeproj` is fully configured. It st
 
 ---
 
-## Technical Edge Cases
+## ✅ Verification Guide — Reproduce All Wallet Functionality
+
+This section lets anyone reproduce and confirm every feature of StarkVeil end-to-end. Follow the steps in order against a local Katana node or Sepolia Testnet.
+
+### Prerequisites
+```bash
+# Required tools
+katana --version          # Starknet Dojo (v1.7.1+)
+scarb --version           # Cairo build tool (2.x)
+sncast --version          # Starknet Foundry 0.50.0
+cargo --version           # Rust 1.75+
+xcodebuild -version       # Xcode 15+
+```
+
+---
+
+### Step 1 · Build the Rust Prover
+```bash
+cd prover
+./build_ios.sh
+# Expected: prover/target/StarkVeilProver.xcframework exists
+ls prover/target/StarkVeilProver.xcframework
+```
+
+### Step 2 · Start the Local Chain
+```bash
+katana --dev
+# Leave running. Note the funded account addresses and private keys printed on startup.
+# Default RPC: http://127.0.0.1:5050
+```
+
+### Step 3 · Deploy the PrivacyPool Contract
+```bash
+cd contracts && scarb build
+
+# Import a Katana account (use keys from Step 2)
+sncast account import \
+  --name katana_test \
+  --address <KATANA_ADDRESS> \
+  --private-key <KATANA_PRIV_KEY> \
+  --type open_zeppelin \
+  --url http://127.0.0.1:5050
+
+# Declare the contract class
+sncast --profile katana_test declare --contract-name PrivacyPool
+# → note the CLASS_HASH in the output
+
+# Deploy via Katana UDC
+sncast --profile katana_test invoke \
+  --contract-address 0x41a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf \
+  --function deployContract \
+  --calldata <CLASS_HASH> 0x0 0x0 0x0
+# → CONTRACT_ADDRESS is in event data[0] of the receipt
+```
+
+### Step 4 · Build & Run the iOS App
+```bash
+open ios/StarkVeil/StarkVeil.xcodeproj
+# In Xcode: select physical iOS device or Simulator → ⌘R
+```
+
+**In the app, set the RPC URL to:** `http://127.0.0.1:5050` and contract address to the value from Step 3.
+
+---
+
+### Step 5 · Wallet Onboarding — Create or Import
+| Checkpoint | Expected Result |
+|---|---|
+| Tap **Create Wallet** | 12-word BIP-39 mnemonic displayed |
+| Write down the 12 words, confirm | Wallet created, proceeds to Activation |
+| **Import Wallet** with same words | Recovers identical Starknet address |
+
+### Step 6 · Account Activation (Deploy On-Chain)
+| Checkpoint | Expected Result |
+|---|---|
+| Open `AccountActivationView` | Displays computed Starknet address (deterministic) |
+| Copy address → fund it via Katana or faucet | ETH balance appears in the view |
+| Tap **Activate Wallet** | Deploys OZ v0.8 account contract on-chain |
+| Tap **Check Status** | `AccountActivated` state transitions to `VaultView` |
+
+### Step 7 · Shield (Public → Private)
+| Checkpoint | Expected Result |
+|---|---|
+| Tap **Shield** in `ShieldedBalanceCard` | Opens ShieldView with amount + memo fields |
+| Enter amount + memo, tap Shield | Tx submitted; `isShielding = true` spinner shows |
+| Wait 5 s (one SyncEngine poll cycle) | Note appears in balance; Activity tab shows green Deposit row |
+| Toggle balance visibility (eye icon) | Amount revealed/hidden with animation |
+
+> **On-chain verification:**
+> ```bash
+> sncast --profile katana_test call \
+>   --contract-address <CONTRACT_ADDRESS> \
+>   --function mt_next_index
+> # Value increments by 1 per shield
+> ```
+
+### Step 8 · Private Transfer (Shield → Shield, No Public Trace)
+| Checkpoint | Expected Result |
+|---|---|
+| Tap **Private Transfer** button (below action grid) | `PrivateTransferView` opens as full-screen cover |
+| Enter: recipient Starknet address, their IVK hex, amount, optional memo | Fields validated live |
+| Tap **Send Privately** | On-chain `Transfer` event emitted with encrypted output commitment |
+| Recipient's SyncEngine polls Shielded events | Recipient trial-decrypts memo with their IVK — note appears in their balance |
+| Activity tab on sender's device | Shows 🔒 Transfer row with tx hash |
+
+> **Privacy confirmation:** Query `starknet_getEvents` for the Transfer event — you will see only opaque commitment hashes, no amounts, no addresses.
+
+### Step 9 · Unshield (Private → Public)
+| Checkpoint | Expected Result |
+|---|---|
+| Tap **Unshield** | `UnshieldFormView` opens |
+| Enter recipient public address + amount | Validates against UTXO balance |
+| Tap **Unshield** | Nullifier posted on-chain; ERC-20 transferred to recipient |
+| Check on-chain nullifier registry | `is_nullifier_spent` returns `true` for that nullifier |
+| Try to unshield the **same note again** | App throws `noteAlreadySpent` immediately (pre-flight check) |
+| Activity tab | Shows 🔓 Unshield row |
+
+> **On-chain verification:**
+> ```bash
+> sncast --profile katana_test call \
+>   --contract-address <CONTRACT_ADDRESS> \
+>   --function is_nullifier_spent \
+>   --calldata <NULLIFIER_HEX>
+> # Returns 1 (true) after a successful unshield
+> ```
+
+### Step 10 · Double-Spend Prevention
+| Checkpoint | Expected Result |
+|---|---|
+| Shield a note, then unshield it | Succeeds ✅ |
+| Attempt to unshield the same note again | App shows `noteAlreadySpent` error immediately |
+| Manually craft duplicate unshield tx on-chain | Cairo contract rejects with `Note already spent` panic |
+
+### Step 11 · Network Isolation
+| Checkpoint | Expected Result |
+|---|---|
+| Switch from Sepolia to Mainnet in Settings | All UTXO notes clear instantly |
+| Switch back to Sepolia | Sepolia notes reload from SwiftData |
+| Mainnet and Sepolia notes never mix | Confirmed by `networkId` scoping in `StoredNote` |
+
+### Step 12 · Wallet Recovery
+| Checkpoint | Expected Result |
+|---|---|
+| Delete the app | All notes removed from device |
+| Reinstall app → Import Wallet with same 12 words | Same Starknet address derived |
+| Activate → VaultView | SyncEngine re-scans from block 0, trial-decrypts all shielded events, restores UTXO balance |
+
+---
+
+## 🔮 What's Pending (Post-Hackathon)
+
+| Item | Priority | Notes |
+|---|---|---|
+| Stwo client-side ZK prover circuit | Critical | Replace mock verifier in `privacy_pool.cairo` with real on-chain Stwo verifier |
+| RFC 6979 nonce for ECDSA signing | High | Replace SHA-256 deterministic k with proper RFC 6979 |
+| QR code for account address | Medium | Address display in `AccountActivationView` |
+| Mainnet contract deployment | Medium | Upgrade from Sepolia |
+| Starknet ID integration | Low | Replace `anon.stark` placeholder |
+
+---
 - **Poseidon Zero Hashes**: For the STARK proof to cryptographically verify on iOS, the Merkle tree `get_zero_hash()` constants in `.cairo` and the Rust STARK circuits must match exactly.
 - **Strict Thread Isolation**: `WalletManager.swift` utilizes explicit `@MainActor` thread-safe Combine pipelines when intercepting network toggle transitions between Mainnet and Sepolia. This rigorously guarantees UTXOs do not leak dynamically across the chain environments.
 
@@ -383,7 +542,7 @@ Converts a shielded note back to a public ERC-20 balance. The recipient and amou
 
 ## Full-Stack Security & Privacy Assessment
 
-_Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
+_Completed across 7 audit passes (Phases 4–16). Last updated: Phase 16._
 
 ### Layer 1 — Key Material & Derivation
 
@@ -396,6 +555,7 @@ _Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
 | STARK public key | Real EC scalar multiply via `starknet-crypto::get_public_key` | ✅ Phase 12 |
 | Account address | Real Cairo Pedersen hash (shift-point constants), correct length suffix | ✅ Phase 12 |
 | Wallet reset | `deleteWallet` wipes `masterSeed`, `accountAddress`, `accountDeployed` atomically | ✅ |
+| IVK derivation from spending key | `stark_derive_ivk` via Poseidon FFI | ✅ Phase 15 |
 
 ### Layer 2 — Cryptographic Primitives
 
@@ -403,9 +563,13 @@ _Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
 |---|---|---|
 | Pedersen hash | `starknet-crypto::pedersen_hash` (not SHA-256) | ✅ Phase 12 |
 | Poseidon hash | `starknet-crypto::poseidon_hash_many` (matches Cairo contract) | ✅ Phase 12 |
-| ECDSA signing | `starknet-crypto::sign` with deterministic k = SHA-256(pk‖hash) | ✅ Phase 12 |
-| AES-GCM memo encryption | 256-bit HKDF subkey per note, random nonce | ✅ |
-| k nonce for signing | Deterministic (safe), not yet RFC 6979 | ⚠️ Phase 13 |
+| ECDSA signing | `starknet-crypto::sign` with deterministic k | ✅ Phase 12 |
+| AES-GCM memo encryption | HKDF-SHA256 + AES-256-GCM, random 96-bit nonce via CryptoKit | ✅ Phase 15 |
+| Note commitment | Real `Poseidon(value, asset, pubkey, nonce)` via Rust FFI | ✅ Phase 15 |
+| Nullifier | Real `Poseidon(commitment, spending_key)` via Rust FFI | ✅ Phase 15 |
+| IVK encryption key | HKDF-SHA256 from IVK bytes, info=`note-enc-v1` | ✅ Phase 15 |
+| Transfer selector | `starknet_keccak("transfer")` Keccak-250 | ✅ Phase 16 |
+| is_nullifier_spent selector | `starknet_keccak("is_nullifier_spent")` Keccak-250 | ✅ Phase 16 |
 
 ### Layer 3 — UTXO Integrity
 
@@ -415,7 +579,10 @@ _Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
 | Duplicate UTXO prevention | `addNote` deduplication by note fields | ✅ Phase 4 |
 | Shield amount correctness | High/low u128 split for values > 18.44 STRK | ✅ Phase 4 |
 | ETH balance parse | Reads both `[low_u128, high_u128]` words | ✅ Phase 5 |
-| `deleteAllNetworksData` | `do-catch` prevents silent SwiftData failures | ✅ Phase 4 |
+| Deterministic nonce | `Poseidon(IVK, value, asset)` — consistent across shield/sync/unshield | ✅ Phase 16 |
+| Pending-spend state | `isPendingSpend = true` before tx; reverts to false on failure | ✅ Phase 16 |
+| Double-spend pre-flight | `isNullifierSpent()` RPC check before proof generation | ✅ Phase 15 |
+| Nullifier check order | Checked before `generateTransferProof` (not after) | ✅ Phase 16 |
 
 ### Layer 4 — App & Session Security
 
@@ -433,24 +600,19 @@ _Completed across 5 audit passes (Phases 4–13). Last updated: Phase 12._
 |---|---|---|
 | Deploy account signature | Real STARK ECDSA via `stark_sign_transaction` FFI | ✅ Phase 12 |
 | Invoke transaction signature | Real STARK ECDSA | ✅ Phase 12 |
-| Chain nonce | `starknet_getNonce` before every tx | ❌ Phase 13 |
-| Invoke tx hash | Chained Pedersen over tx fields | ❌ Phase 13 |
+| Chain nonce | `starknet_getNonce` before every tx | ✅ Phase 13 |
+| Invoke tx hash | Chained Pedersen over tx fields | ✅ Phase 13 |
 
 ### Layer 6 — Privacy Properties
 
 | Property | Mechanism | Status |
 |---|---|---|
-| Sender/recipient hiding | Shielded note model — only commitment on-chain | ✅ |
-| Amount hiding | Amount inside AES-GCM encrypted memo | ✅ |
+| Sender/recipient hiding | Shielded note model — only commitment + encrypted memo on-chain | ✅ |
+| Amount hiding | Amount inside AES-256-GCM encrypted memo (IVK-keyed) | ✅ Phase 15 |
+| Recipient privacy | Requires recipient's actual IVK — cannot be derived from address alone | ✅ Phase 16 |
 | Network isolation | Direct Starknet RPC — no analytics relay | ✅ |
-| No branding / metadata leaks | All Zcash references removed, novel branding | ✅ |
-| Local activity log | Amounts stored in SwiftData (risk if device seized) | ⚠️ Medium |
-
-### What Remains for Mainnet
-
-1. `starknet_getNonce` before every invoke (Phase 13) — **critical**
-2. Real invoke tx hash builder — **critical**
-3. RFC 6979 nonce via Rust `rfc6979` crate (Phase 13) — high
-4. QR code for account address — medium
-5. Mainnet contract deployment + RPC toggle — future
+| IVK trial-decryption | SyncEngine: decrypt with own IVK once per batch (O(1) per block) | ✅ Phase 16 |
+| UTF-8 fallback for memos | Non-UTF8 decrypted data shown as hex, not dropped | ✅ Phase 16 |
+| Encrypted memo on Shielded event | Cairo emits `encrypted_memo: felt252` for trial-decryption | ✅ Phase 16 |
+| Mock verifier (demo) | `verify_proof` returns `true`; Stwo integration pending post-hackathon | ⚠️ Demo only |
 

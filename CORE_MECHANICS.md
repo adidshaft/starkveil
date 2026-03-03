@@ -126,23 +126,69 @@ Complete the three-operation privacy suite with the outbound path.
 - **`WalletManager`** update: `executeUnshield()` cleanly removes the spent note from memory and SwiftData.
 
 
+### Phase 10.3: Activity Feed (Completed)
+- **`ActivityEvent`**: Persistent SwiftData record for deposit, transfer, and unshield operations. Rendered in `ActivityTabView` with colour-coded icons.
+
+---
+
+### Phase 11: Starknet Account Abstraction (Completed)
+- **`StarknetAccount.swift`**: HKDF-derived STARK keypair, real EC public key, OZ v0.8 counterfactual address via chained Pedersen hash.
+- **3-State App Flow**: Onboarding → AccountActivation → Vault, all persisted in Keychain.
+
+### Phases 12–13: Real Starknet Cryptography (Completed)
+Replaced all SHA-256 placeholder cryptography with real Rust FFI exports:
+- `stark_pubkey`: EC scalar multiply on the STARK curve.
+- `stark_compute_address`: Chained Pedersen hash for OZ v0.8 address formula.
+- `stark_sign_transaction`: STARK ECDSA with deterministic `k`.
+- `starknet_getNonce` + `starknet_estimateMessageFee` wired into all transaction flows.
+
+### Phase 14: Fee Estimation (Completed)
+- `RPCClient.estimateInvokeFee`: `starknet_estimateMessageFee` with 1.5× multiplier, falls back to 0.01 ETH on RPC error.
+
+### Phase 15: Full Privacy Implementation (Completed)
+The core privacy layer — without this, commitments and nullifiers were fake:
+- **`note_commitment`**: Real `Poseidon(value, asset, owner_pubkey, nonce)` via Rust FFI.
+- **`note_nullifier`**: Real `Poseidon(commitment, spending_key)` via Rust FFI.
+- **`derive_ivk`**: `Poseidon(spending_key, domain)` — IVK is a proper Starknet felt252.
+- **`NoteEncryption.swift`**: HKDF-SHA256 + AES-256-GCM encrypted memos keyed by IVK. `encryptMemo` / `decryptMemo` / `computeCommitment` / `computeNullifier`.
+- **`isNullifierSpent` (RPCClient)**: `starknet_call` on `is_nullifier_spent` selector before proof generation.
+- **SyncEngine IVK trial-decryption**: IVK derived once per batch outside the event loop. Notes that fail AES-GCM authentication are silently dropped (belong to other wallets).
+- **`PrivateTransferView`**: Full-screen cover UI for shield-to-shield private transfers. Requires recipient's Starknet address and their IVK hex.
+
+### Phase 16: Audit Hardening (Completed)
+Resolved 2C + 4H + 5M audit vulnerabilities:
+- **Deterministic nonces**: `Poseidon(IVK, value, asset)` — consistent across shield, SyncEngine decoding, and unshield. Eliminates nonce mismatch.
+- **Pending-spend rollback**: `defer { isPendingSpend = false }` on failure in both `executeUnshield` and `executePrivateTransfer`.
+- **Nullifier check order**: `isNullifierSpent` moved before `generateTransferProof` (H-NULLIFIER-ORDER).
+- **Correct Keccak-250 selectors**: `transfer` and `is_nullifier_spent` now use real `starknet_keccak` values.
+- **IVK loop optimization**: Derived once per SyncEngine batch, not per-event.
+- **Recipient IVK required**: `PrivateTransferView` asks for the recipient's real IVK instead of deriving from their public address.
+- **Cairo `Shielded` event**: Now emits `encrypted_memo: felt252` field at `data[5]` for SyncEngine trial-decryption.
+- **Mock verifier**: `verify_proof` returns `true` (documented, intentional for demo). Stwo client-side proving circuit is the next milestone.
+
+---
+
 ## Core Mechanics Dictionary
 
 - **Note (`Note`)**: The fundamental unit of shielded value. Fields: `value`, `asset_id`, `owner_ivk`, `memo`. Persisted via `StoredNote` in SwiftData, scoped by `networkId`.
-- **Note Commitment**: `Poseidon(value, asset_id, owner_ivk, memo)` — written on-chain. Reveals nothing about owner, amount, or asset.
-- **Nullifier**: `Poseidon(spending_key, leaf_position)` — posted on-chain when spending to mark a note as spent. Cannot be linked back to its commitment without the spending key.
-- **Viewing Key (IVK)**: 32-byte read-only key derived deterministically from the user's BIP-39 master seed. Allows AES-GCM memo decryption to identify owned notes; cannot authorize spending.
-- **Spending Key**: Authorizes nullifier generation and STARK proof binding. Derived deterministically from the same BIP-39 root via domain separation (HKDF `"starkveil-sk-v1"` versus `"starkveil-ivk-v1"`).
-- **STARK Keypair**: Private key = HKDF(chainRoot, `"starkveil-stark-pk-v1"`) clamped to STARK curve order. Public key = `private_key * G` (generator point). Both deterministic from seed.
-- **OZ Account Address**: `compute_address(class_hash, salt=pubkey, calldata=[pubkey], deployer=0x0)` using chained Pedersen hashes. Fully recoverable from the BIP-39 mnemonic.
-- **Counterfactual Address**: The computed account address exists and can receive funds _before_ the account contract is deployed. Deployment is a one-time `DEPLOY_ACCOUNT` transaction.
-- **BIP-39 Mnemonic**: A 12 or 24-word phrase encoding the master entropy. Recovery phrase for the entire wallet. Derivation path: BIP-39 entropy → PBKDF2 seed (64 bytes stored in Keychain) → HMAC/HKDF keys.
-- **NoteDecryptor**: HKDF-SHA256 derives a per-note 256-bit subkey from `(IVK, commitment)`. AES-256-GCM decrypts the event memo. Foreign notes fail authentication silently with zero side-effects.
-- **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing across app restarts without duplicate note emission.
-- **Private Transfer Proof**: STARK circuit asserting: (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, (3) nullifiers derive from spending keys owning the inputs.
-- **Unshield Proof**: STARK circuit binding `(amount, asset, recipient)` as public inputs. Proves note ownership and unspent status, authorizes ERC-20 release to a named public recipient.
-- **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so the Activity tab retains history even after notes are spent.
-- **`PersistenceController`**: SwiftData `ModelContainer` singleton. Holds a single shared `ModelContext` (not a computed property — inserts and fetches share the same context to remain visible to each other).
-- **`SyncCheckpoint` ordering invariant**: On network switch — `clearStore(old)` runs first, then `activeNetworkId` is updated, then `loadNotes(new)`. This ordering is mandatory to avoid deleting the wrong network's records.
-- **3-State App Flow**: `Onboarding` (no seed) → `AccountActivation` (seed exists, account not deployed) → `Vault` (account deployed, full operation). Each state is persisted in Keychain and survives reinstall.
-
+- **Note Commitment**: `Poseidon(value, asset_id, owner_pubkey, nonce)` via Rust FFI — written on-chain. Reveals nothing about the actual owner, amount, or asset.
+- **Nullifier**: `Poseidon(commitment, spending_key)` via Rust FFI — posted on-chain when spending to mark a note as spent. Cannot be linked back to its commitment without the spending key.
+- **Viewing Key (IVK)**: felt252 derived via `Poseidon(spending_key, domain)`. Allows AES-GCM memo decryption to identify owned notes; cannot authorize spending. Safe to share with watch-only wallets.
+- **Spending Key**: Authorizes nullifier generation and STARK proof binding. Derived deterministically from the BIP-39 root via HKDF `"starkveil-sk-v1"`.
+- **STARK Keypair**: Private key = HKDF(chainRoot, `"starkveil-stark-pk-v1"`) clamped to STARK curve order. Public key = real `private_key * G` via `stark_pubkey` FFI. Both deterministic from seed.
+- **OZ Account Address**: `compute_address(class_hash, salt=pubkey, calldata=[pubkey], deployer=0x0)` using chained Pedersen hashes via FFI. Fully recoverable from the BIP-39 mnemonic.
+- **Counterfactual Address**: Computed account address exists and can receive funds before the account contract is deployed.
+- **BIP-39 Mnemonic**: 12-word phrase encoding master entropy. Derivation: entropy → PBKDF2 seed (64 bytes, stored in Keychain) → HMAC/HKDF keys.
+- **NoteEncryption**: `encryptionKey = HKDF-SHA256(IVK_bytes, info="note-enc-v1")`. Memo encrypted with `AES-256-GCM`. Recipient trial-decrypts every Shielded event — GCM auth failure means Note belongs to someone else.
+- **Deterministic Nonce**: `Poseidon(IVK, value, asset)` — used consistently in `executeShield`, SyncEngine, `executeUnshield`, and `executePrivateTransfer` to ensure commitment reconstruction always succeeds.
+- **Pending-Spend State**: `StoredNote.isPendingSpend = true` is set before submitting an unshield/transfer tx. A `defer` block resets it to `false` if the tx fails, preventing permanently locked notes.
+- **isNullifierSpent**: RPC call (`starknet_call` → `is_nullifier_spent` selector) performed before proof generation. Fail-open (returns false on RPC error); the Cairo contract is the authoritative guard.
+- **IVK Trial-Decryption**: SyncEngine derives IVK once per block (outside the event loop) and attempts `NoteEncryption.decryptMemo` on every `Shielded` event. Notes that authenticate belong to this wallet; others are silently dropped.
+- **PrivateTransferView**: Shield-to-shield private transfer UI. Requires the recipient's Starknet address AND their IVK hex. Encrypts the memo with the recipient's IVK so their SyncEngine can trial-decrypt it.
+- **Mock Verifier**: `verify_proof` in `privacy_pool.cairo` returns `true` for all proofs. Documented as intentional for the demo — enables the full demo flow without a client-side ZK prover circuit. Stwo integration replaces this post-hackathon.
+- **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing without duplicate note emission.
+- **Private Transfer Proof**: STARK circuit asserting (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, (3) nullifiers derive from spending keys owning the inputs. Currently mock — real Stwo proving circuit pending.
+- **Unshield Proof**: STARK circuit binding `(amount, asset, recipient)` as public inputs. Currently mock — same Stwo circuit pending.
+- **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so history is retained after notes are spent.
+- **`PersistenceController`**: SwiftData `ModelContainer` singleton with a single shared `ModelContext` — inserts and fetches share the same context.
+- **3-State App Flow**: `Onboarding` (no seed) → `AccountActivation` (seed exists, account not deployed) → `Vault` (full operation). Each state is persisted in Keychain and survives reinstall.

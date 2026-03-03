@@ -113,23 +113,53 @@ A second-pass audit of the Phase 9 implementation identified 5 critical bugs:
 
 ---
 
-## Current State of the Product
-StarkVeil is fully engineered through Phase 11 (standalone Starknet account abstraction).
-1. The **Smart Contracts** compile and are deployed to Sepolia Testnet (`PrivacyPool` at `0x74b2fe0e…`).
-2. The **Rust Prover SDK** outputs a universal `StarkVeilProver.xcframework` for physical iOS devices.
-3. The **SwiftUI Application** is a completely standalone privacy wallet: seed phrase → address derivation → account deployment → Shield/Transfer/Unshield — no external tooling required.
-4. **Phase 11 complete**: STARK keypair derivation, OZ v0.8 counterfactual address, deploy transaction, ETH balance polling, 3-state app flow.
-5. **Audit hardened**: 20+ critical/high/medium bugs resolved across 4 audit passes.
+## Phase 12–13: Account Abstraction + Real Starknet Cryptography (Completed)
+- **Action**: Replaced all SHA-256 placeholders with real Starknet cryptographic primitives via Rust FFI (`starknet-crypto` crate).
+- **Decision**: `StarknetAccount.swift` now calls `stark_pubkey`, `stark_compute_address`, and `stark_sign_transaction` FFI exports. `StarknetTransactionBuilder` assembles real Pedersen-hashed V1 invoke transactions with STARK ECDSA signatures.
+- **Why**: The wallet was signing transactions with `["0x0", "0x0"]` placeholder signatures. With real ECDSA, every transaction is cryptographically valid.
+- **New files**: `StarknetAccount.swift`, `AccountActivationView.swift`.
+- **Modified files**: `StarkVeilProver.swift` (5 new FFI exports), `prover/src/lib.rs`, `prover/include/starkveil_prover.h`.
 
-## Next Steps: End-to-End Sepolia Testing
-1. Build on physical iPhone → create BIP-39 wallet → see computed Starknet address.
-2. Send ETH to the address from any Sepolia faucet or exchange.
-3. Tap **Activate Wallet** → deploy account contract → enter VaultView.
-4. Shield funds via the `PrivacyPool.shield()` contract call → verify SyncEngine picks up the note.
-5. Send private transfer → Activity tab shows Transfer row.
-6. Unshield to a public address → verify on-chain + Activity tab shows Unshield row.
+## Phase 14: Transaction Fee Estimation + Real Nonce (Completed)
+- **Action**: Added `starknet_estimateMessageFee` and `starknet_getNonce` to `RPCClient`, wired both into `executeShield`, `executeUnshield`, and `executePrivateTransfer`.
+- **Why**: Without real nonce + fee estimation, transactions were always rejected with `INVALID_TRANSACTION_NONCE`.
 
-## What Needs Native Rust FFI Before Mainnet
-- Real STARK curve EC multiplication for public key (currently SHA-256 approximation)
-- Real Pedersen hash for address computation (currently SHA-256 chaining)
-- ECDSA signing of transactions with spending key (currently `signature = ["0x0","0x0"]`)
+## Phase 15: Full Privacy Implementation (Completed)
+Added the complete privacy layer that makes StarkVeil a real shielded wallet:
+- **Real note commitments**: `noteCommitment = Poseidon(value, asset, owner_pubkey, nonce)` via Rust FFI — no more dummy hashes.
+- **Real nullifiers**: `nullifier = Poseidon(commitment, spending_key)` via Rust FFI — double-spend prevention is now cryptographically real.
+- **IVK derivation**: `deriveIVK = Poseidon(spending_key, domain)` FFI export — the Incoming Viewing Key is now a proper Starknet felt252.
+- **NoteEncryption.swift**: AES-256-GCM encrypted memos keyed by IVK via HKDF-SHA256. Recipient trial-decrypts Shielded events to find their notes.
+- **isNullifierSpent RPC**: Added `starknet_call` to check double-spend status before proof generation.
+- **SyncEngine IVK trial-decryption**: SyncEngine now uses the IVK to authenticate encrypted memos — notes from other users are silently dropped.
+- **Why**: Without real commitments and nullifiers, the shielded pool offers zero real privacy or double-spend prevention.
+
+## Phase 16: Audit Fixes — Full Privacy Hardening (Completed)
+Resolved 2 Critical + 4 High + 5 Medium vulnerabilities from the Phase 15 audit:
+- **C-RECIPIENT-PRIVACY**: `PrivateTransferView` now requires the recipient's actual IVK. The old scheme derived a "seed" from the recipient's public address (publicly computable) — now the sender must know the recipient's private IVK.
+- **C-TRANSFER-SELECTOR**: Replaced the fake hex placeholder with the correct `starknet_keccak("transfer")` Keccak-250 hash.
+- **H-PENDING-RESET**: Added `defer` block in `executeUnshield` and `executePrivateTransfer` that resets `isPendingSpend = false` on any failure — notes can never be permanently locked.
+- **H-NULLIFIER-ORDER**: Moved isNullifierSpent check BEFORE `generateTransferProof` — saves the user the 10-second proof generation wait on an already-spent note.
+- **H-IVK-FAIL-DROPS-NOTES**: SyncEngine now falls back to Keychain IVK if FFI derivation fails, instead of using an empty string that corrupts AES-GCM.
+- **M-NONCE-REDERIVED-WRONG**: Replaced SecRandom nonces with deterministic `Poseidon(IVK, value, asset)` nonces — nonces now match across shield, sync, and unshield without out-of-band communication.
+- **M-SELECTOR-WRONG-ALGO**: Fixed `is_nullifier_spent` selector to use the correct Keccak-250 hash.
+- **M-IVK-LOOP-PERF**: Moved IVK derivation outside the SyncEngine event loop — `O(N)` Keychain + FFI calls → `O(1)` per block.
+- **M-DECRYPTED-UTF8**: `NoteEncryption.decryptMemo` now returns a hex string fallback for non-UTF8 decrypted data instead of `nil` (which would drop valid notes).
+- **M-TRANSFER-NO-PENDING**: `executePrivateTransfer` now sets `isPendingSpend = true` with the same rollback-on-failure `defer` pattern as `executeUnshield`.
+
+---
+
+## Current State of the Product (Phase 16)
+StarkVeil is fully engineered through Phase 16 (complete privacy implementation + audit hardening).
+1. The **Smart Contracts** compile with real Poseidon commitments, nullifiers, and encrypted memo emission in the `Shielded` event. Mock verifier (`verify_proof = true`) pending Stwo integration.
+2. The **Rust Prover SDK** exports 7 FFI functions: `generate_transfer_proof`, `poseidon_hash`, `note_commitment`, `note_nullifier`, `derive_ivk`, `stark_pubkey`, `stark_sign_transaction`.
+3. The **SwiftUI Application** is a fully standalone privacy wallet: BIP-39 → address derivation → account deployment → Shield/PrivateTransfer/Unshield with real cryptographic commitments.
+4. **27+ critical/high/medium bugs** resolved across 7 audit passes.
+5. **PrivateTransferView** wired as a full-screen cover behind the "Private Transfer" button in `ShieldedBalanceCard`.
+
+## Post-Hackathon Roadmap
+1. **Stwo client-side ZK prover circuit** — replace `verify_proof = true` with real on-device Stwo proving (no API, fully private).
+2. **RFC 6979 nonce** for ECDSA signing via Rust `rfc6979` crate.
+3. **QR code** for account address display.
+4. **Mainnet contract deployment**.
+5. **Starknet ID** integration to replace `anon.stark` placeholder.
