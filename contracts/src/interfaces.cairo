@@ -2,7 +2,7 @@ use starknet::ContractAddress;
 
 #[starknet::interface]
 pub trait IPrivacyPool<TContractState> {
-    fn shield(ref self: TContractState, asset: ContractAddress, amount: u256, note_commitment: felt252);
+    fn shield(ref self: TContractState, asset: ContractAddress, amount: u256, note_commitment: felt252, encrypted_memo: felt252);
     
     fn private_transfer(
         ref self: TContractState,

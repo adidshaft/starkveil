@@ -33,7 +33,10 @@ pub mod PrivacyPool {
         asset: ContractAddress,
         amount: u256,
         commitment: felt252,
-        leaf_index: u32
+        leaf_index: u32,
+        // AES-256-GCM encrypted memo (IVK-keyed). Recipients trial-decrypt this
+        // during SyncEngine polling to identify incoming notes.
+        encrypted_memo: felt252
     }
 
     #[derive(Drop, starknet::Event)]
@@ -53,9 +56,10 @@ pub mod PrivacyPool {
     #[generate_trait]
     impl InternalImpl of InternalTrait {
         fn verify_proof(ref self: ContractState, proof: Span<felt252>, public_inputs: Span<felt252>) -> bool {
-            // TODO: Integrate actual S-Two verifier here. 
-            // For MVP, we verify a dummy condition or simply return true to represent a valid proof bind.
-            // A real proof binds the nullifiers, commitments, and amounts to the ZK circuit.
+            // MOCK VERIFIER: Returns true unconditionally for demo purposes.
+            // TODO: Integrate the Stwo (Starknet Two) verifier once the client-side
+            // prover circuit is complete. The Stwo verifier runs fully on-chain and
+            // does not require any external proving service (preserving full privacy).
             true
         }
 
@@ -149,7 +153,7 @@ pub mod PrivacyPool {
 
     #[abi(embed_v0)]
     impl PrivacyPoolImpl of IPrivacyPool<ContractState> {
-        fn shield(ref self: ContractState, asset: ContractAddress, amount: u256, note_commitment: felt252) {
+        fn shield(ref self: ContractState, asset: ContractAddress, amount: u256, note_commitment: felt252, encrypted_memo: felt252) {
             let caller = get_caller_address();
             let contract_addr = get_contract_address();
 
@@ -163,7 +167,8 @@ pub mod PrivacyPool {
                 asset: asset,
                 amount: amount,
                 commitment: note_commitment,
-                leaf_index: index
+                leaf_index: index,
+                encrypted_memo: encrypted_memo
             }));
         }
 

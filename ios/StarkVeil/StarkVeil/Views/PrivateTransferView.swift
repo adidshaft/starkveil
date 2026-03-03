@@ -17,7 +17,7 @@ import SwiftUI
 struct PrivateTransferView: View {
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
-    @EnvironmentObject private var themeManager: ThemeManager
+    @EnvironmentObject private var themeManager: AppThemeManager
     @Environment(\.dismiss) private var dismiss
 
     @State private var recipientAddress: String = ""

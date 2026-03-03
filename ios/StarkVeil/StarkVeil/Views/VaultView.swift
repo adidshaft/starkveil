@@ -19,8 +19,9 @@ struct VaultView: View {
     @State private var bottomTab: BottomNavTab = .wallet
 
     // Transaction sheets
-    @State private var showSendSheet     = false
-    @State private var showUnshieldSheet = false
+    @State private var showSendSheet          = false
+    @State private var showUnshieldSheet      = false
+    @State private var showPrivateTransferSheet = false
 
     // Wallet deleted callback
     var onWalletDeleted: (() -> Void)? = nil
@@ -118,6 +119,12 @@ struct VaultView: View {
                 .environmentObject(walletManager)
                 .environmentObject(networkManager)
         }
+        .fullScreenCover(isPresented: $showPrivateTransferSheet) {
+            PrivateTransferView()
+                .environmentObject(walletManager)
+                .environmentObject(networkManager)
+                .environmentObject(themeManager)
+        }
     }
 
     // MARK: - Wallet tab layout (extracted to keep body readable)
@@ -127,7 +134,8 @@ struct VaultView: View {
         ShieldedBalanceCard(
             isBalanceVisible: $isBalanceVisible,
             showSendSheet:     $showSendSheet,
-            showUnshieldSheet: $showUnshieldSheet
+            showUnshieldSheet: $showUnshieldSheet,
+            showPrivateTransferSheet: $showPrivateTransferSheet
         )
         .padding(.bottom, 28)
 

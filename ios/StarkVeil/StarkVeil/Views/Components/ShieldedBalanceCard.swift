@@ -10,6 +10,7 @@ struct ShieldedBalanceCard: View {
     @Binding var isBalanceVisible: Bool
     @Binding var showSendSheet: Bool
     @Binding var showUnshieldSheet: Bool
+    @Binding var showPrivateTransferSheet: Bool
 
     @State private var impact       = UIImpactFeedbackGenerator(style: .medium)
     @State private var toastMessage: String? = nil
@@ -74,13 +75,13 @@ struct ShieldedBalanceCard: View {
                     icon: "arrow.down.circle.fill",
                     label: "Receive",
                     isLive: false,
-                    action: { showToast("Receive address coming in Phase 11") }
+                    action: { showToast("Receive address coming soon") }
                 )
                 actionButton(
                     icon: "plus.circle.fill",
                     label: "Shield",
                     isLive: false,
-                    action: { showToast("Shielding requires account abstraction (Phase 11)") }
+                    action: { showToast("Shielding requires account activation") }
                 )
                 actionButton(
                     icon: "arrow.up.circle.fill",
@@ -95,6 +96,31 @@ struct ShieldedBalanceCard: View {
                     action: { showUnshieldSheet = true }
                 )
             }
+
+            // Private Transfer — shield-to-shield, no public pool
+            Button(action: {
+                impact.impactOccurred()
+                showPrivateTransferSheet = true
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.doc.fill")
+                        .font(.system(size: 13))
+                    Text("Private Transfer")
+                        .font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(themeManager.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(themeManager.surface2)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(themeManager.textSecondary.opacity(0.12), lineWidth: 1)
+                )
+            }
+            .padding(.top, 10)
 
             // Toast overlay
             if let msg = toastMessage {
