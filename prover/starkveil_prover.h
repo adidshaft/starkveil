@@ -45,6 +45,32 @@ const char* stark_sign_transaction(const char* tx_hash_hex,
                                    const char* k_hex);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 15: Note Commitment, Nullifier, and Viewing Key
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Derives an Incoming Viewing Key (IVK) from the spending key.
+/// IVK = Poseidon(spending_key, domain_separator).
+/// Safe to share with watch-only nodes for incoming note detection.
+/// Input:  0x-prefixed hex felt252 spending key.
+/// Output: JSON {"Ok": "0x..."} or {"Error": "message"}.
+const char* stark_derive_ivk(const char* spending_key_hex);
+
+/// Computes a note commitment: Poseidon(value, asset_id, owner_pubkey, nonce).
+/// Matches the Cairo PrivacyPool contract's commitment scheme.
+/// All inputs are 0x-prefixed hex felt252 strings.
+/// Output: JSON {"Ok": "0x..."} or {"Error": "message"}.
+const char* stark_note_commitment(const char* value_hex,
+                                  const char* asset_id_hex,
+                                  const char* owner_pubkey_hex,
+                                  const char* nonce_hex);
+
+/// Computes a note nullifier: Poseidon(commitment, spending_key).
+/// Spending this note reveals the nullifier on-chain (prevents double-spend).
+/// Output: JSON {"Ok": "0x..."} or {"Error": "message"}.
+const char* stark_note_nullifier(const char* commitment_hex,
+                                 const char* spending_key_hex);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Memory management
 // ─────────────────────────────────────────────────────────────────────────────
 

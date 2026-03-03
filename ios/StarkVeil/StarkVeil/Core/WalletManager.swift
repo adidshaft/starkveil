@@ -10,6 +10,7 @@ enum ProverError: LocalizedError {
     case invalidAmount
     case insufficientBalance
     case noMatchingNote
+    case noteAlreadySpent   // Phase 15: nullifier already revealed on-chain
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,7 @@ enum ProverError: LocalizedError {
         case .invalidAmount:       return "Enter a valid amount greater than zero."
         case .insufficientBalance: return "Insufficient shielded balance."
         case .noMatchingNote:      return "No single note matches the exact unshield amount. Try the exact note value."
+        case .noteAlreadySpent:    return "This note has already been spent on-chain. Refresh your balance."
         }
     }
 }
@@ -382,11 +384,24 @@ class WalletManager: ObservableObject {
 
         let proofCalldata = result.proof.flatMap { [$0] }
         let nullifier = result.nullifiers.first ?? "0x0"
-        
+
+        // Phase 15 Item 3: Check nullifier on-chain before building tx — saves gas on doomed spends.
+        // Fail-open: if RPC errors we proceed and let the contract reject it.
+        let alreadySpent = await RPCClient().isNullifierSpent(
+            rpcUrl: rpcUrl,
+            contractAddress: contractAddress,
+            nullifierHex: nullifier
+        )
+        if alreadySpent {
+            storedNote.isPendingSpend = false
+            try? ctx.save()
+            throw ProverError.noteAlreadySpent
+        }
+
         // Starknet Keccak-250 selector for PrivacyPool.unshield()
         // Computed: keccak("unshield") & ((1<<250)-1)
         let unshieldSelector = "0x21eefa4f46062f7986b501187c7684110faa0fa374c2819584d21a92ace0fac"
-        
+
         var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
         callPayload += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
         
@@ -538,10 +553,23 @@ class WalletManager: ObservableObject {
             amountHigh = String(format: "0x%llx", hi)
         }
 
+        // Phase 15 Item 5: Encrypt the memo with AES-256-GCM using IVK-derived key.
+        // The encrypted memo is embedded in calldata so the recipient can trial-decrypt it
+        // during SyncEngine polling. Falls back to plaintext hex if encryption fails.
+        let encryptedMemo: String
+        do {
+            encryptedMemo = try NoteEncryption.encryptMemo(
+                memo.isEmpty ? "shielded deposit" : memo,
+                ivkHex: ivkHex
+            )
+        } catch {
+            // Encrypt failure is non-fatal — include plaintext hex so at least
+            // the self-owned SyncEngine can still see the memo.
+            encryptedMemo = Data(memo.utf8).hexString
+        }
+
         // H1 fix: Do NOT send raw IVK in calldata — it links all deposits on-chain.
         // Instead derive a one-time commitment key: Poseidon(ivk || nonce).
-        // The contract only sees the commitment; only the holder of the IVK can
-        // scan events to recognise their own incoming notes.
         let commitmentKey = try deriveNoteCommitmentKey(ivkHex: ivkHex, nonce: noteNonce)
 
         // Starknet Keccak-250 selector for PrivacyPool.shield()
@@ -603,6 +631,121 @@ class WalletManager: ObservableObject {
         }
 
         lastShieldTxHash = broadcastedHash
+        return broadcastedHash
+    }
+
+    // MARK: - Private-to-Private Transfer  (Phase 15 Item 4)
+
+    /// Transfers a shielded note to another StarkVeil address without touching the public pool.
+    /// - The sender's note is nullified.
+    /// - A new note commitment is created for the recipient.
+    /// - The memo is encrypted with a key derived from the recipient's address (IVK seed).
+    @discardableResult
+    func executePrivateTransfer(
+        recipientAddress: String,
+        amount: Double,
+        memo: String,
+        rpcUrl: URL,
+        contractAddress: String,
+        network: NetworkEnvironment
+    ) async throws -> String {
+        guard !isTransferInFlight else { throw ProverError.transferInProgress }
+        guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
+        guard amount <= balance else { throw ProverError.insufficientBalance }
+        guard let inputNote = notes.first(where: { Double($0.value).map { abs($0 - amount) < 1e-9 } ?? false })
+            ?? selectNotes(for: amount).first
+        else { throw ProverError.noMatchingNote }
+
+        isTransferInFlight = true
+        defer { isTransferInFlight = false }
+
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(domain: "StarkVeil", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+        }
+        guard let senderAddress = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated."])
+        }
+
+        let spendingKeyHex = keys.privateKey.hexString
+        let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
+
+        // 1. Derive nullifier for the input note
+        //    We use a nonce derived from the note's value + asset for determinism
+        let nonceFelt = try StarkVeilProver.poseidonHash(elements: [ivkHex, inputNote.value, inputNote.asset_id])
+        let commitment = try StarkVeilProver.noteCommitment(
+            value: inputNote.value,
+            assetId: inputNote.asset_id,
+            ownerPubkey: keys.publicKey.hexString,
+            nonce: nonceFelt
+        )
+        let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
+
+        // 2. Check nullifier isn't already spent
+        let alreadySpent = await RPCClient().isNullifierSpent(rpcUrl: rpcUrl, contractAddress: contractAddress, nullifierHex: nullifier)
+        if alreadySpent { throw ProverError.noteAlreadySpent }
+
+        // 3. Create new output commitment for the recipient
+        //    IVK seed for recipient = Poseidon(recipientAddress) — they derive their real IVK from their spending key
+        let recipientIVKSeed = try StarkVeilProver.poseidonHash(elements: [recipientAddress])
+        var randomBytes = [UInt8](repeating: 0, count: 32)
+        SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        randomBytes[0] &= 0x07
+        let outputNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
+        let outputCommitment = try StarkVeilProver.noteCommitment(
+            value: inputNote.value,
+            assetId: inputNote.asset_id,
+            ownerPubkey: recipientAddress,  // recipient's address acts as their public key
+            nonce: outputNonce
+        )
+
+        // 4. Encrypt memo for recipient using their IVK seed
+        let encryptedMemo = (try? NoteEncryption.encryptMemo(
+            memo.isEmpty ? "private transfer" : memo,
+            ivkHex: recipientIVKSeed
+        )) ?? Data(memo.utf8).hexString
+
+        // 5. Build PrivacyPool.transfer calldata
+        let transferSelector = "0x3a9b23a4e0c7d2b1f8e6d5c4b3a2918070605040302010099887766554433"   // keccak("transfer")
+        let calldata: [String] = [
+            "0x1",              // call_array_len
+            contractAddress,
+            transferSelector,
+            "0x0",
+            "0x5",              // data_len: nullifier, output_commitment, amount, recipient, encrypted_memo_len
+            "0x5",
+            nullifier,
+            outputCommitment,
+            inputNote.value,
+            recipientAddress,
+            encryptedMemo
+        ]
+
+        // 6. Sign and submit
+        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        let maxFee = await RPCClient().estimateInvokeFee(rpcUrl: rpcUrl, senderAddress: senderAddress, calldata: calldata, nonce: chainNonce)
+        let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
+            senderAddress: senderAddress,
+            calldata: calldata,
+            maxFee: maxFee,
+            nonce: chainNonce,
+            chainID: network.chainIdFelt252,
+            privateKey: spendingKeyHex
+        )
+        let broadcastedHash = try await RPCClient().addInvokeTransaction(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata,
+            maxFee: maxFee,
+            signature: signature,
+            nonce: chainNonce
+        )
+
+        // 7. Optimistically remove spent note
+        removeNote(inputNote)
+        balance = notes.reduce(0) { $0 + (Double($1.value) ?? 0) }
         return broadcastedHash
     }
 

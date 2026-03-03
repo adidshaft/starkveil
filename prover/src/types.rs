@@ -2,10 +2,13 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Note {
-    pub value: String, // String to handle large U256 numbers via JSON
-    pub asset_id: String,
-    pub owner_ivk: String,
-    pub memo: String,
+    pub value: Option<String>,      // felt252 hex — amount shielded
+    pub asset_id: Option<String>,   // felt252 hex — STRK token address
+    pub owner_ivk: Option<String>,  // felt252 hex — incoming viewing key (legacy field)
+    pub owner_pubkey: Option<String>, // felt252 hex — account public key (for commitment)
+    pub nonce: Option<String>,      // felt252 hex — random nonce (prevents commitment reuse)
+    pub spending_key: Option<String>, // felt252 hex — spending key (for nullifier derivation)
+    pub memo: Option<String>,       // plaintext or AES-256-GCM ciphertext (hex)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

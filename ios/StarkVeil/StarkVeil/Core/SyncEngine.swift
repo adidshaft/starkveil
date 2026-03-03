@@ -167,34 +167,48 @@ class SyncEngine: ObservableObject {
                     //   data[2] = amount.high (u256 high 128 bits)
                     //   data[3] = commitment  (felt252 hash)
                     //   data[4] = leaf_index  (u32)
+                    //   data[5] = encrypted_memo (Phase 15 IVK-encrypted hex, optional)
                     var decodedNotes: [(note: Note, blockNumber: Int)] = []
                     for event in events {
                         guard event.data.count >= 5 else { continue }
                         let amountHex  = event.data[1]
                         let commitment = event.data[3]
+                        let encMemoHex = event.data.count >= 6 ? event.data[5] : nil
 
                         guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
                         let amountDouble = Double(amountInt) / 1e18
+                        guard amountDouble > 0 else { continue }
 
-                        // Derive the real IVK from the Keychain so the stored note is scannable
-                        // and can be recognised by NoteDecryptor in future phases.
+                        // Phase 15 Item 2: IVK trial-decryption.
+                        // Only add notes we can prove are ours (AES-GCM auth tag acts as proof-of-ownership).
                         let ivkHex: String
-                        if let ivkData = KeychainManager.ownerIVK() {
+                        if let seed = KeychainManager.masterSeed(),
+                           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
+                            ivkHex = (try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString)) ?? ""
+                        } else if let ivkData = KeychainManager.ownerIVK() {
                             ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
                         } else {
-                            // Wallet not yet initialised (shouldn't occur after onboarding)
                             continue
                         }
 
-                        // Drop zero-value events — a zero amount cannot be spent and would
-                        // inflate the displayed balance with phantom UTXO notes. (C-NEW-1)
-                        guard amountDouble > 0 else { continue }
+                        // If there's an encrypted memo field, trial-decrypt it.
+                        // nil result means the note is not addressed to us — skip it.
+                        var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
+                        if let encHex = encMemoHex, !encHex.isEmpty, encHex != "0x0" {
+                            if let plain = try? NoteEncryption.decryptMemo(encHex, ivkHex: ivkHex) {
+                                decryptedMemo = plain   // decrypts = note is ours
+                            } else {
+                                // Could not decrypt = note is not addressed to us; skip
+                                continue
+                            }
+                        }
+                        // No encrypted memo = legacy/self-deposit; accept it (self-deposits inherit the commitment)
 
                         let note = Note(
                             value: String(format: "%.9f", amountDouble),
                             asset_id: "0xSTRK",
                             owner_ivk: ivkHex,
-                            memo: "Shielded: \(commitment.prefix(10))…"
+                            memo: decryptedMemo ?? "Shielded deposit"
                         )
                         decodedNotes.append((note: note, blockNumber: event.block_number))
                     }

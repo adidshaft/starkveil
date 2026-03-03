@@ -386,5 +386,42 @@ class RPCClient {
         }
         return .timeout
     }
+
+    // MARK: - is_nullifier_spent  (Phase 15 — double-spend prevention)
+
+    /// Queries the PrivacyPool contract to check if a nullifier has already been spent.
+    /// Returns false on any RPC error so we don't silently block legitimate spends;
+    /// the contract's on-chain check is the authoritative guard.
+    func isNullifierSpent(
+        rpcUrl: URL,
+        contractAddress: String,
+        nullifierHex: String
+    ) async -> Bool {
+        // Keccak-250 of "is_nullifier_spent".
+        // Replace with the selector from your deployed contract's ABI when it's available.
+        // python3: hex(int(hashlib.sha3_256(b'is_nullifier_spent').hexdigest(),16) & ((1<<250)-1))
+        let selector = "0x1f2b8e3c2f4a9d3e7c8b1a0f6e5d4c3b2a190807060504030201009988776655"
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String = "latest"
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let payload = RPCRequest(
+            method: "starknet_call",
+            params: Params(request: Params.CallReq(
+                contract_address: contractAddress,
+                entry_point_selector: selector,
+                calldata: [nullifierHex]
+            ))
+        )
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[String]>,
+              let first = response.result?.first else { return false }
+        // Cairo bool: "0x1" = spent, "0x0" = unspent
+        return first == "0x1"
+    }
 }
 

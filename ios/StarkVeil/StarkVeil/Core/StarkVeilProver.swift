@@ -226,6 +226,77 @@ class StarkVeilProver {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Phase 15 Function 5: Incoming Viewing Key
+    //    IVK = Poseidon(spending_key, domain_separator)
+    //    Safe to share — allows incoming note detection without spending ability.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Derives the Incoming Viewing Key (IVK) from the spending key.
+    static func deriveIVK(spendingKeyHex: String) throws -> String {
+        try callSingleArg(stark_derive_ivk, arg: spendingKeyHex)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 15 Function 6: Note Commitment
+    //    commitment = Poseidon(value, asset_id, owner_pubkey, nonce)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Computes the Poseidon note commitment.
+    static func noteCommitment(value: String, assetId: String, ownerPubkey: String, nonce: String) throws -> String {
+        let v    = value.utf8CString
+        let a    = assetId.utf8CString
+        let o    = ownerPubkey.utf8CString
+        let n    = nonce.utf8CString
+        return try v.withUnsafeBufferPointer { vp in
+            try a.withUnsafeBufferPointer { ap in
+                try o.withUnsafeBufferPointer { op in
+                    try n.withUnsafeBufferPointer { np in
+                        guard let vb = vp.baseAddress, let ab = ap.baseAddress,
+                              let ob = op.baseAddress, let nb = np.baseAddress else {
+                            throw NSError(domain: "FFIError", code: 1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Null buffer"])
+                        }
+                        guard let rawPtr = stark_note_commitment(vb, ab, ob, nb) else {
+                            throw NSError(domain: "FFIError", code: 2,
+                                          userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
+                        }
+                        let json = String(cString: rawPtr)
+                        free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
+                        return try decodeOkString(json: json)
+                    }
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 15 Function 7: Note Nullifier
+    //    nullifier = Poseidon(commitment, spending_key)
+    //    Revealed on-chain when the note is spent — prevents double-spend.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Computes the Poseidon note nullifier.
+    static func noteNullifier(commitment: String, spendingKey: String) throws -> String {
+        let cBuf = commitment.utf8CString
+        let sBuf = spendingKey.utf8CString
+        return try cBuf.withUnsafeBufferPointer { cp in
+            try sBuf.withUnsafeBufferPointer { sp in
+                guard let cb = cp.baseAddress, let sb = sp.baseAddress else {
+                    throw NSError(domain: "FFIError", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Null buffer"])
+                }
+                guard let rawPtr = stark_note_nullifier(cb, sb) else {
+                    throw NSError(domain: "FFIError", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
+                }
+                let json = String(cString: rawPtr)
+                free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
+                return try decodeOkString(json: json)
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // 4. STARK ECDSA Signing
     //    Signs a transaction hash with the account's spending key.
     //    Returns the (r, s) signature pair for the invoke/deploy calldata.
