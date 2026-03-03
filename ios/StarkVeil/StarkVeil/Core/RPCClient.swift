@@ -229,59 +229,162 @@ class RPCClient {
         return result.transaction_hash
     }
 
-    // MARK: - starknet_getClassAt  (Phase 11 — checks deployment status)
+    // MARK: - starknet_estimateFee  (Phase 14)
 
-    /// Returns true if a contract class is deployed at the given address.
-    /// Used to determine if the user's account needs to be deployed.
-    func isContractDeployed(rpcUrl: URL, address: String) async -> Bool {
-        struct Params: Encodable {
-            let block_id: String = "latest"
-            let contract_address: String
+    /// Estimates the fee for an INVOKE_V1 transaction and returns a suggested maxFee
+    /// with a configurable safety multiplier (default 1.5 × — gives headroom for mempool spikes).
+    ///
+    /// Falls back to the conservative hardcoded amount if the RPC call fails,
+    /// so callers don't need to handle the error specially.
+    func estimateInvokeFee(
+        rpcUrl: URL,
+        senderAddress: String,
+        calldata: [String],
+        nonce: String,
+        fallback: String = "0x2386f26fc10000",   // 0.01 ETH — safe upper-bound
+        multiplier: Double = 1.5
+    ) async -> String {
+        struct EstimateInvokeTx: Encodable {
+            let type: String = "INVOKE"
+            let sender_address: String
+            let calldata: [String]
+            let max_fee: String = "0xffffffffffffffffffffffffffffffff"  // sentinel — ignored by node
+            let version: String = "0x1"
+            let signature: [String] = []   // empty sig for estimation
+            let nonce: String
         }
-        let payload = RPCRequest(method: "starknet_getClassAt",
-                                 params: Params(contract_address: address))
-        // If the RPC returns any result (class hash), the account is deployed.
-        // An error means the address has no contract yet.
-        struct ClassResult: Decodable { let class_hash: String? }
-        let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<ClassResult>
-        return response?.result != nil && response?.error == nil
+        struct Params: Encodable {
+            let request: [EstimateInvokeTx]
+            let block_id: String = "latest"
+            let simulation_flags: [String] = ["SKIP_VALIDATE"]  // don't validate sig for estimate
+        }
+        struct FeeEstimate: Decodable {
+            let overall_fee: String           // hex wei
+            let gas_price: String?
+        }
+        let tx = EstimateInvokeTx(sender_address: senderAddress, calldata: calldata, nonce: nonce)
+        let payload = RPCRequest(method: "starknet_estimateFee",
+                                 params: Params(request: [tx]))
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimate]>,
+              let estimate = response.result?.first,
+              let feeValue = UInt64(estimate.overall_fee.dropFirst(2), radix: 16) else {
+            return fallback
+        }
+        // Apply multiplier and cap at a sensible maximum (0.05 ETH)
+        let suggested = Double(feeValue) * multiplier
+        let capped = min(suggested, 2.8e16)   // 0.028 ETH
+        return "0x\(String(UInt64(capped), radix: 16))"
     }
 
-    // MARK: - starknet_call: getBalance  (Phase 11 — ETH balance for gas estimation)
-
-    /// Queries the ETH balance of an address via the ETH ERC-20 contract.
-    /// Returns the balance in wei as a hex string ("0x...").
-    func getETHBalance(rpcUrl: URL, address: String) async throws -> String {
-        let ethTokenAddress = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7" // Starknet ETH ERC-20
-        // LOW-SELECTORS fix: verified Keccak-250 selector for "balanceOf"
-        // python3: hex(int(hashlib.sha3_256(b'balanceOf').hexdigest(),16) & ((1<<250)-1))
-        // = 0x2b43118902ce404ad9f6882cdad03bb727383209c55d71a1f9fb5a580aabe82
-        let balanceOfSelector = "0x2b43118902ce404ad9f6882cdad03bb727383209c55d71a1f9fb5a580aabe82"
-        struct Params: Encodable {
-            let request: CallRequest
-            let block_id: String
-            struct CallRequest: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
+    /// Estimates the fee for a DEPLOY_ACCOUNT_V1 transaction.
+    func estimateDeployFee(
+        rpcUrl: URL,
+        classHash: String,
+        constructorCalldata: [String],
+        salt: String,
+        contractAddress: String,
+        fallback: String = "0x2386f26fc10000",
+        multiplier: Double = 1.5
+    ) async -> String {
+        struct EstimateDeployTx: Encodable {
+            let type: String = "DEPLOY_ACCOUNT"
+            let max_fee: String = "0xffffffffffffffffffffffffffffffff"
+            let version: String = "0x1"
+            let signature: [String] = []
+            let nonce: String = "0x0"
+            let contract_address_salt: String
+            let constructor_calldata: [String]
+            let class_hash: String
         }
-        let payload = RPCRequest(
-            method: "starknet_call",
-            params: Params(
-                request: Params.CallRequest(
-                    contract_address: ethTokenAddress,
-                    entry_point_selector: balanceOfSelector,
-                    calldata: [address]
-                ),
-                block_id: "latest"
-            )
-        )
-        // LOW-DEAD-STRUCT fix: CallResult was declared but never used — decode directly to [String].
-        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        struct Params: Encodable {
+            let request: [EstimateDeployTx]
+            let block_id: String = "latest"
+            let simulation_flags: [String] = ["SKIP_VALIDATE"]
+        }
+        struct FeeEstimate: Decodable { let overall_fee: String }
+        let tx = EstimateDeployTx(contract_address_salt: salt,
+                                  constructor_calldata: constructorCalldata,
+                                  class_hash: classHash)
+        let payload = RPCRequest(method: "starknet_estimateFee",
+                                 params: Params(request: [tx]))
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimate]>,
+              let estimate = response.result?.first,
+              let feeValue = UInt64(estimate.overall_fee.dropFirst(2), radix: 16) else {
+            return fallback
+        }
+        let suggested = Double(feeValue) * multiplier
+        let capped = min(suggested, 2.8e16)
+        return "0x\(String(UInt64(capped), radix: 16))"
+    }
+
+    // MARK: - starknet_getTransactionReceipt  (Phase 14)
+
+    /// Execution and finality status of a submitted transaction.
+    struct TransactionReceipt: Decodable {
+        /// "SUCCEEDED" | "REVERTED"
+        let execution_status: String?
+        /// "ACCEPTED_ON_L2" | "ACCEPTED_ON_L1" | "RECEIVED" | "REJECTED"
+        let finality_status: String?
+        let transaction_hash: String?
+        let revert_reason: String?
+
+        var isAccepted: Bool {
+            (finality_status == "ACCEPTED_ON_L2" || finality_status == "ACCEPTED_ON_L1")
+            && execution_status == "SUCCEEDED"
+        }
+        var isReverted: Bool { execution_status == "REVERTED" }
+        var isRejected: Bool { finality_status == "REJECTED" }
+    }
+
+    /// Fetches the receipt for a transaction hash.
+    /// Throws RPCClientError.serverError if the node returns an error (e.g. tx not yet known).
+    func getTransactionReceipt(rpcUrl: URL, txHash: String) async throws -> TransactionReceipt {
+        struct Params: Encodable { let transaction_hash: String }
+        let payload = RPCRequest(method: "starknet_getTransactionReceipt",
+                                 params: Params(transaction_hash: txHash))
+        let response: RPCResponse<TransactionReceipt> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
             throw RPCClientError.serverError(code: error.code, message: error.message)
         }
-        return response.result?.first ?? "0x0"
+        guard let result = response.result else { throw RPCClientError.invalidResponse }
+        return result
+    }
+
+    // MARK: - Poll until accepted  (Phase 14)
+    //
+    // Replaces the isContractDeployed loop in AccountActivationView.
+    // Uses starknet_getTransactionReceipt which is the canonical confirmation signal.
+
+    enum TxFinalityResult {
+        case accepted(TransactionReceipt)
+        case reverted(reason: String)
+        case rejected
+        case timeout
+    }
+
+    /// Polls until the tx is accepted or reverted, with a configurable interval and timeout.
+    func pollUntilAccepted(
+        rpcUrl: URL,
+        txHash: String,
+        intervalSeconds: UInt64 = 3,
+        maxAttempts: Int = 40    // 40 × 3s = 120s max wait
+    ) async -> TxFinalityResult {
+        for _ in 0..<maxAttempts {
+            // Respect Task cancellation between polls
+            if Task.isCancelled { return .timeout }
+            try? await Task.sleep(nanoseconds: intervalSeconds * 1_000_000_000)
+            if Task.isCancelled { return .timeout }
+
+            guard let receipt = try? await getTransactionReceipt(rpcUrl: rpcUrl, txHash: txHash) else {
+                // Node hasn't indexed it yet — keep polling
+                continue
+            }
+            if receipt.isAccepted  { return .accepted(receipt) }
+            if receipt.isReverted  { return .reverted(reason: receipt.revert_reason ?? "unknown") }
+            if receipt.isRejected  { return .rejected }
+            // Still RECEIVED — keep polling
+        }
+        return .timeout
     }
 }
+

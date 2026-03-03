@@ -411,10 +411,17 @@ class WalletManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
         }
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        // Phase 14: estimate real fee (1.5× multiplier, falls back to 0.01 ETH on RPC error)
+        let maxFee = await RPCClient().estimateInvokeFee(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata,
+            nonce: chainNonce
+        )
         let (_, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
-            maxFee: "0x2386f26fc10000",
+            maxFee: maxFee,
             nonce: chainNonce,
             chainID: network.chainIdFelt252,
             privateKey: keys.privateKey.hexString
@@ -423,7 +430,7 @@ class WalletManager: ObservableObject {
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
-            maxFee: "0x2386f26fc10000",
+            maxFee: maxFee,
             signature: signature,
             nonce: chainNonce
         )
@@ -561,11 +568,17 @@ class WalletManager: ObservableObject {
         let calldata = ["0x1", contractAddress, shieldSelector, "0x0", "0x3", "0x3",
                         amountLow, amountHigh, commitmentKey]
 
-        // Phase 13: compute tx hash + real ECDSA signature
+        // Phase 14: estimate real fee before building tx hash (hash commits to maxFee)
+        let maxFee = await RPCClient().estimateInvokeFee(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata,
+            nonce: chainNonce
+        )
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
-            maxFee: "0x2386f26fc10000",   // 0.01 ETH — conservative Sepolia estimate
+            maxFee: maxFee,
             nonce: chainNonce,
             chainID: network.chainIdFelt252,
             privateKey: keys.privateKey.hexString
@@ -575,7 +588,7 @@ class WalletManager: ObservableObject {
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
-            maxFee: "0x2386f26fc10000",
+            maxFee: maxFee,
             signature: signature,
             nonce: chainNonce
         )

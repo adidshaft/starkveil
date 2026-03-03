@@ -342,28 +342,34 @@ struct AccountActivationView: View {
             deploymentState = .deploying
             errorMessage = nil
         }
-        let rpcUrl   = networkManager.activeNetwork.rpcUrl
+        let rpcUrl    = networkManager.activeNetwork.rpcUrl
         let pubKeyHex = keys.publicKey.hexString
-        let maxFee   = "0x2386f26fc10000"   // 0.01 ETH — sufficient for deploy on Sepolia
+        let rpc       = RPCClient()
         do {
+            // Phase 14: estimate fee before computing the tx hash.
+            // maxFee is committed inside the hash so it must be known upfront.
+            let maxFee = await rpc.estimateDeployFee(
+                rpcUrl: rpcUrl,
+                classHash: StarknetCurve.ozAccountClassHash,
+                constructorCalldata: [pubKeyHex],
+                salt: pubKeyHex,
+                contractAddress: keys.address
+            )
             // M-DEPLOY-ZERO-SIG fix: compute real DEPLOY_ACCOUNT_V1 tx hash + ECDSA signature.
-            // Without this, the sequencer rejects the transaction immediately.
             let deployHash = try StarknetTransactionBuilder.deployAccountHash(
                 contractAddress: keys.address,
                 constructorCalldata: [pubKeyHex],
                 classHash: StarknetCurve.ozAccountClassHash,
                 salt: pubKeyHex,
                 maxFee: maxFee,
-                nonce: "0x0",   // deploy account nonce is always 0x0
+                nonce: "0x0",
                 chainID: networkManager.activeNetwork.chainIdFelt252
             )
-            // H-TRY-SWALLOW fix: propagate signing errors — a failed sign means
-            // we'd submit ["0x0","0x0"] and the tx would be rejected anyway.
             let deploySig = try StarkVeilProver.signTransaction(
                 txHash: deployHash,
                 privateKey: keys.privateKey.hexString
             )
-            let txHash = try await RPCClient().deployAccount(
+            let txHash = try await rpc.deployAccount(
                 rpcUrl: rpcUrl,
                 classHash: StarknetCurve.ozAccountClassHash,
                 constructorCalldata: [pubKeyHex],
@@ -376,7 +382,7 @@ struct AccountActivationView: View {
                 deployTxHash = txHash
                 deploymentState = .confirming
             }
-            try await pollForDeployment(rpcUrl: rpcUrl, txHash: txHash, address: keys.address)
+            await pollForDeployment(rpcUrl: rpcUrl, txHash: txHash, address: keys.address)
         } catch {
             await MainActor.run {
                 deploymentState = .error(error.localizedDescription)
@@ -384,34 +390,29 @@ struct AccountActivationView: View {
         }
     }
 
-    private func pollForDeployment(rpcUrl: URL, txHash: String, address: String) async throws {
-        for _ in 0..<20 {
-            // M-CANCEL-GAP fix: catch CancellationError separately.
-            // If the Task is cancelled mid-poll (e.g. app backgrounded) but the contract is
-            // already deployed on-chain, we must not lose that fact. Re-check once before throwing.
-            do {
-                try await Task.sleep(nanoseconds: 3_000_000_000)   // 3 seconds
-            } catch is CancellationError {
-                // Task was cancelled — do one final check then propagate cancellation
-                let isDeployed = await RPCClient().isContractDeployed(rpcUrl: rpcUrl, address: address)
-                if isDeployed {
-                    try? KeychainManager.markAccountDeployed()
-                    await MainActor.run { deploymentState = .deployed }
-                }
-                throw CancellationError()
+    // Phase 14: uses starknet_getTransactionReceipt for canonical confirmation.
+    // Shows revert reason if the tx reverts, so users understand what went wrong.
+    private func pollForDeployment(rpcUrl: URL, txHash: String, address: String) async {
+        let result = await RPCClient().pollUntilAccepted(rpcUrl: rpcUrl, txHash: txHash)
+        switch result {
+        case .accepted:
+            try? KeychainManager.markAccountDeployed()
+            await MainActor.run { deploymentState = .deployed }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run { onActivated() }
+        case .reverted(let reason):
+            await MainActor.run {
+                deploymentState = .error("Transaction reverted: \(reason)")
             }
-            let isDeployed = await RPCClient().isContractDeployed(rpcUrl: rpcUrl, address: address)
-            if isDeployed {
-                try? KeychainManager.markAccountDeployed()
-                await MainActor.run { deploymentState = .deployed }
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-                await MainActor.run { onActivated() }
-                return
+        case .rejected:
+            await MainActor.run {
+                deploymentState = .error("Rejected by sequencer. Check ETH balance and retry.")
             }
-        }
-        // Timed out — tx may still confirm; user can reopen and recheck
-        await MainActor.run {
-            deploymentState = .error("Transaction submitted (\(txHash.prefix(12))…) but confirmation timed out. Reopen the app to recheck.")
+        case .timeout:
+            let shortHash = String(txHash.prefix(12))
+            await MainActor.run {
+                deploymentState = .error("Tx \(shortHash)… pending — reopen app to recheck status.")
+            }
         }
     }
 
