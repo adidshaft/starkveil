@@ -1,0 +1,1 @@
+{"rustc":15286977725146296317,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[10448766010662481490,"build_script_build",false,7594170170598188018]],"local":[{"RerunIfChanged":{"output":"aarch64-apple-ios/release/build/num-traits-394c7ac72921ba51/output","paths":["build.rs"]}}],"rustflags":[],"metadata":0,"config":0,"compile_kind":0}

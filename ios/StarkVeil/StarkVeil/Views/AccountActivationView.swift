@@ -307,16 +307,16 @@ struct AccountActivationView: View {
 
     private func computeKeys() {
         Task {
-            // Derive or load cached account keys
-            if let cached = KeychainManager.accountAddress(),
-               let seed = KeychainManager.masterSeed() {
-                let keys = StarknetAccount.deriveAccountKeys(fromSeed: seed)
-                await MainActor.run { accountKeys = keys }
-            } else if let seed = KeychainManager.masterSeed() {
-                let keys = StarknetAccount.deriveAccountKeys(fromSeed: seed)
-                // Cache address in Keychain for future launches
+            guard let seed = KeychainManager.masterSeed() else { return }
+            do {
+                let keys = try StarknetAccount.deriveAccountKeys(fromSeed: seed)
+                // Cache address for quick display on future launches
                 try? KeychainManager.storeAccountAddress(keys.address)
                 await MainActor.run { accountKeys = keys }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Key derivation failed: \(error.localizedDescription)"
+                }
             }
         }
     }

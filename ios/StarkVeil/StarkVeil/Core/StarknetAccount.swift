@@ -150,57 +150,61 @@ enum StarknetAccount {
         return deriveAccountKeys(fromSeed: seed)
     }
 
-    /// Derives the complete STARK keypair and address from raw seed bytes.
-    static func deriveAccountKeys(fromSeed seed: Data) -> AccountKeys {
-        // 1. Derive a 32-byte STARK-specific private key material via HKDF
+    /// Derives the complete STARK keypair and account address from raw seed bytes.
+    /// Throws if the Rust FFI call fails.
+    static func deriveAccountKeys(fromSeed seed: Data) throws -> AccountKeys {
+        // 1. Derive STARK-specific entropy via HKDF
         let chainRoot = hmacSHA256(key: Data("Starknet seed v0".utf8), data: seed)
 
-        // 2. M-KEY-BIAS fix: use rejection-sampling (grindKey) instead of modular reduction.
-        //    Modular reduction biases the key distribution toward the low range of [0, order).
-        //    grindKey hashes with an incrementing counter until the result < order.
+        // 2. Uniform private key via rejection-sampling (grindKey)
         let privateKey = grindKey(chainRoot: chainRoot)
 
-        // 3. Compute STARK public key
-        let publicKey = starkPublicKey(privateKey: privateKey)
+        // 3. Real EC scalar multiply via Rust FFI
+        let pubKeyHex = try StarkVeilProver.starkPublicKey(privateKeyHex: privateKey.hexString)
+        guard let publicKey = BigUInt(hex: pubKeyHex.hasPrefix("0x") ? String(pubKeyHex.dropFirst(2)) : pubKeyHex) else {
+            throw NSError(domain: "StarknetAccount", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "FFI returned invalid pubkey: \(pubKeyHex)"])
+        }
 
-        // 4. Compute OZ v0.8 counterfactual address
-        let address = computeOZAccountAddress(publicKey: publicKey)
+        // 4. Real Pedersen-hashed OZ v0.8 counterfactual address
+        let address = try computeOZAccountAddress(publicKey: publicKey)
 
         return AccountKeys(privateKey: privateKey, publicKey: publicKey, address: address)
     }
 
     // MARK: - Address computation
 
-    /// Computes the counterfactual OpenZeppelin v0.8 account address.
-    /// Formula: contract_address = hash('STARKNET_CONTRACT_ADDRESS', deployer, salt, class_hash, calldata_hash, length)
-    /// where salt = pubkey, deployer = 0, calldata = [pubkey]
-    static func computeOZAccountAddress(publicKey: BigUInt) -> String {
-        #if !DEBUG
-        // C-STUB compile guard: stub address computation MUST NOT reach Release builds.
-        // Replace starkPublicKey() and pedersenHash() with real FFI before switching to Release.
-        #error("StarknetAccount uses stub cryptography. Wire real Pedersen + EC multiply from Rust FFI before Release.")
-        #endif
-
-        let classHash = BigUInt(hex: StarknetCurve.ozAccountClassHash)!
+    /// Computes the counterfattual OpenZeppelin v0.8 account address using real Pedersen hashes.
+    static func computeOZAccountAddress(publicKey: BigUInt) throws -> String {
+        let classHash = BigUInt(hex: StarknetCurve.ozAccountClassHash.hasPrefix("0x")
+            ? String(StarknetCurve.ozAccountClassHash.dropFirst(2))
+            : StarknetCurve.ozAccountClassHash)!
         let salt      = publicKey
         let deployer  = BigUInt.zero
 
-        // H-CALLDATA-LEN fix: OZ compute_hash_on_elements hashes elements THEN appends the
-        // length as a final element. Missing the length makes the hash structurally wrong.
-        // calldata = [pubkey] → hash = pedersenHash(pedersenHash(0, pubkey), 1)
-        var calldataHash = pedersenHash(a: BigUInt.zero, b: publicKey)
-        calldataHash = pedersenHash(a: calldataHash, b: BigUInt(1)) // length = 1
+        // Real Pedersen hash via Rust FFI
+        func ph(_ a: BigUInt, _ b: BigUInt) throws -> BigUInt {
+            let result = try StarkVeilProver.pedersenHash(a: a.hexString, b: b.hexString)
+            let hex = result.hasPrefix("0x") ? String(result.dropFirst(2)) : result
+            guard let v = BigUInt(hex: hex) else {
+                throw NSError(domain: "StarknetAccount", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Pedersen FFI returned invalid felt: \(result)"])
+            }
+            return v
+        }
+
+        // calldata = [pubkey] → hash with length suffix (OZ compute_hash_on_elements)
+        var calldataHash = try ph(BigUInt.zero, publicKey)
+        calldataHash = try ph(calldataHash, BigUInt(1))   // length = 1
 
         let prefix = BigUInt(hex: "535441524b4e45545f434f4e54524143545f41444452455353")!
-        var h = pedersenHash(a: BigUInt.zero, b: prefix)
-        h = pedersenHash(a: h, b: deployer)
-        h = pedersenHash(a: h, b: salt)
-        h = pedersenHash(a: h, b: classHash)
-        h = pedersenHash(a: h, b: calldataHash)
-        h = pedersenHash(a: h, b: BigUInt(5)) // H-CALLDATA-LEN: outer element count = 5
+        var h = try ph(BigUInt.zero, prefix)
+        h = try ph(h, deployer)
+        h = try ph(h, salt)
+        h = try ph(h, classHash)
+        h = try ph(h, calldataHash)
+        h = try ph(h, BigUInt(5))   // outer element count = 5
 
-        // M-WRONG-MASK fix: mask to STARK curve order, not an ad-hoc 251-bit value.
-        // Using order ensures the address is always a valid field element.
         return h.mod(StarknetCurve.order).hexString
     }
 
@@ -241,12 +245,10 @@ enum StarknetAccount {
         }
     }
 
-    /// Stub STARK public key derivation (SHA-256 approximation).
-    /// MUST be replaced with StarkVeilProver.starkPublicKey() before Release.
+    /// Stub STARK public key derivation — retained for reference only.
+    /// All call sites now use StarkVeilProver.starkPublicKey() via real FFI.
+    @available(*, deprecated, renamed: "StarkVeilProver.starkPublicKey")
     static func starkPublicKey(privateKey: BigUInt) -> BigUInt {
-        #if !DEBUG
-        #error("starkPublicKey() is a stub. Wire real EC multiply from Rust FFI before Release.")
-        #endif
         var combined = Data(privateKey.hexString.utf8)
         combined.append(Data("stark-pubkey-v1".utf8))
         let digest = SHA256.hash(data: combined)
