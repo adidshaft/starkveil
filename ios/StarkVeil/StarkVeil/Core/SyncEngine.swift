@@ -168,6 +168,21 @@ class SyncEngine: ObservableObject {
                     //   data[3] = commitment  (felt252 hash)
                     //   data[4] = leaf_index  (u32)
                     //   data[5] = encrypted_memo (Phase 15 IVK-encrypted hex, optional)
+                    // Phase 15 Item 2 & Audit Fixes (H-IVK-FAIL-DROPS-NOTES, M-IVK-LOOP-PERF):
+                    // Derive IVK strictly ONCE outside the loop to avoid O(N) expensive operations.
+                    // Fallback to keychain if derivation fails to prevent empty string breaking decryption.
+                    let ivkHex: String
+                    if let seed = KeychainManager.masterSeed(),
+                       let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed),
+                       let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString) {
+                        ivkHex = derivedIVK
+                    } else if let ivkData = KeychainManager.ownerIVK() {
+                        ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
+                    } else {
+                        // Impossible state post-onboarding, but safe escape.
+                        return
+                    }
+
                     var decodedNotes: [(note: Note, blockNumber: Int)] = []
                     for event in events {
                         guard event.data.count >= 5 else { continue }
@@ -178,18 +193,6 @@ class SyncEngine: ObservableObject {
                         guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
                         let amountDouble = Double(amountInt) / 1e18
                         guard amountDouble > 0 else { continue }
-
-                        // Phase 15 Item 2: IVK trial-decryption.
-                        // Only add notes we can prove are ours (AES-GCM auth tag acts as proof-of-ownership).
-                        let ivkHex: String
-                        if let seed = KeychainManager.masterSeed(),
-                           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
-                            ivkHex = (try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString)) ?? ""
-                        } else if let ivkData = KeychainManager.ownerIVK() {
-                            ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
-                        } else {
-                            continue
-                        }
 
                         // If there's an encrypted memo field, trial-decrypt it.
                         // nil result means the note is not addressed to us — skip it.

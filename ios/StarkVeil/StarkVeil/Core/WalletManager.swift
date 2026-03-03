@@ -364,6 +364,41 @@ class WalletManager: ObservableObject {
             throw error
         }
 
+        var didSuccessfullySubmit = false
+        defer {
+            if !didSuccessfullySubmit {
+                storedNote.isPendingSpend = false
+                try? ctx.save()
+            }
+        }
+
+        // H-NULLIFIER-ORDER Fix: Derive nullifier here and check on-chain before generating proof
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(domain: "StarkVeil", code: 11, userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+        }
+        let spendingKeyHex = keys.privateKey.hexString
+        let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
+        let nonceFelt = try StarkVeilProver.poseidonHash(elements: [ivkHex, inputNote.value, inputNote.asset_id])
+        let commitment = try StarkVeilProver.noteCommitment(
+            value: inputNote.value,
+            assetId: inputNote.asset_id,
+            ownerPubkey: keys.publicKey.hexString,
+            nonce: nonceFelt
+        )
+        let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
+
+        let alreadySpent = await RPCClient().isNullifierSpent(
+            rpcUrl: rpcUrl,
+            contractAddress: contractAddress,
+            nullifierHex: nullifier
+        )
+        if alreadySpent {
+            storedNote.isPendingSpend = false
+            try? ctx.save()
+            throw ProverError.noteAlreadySpent
+        }
+
         // Generate proof off the main actor (Rust FFI blocks the thread)
         let result = try await StarkVeilProver.generateTransferProof(notes: [inputNote])
 
@@ -383,20 +418,6 @@ class WalletManager: ObservableObject {
         }
 
         let proofCalldata = result.proof.flatMap { [$0] }
-        let nullifier = result.nullifiers.first ?? "0x0"
-
-        // Phase 15 Item 3: Check nullifier on-chain before building tx — saves gas on doomed spends.
-        // Fail-open: if RPC errors we proceed and let the contract reject it.
-        let alreadySpent = await RPCClient().isNullifierSpent(
-            rpcUrl: rpcUrl,
-            contractAddress: contractAddress,
-            nullifierHex: nullifier
-        )
-        if alreadySpent {
-            storedNote.isPendingSpend = false
-            try? ctx.save()
-            throw ProverError.noteAlreadySpent
-        }
 
         // Starknet Keccak-250 selector for PrivacyPool.unshield()
         // Computed: keccak("unshield") & ((1<<250)-1)
@@ -449,6 +470,8 @@ class WalletManager: ObservableObject {
             signature: signature,
             nonce: chainNonce
         )
+
+        didSuccessfullySubmit = true
 
         // RPC Confirmed: Remove EXACTLY ONE matching spent note (Audit Bug 2)
         if let memIdx = notes.firstIndex(where: {
@@ -517,18 +540,10 @@ class WalletManager: ObservableObject {
         }
         let ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
 
-        // C-NONCE-UUID fix: UUID().uuidString is NOT a valid felt252 hex string.
-        // Poseidon(ivkHex, UUID-string) always fails → SHA-256 fallback → wrong commitment → locked funds.
-        // Fix: generate a 32-byte cryptographically random value and encode as 0x-prefixed hex felt252.
-        var randomBytes = [UInt8](repeating: 0, count: 32)
-        let status = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
-        guard status == errSecSuccess else {
-            throw NSError(domain: "StarkVeil", code: 20,
-                          userInfo: [NSLocalizedDescriptionKey: "SecRandomCopyBytes failed — cannot generate safe nonce"])
-        }
-        // Clamp to STARK_PRIME (< 2^251 + 17*2^192 + 1) by masking top 5 bits
-        randomBytes[0] &= 0x07  // ensures value < 2^251
-        let noteNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
+        // M-NONCE-REDERIVED-WRONG fix: use deterministic Poseidon(ivk, value, asset) nonce
+        // to match SyncEngine and executeUnshield. This avoids needing to pass random
+        // nonces out-of-band via encrypted memo or database migrations for this phase.
+        let noteNonce = try StarkVeilProver.poseidonHash(elements: [ivkHex, String(format: "%.6f", amount), "STRK"])
         let note = Note(
             value: String(format: "%.6f", amount),
             asset_id: "STRK",
@@ -643,6 +658,7 @@ class WalletManager: ObservableObject {
     @discardableResult
     func executePrivateTransfer(
         recipientAddress: String,
+        recipientIVK: String,
         amount: Double,
         memo: String,
         rpcUrl: URL,
@@ -659,6 +675,29 @@ class WalletManager: ObservableObject {
         isTransferInFlight = true
         defer { isTransferInFlight = false }
 
+        // M-TRANSFER-NO-PENDING Fix: Mark note as pending
+        let ctx = persistence.context
+        let netId = activeNetworkId
+        let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+        guard let storedNote = (try? ctx.fetch(desc))?.first(where: {
+            $0.value     == inputNote.value    &&
+            $0.asset_id  == inputNote.asset_id &&
+            $0.memo      == inputNote.memo     &&
+            $0.owner_ivk == inputNote.owner_ivk
+        }) else {
+            throw ProverError.noMatchingNote
+        }
+        storedNote.isPendingSpend = true
+        try? ctx.save()
+
+        var didSuccessfullySubmit = false
+        defer {
+            if !didSuccessfullySubmit {
+                storedNote.isPendingSpend = false
+                try? ctx.save()
+            }
+        }
+
         guard let seed = KeychainManager.masterSeed(),
               let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
             throw NSError(domain: "StarkVeil", code: 11,
@@ -673,7 +712,6 @@ class WalletManager: ObservableObject {
         let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
 
         // 1. Derive nullifier for the input note
-        //    We use a nonce derived from the note's value + asset for determinism
         let nonceFelt = try StarkVeilProver.poseidonHash(elements: [ivkHex, inputNote.value, inputNote.asset_id])
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
@@ -688,12 +726,8 @@ class WalletManager: ObservableObject {
         if alreadySpent { throw ProverError.noteAlreadySpent }
 
         // 3. Create new output commitment for the recipient
-        //    IVK seed for recipient = Poseidon(recipientAddress) — they derive their real IVK from their spending key
-        let recipientIVKSeed = try StarkVeilProver.poseidonHash(elements: [recipientAddress])
-        var randomBytes = [UInt8](repeating: 0, count: 32)
-        SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
-        randomBytes[0] &= 0x07
-        let outputNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
+        // M-NONCE-REDERIVED-WRONG fix: deterministic nonce
+        let outputNonce = try StarkVeilProver.poseidonHash(elements: [recipientIVK, inputNote.value, inputNote.asset_id])
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
             assetId: inputNote.asset_id,
@@ -701,14 +735,15 @@ class WalletManager: ObservableObject {
             nonce: outputNonce
         )
 
-        // 4. Encrypt memo for recipient using their IVK seed
+        // 4. Encrypt memo for recipient using their IVK
         let encryptedMemo = (try? NoteEncryption.encryptMemo(
             memo.isEmpty ? "private transfer" : memo,
-            ivkHex: recipientIVKSeed
+            ivkHex: recipientIVK
         )) ?? Data(memo.utf8).hexString
 
         // 5. Build PrivacyPool.transfer calldata
-        let transferSelector = "0x3a9b23a4e0c7d2b1f8e6d5c4b3a2918070605040302010099887766554433"   // keccak("transfer")
+        // C-TRANSFER-SELECTOR fix: real Starknet Keccak-250 of "transfer"
+        let transferSelector = "0x344ccfa6fcaef996304897401d531feee7a039a8feeff02fcfa1fc08923d1d7"
         let calldata: [String] = [
             "0x1",              // call_array_len
             contractAddress,
@@ -744,6 +779,7 @@ class WalletManager: ObservableObject {
         )
 
         // 7. Optimistically remove spent note
+        didSuccessfullySubmit = true
         removeNote(inputNote)
         balance = notes.reduce(0) { $0 + (Double($1.value) ?? 0) }
         return broadcastedHash

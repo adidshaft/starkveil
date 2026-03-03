@@ -92,7 +92,7 @@ struct NoteEncryption {
         do {
             let sealedBox = try AES.GCM.SealedBox(combined: combined)
             let plaintext = try AES.GCM.open(sealedBox, using: key)
-            return String(data: plaintext, encoding: .utf8)
+            return String(data: plaintext, encoding: .utf8) ?? plaintext.hexString
         } catch {
             // GCM authentication failure = not addressed to us; return nil (not an error)
             return nil

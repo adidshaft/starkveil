@@ -398,9 +398,8 @@ class RPCClient {
         nullifierHex: String
     ) async -> Bool {
         // Keccak-250 of "is_nullifier_spent".
-        // Replace with the selector from your deployed contract's ABI when it's available.
         // python3: hex(int(hashlib.sha3_256(b'is_nullifier_spent').hexdigest(),16) & ((1<<250)-1))
-        let selector = "0x1f2b8e3c2f4a9d3e7c8b1a0f6e5d4c3b2a190807060504030201009988776655"
+        let selector = "0x243759dd8b145b290cb0ebd7289fcba6c154362acb1c778339ec59a2be5527b"
         struct Params: Encodable {
             let request: CallReq
             let block_id: String = "latest"

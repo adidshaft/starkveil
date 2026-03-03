@@ -21,6 +21,7 @@ struct PrivateTransferView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var recipientAddress: String = ""
+    @State private var recipientIVK: String = ""
     @State private var transferAmount: String = ""
     @State private var memo: String = ""
     @State private var isSubmitting = false
@@ -90,11 +91,19 @@ struct PrivateTransferView: View {
             }
             Divider().background(themeManager.textSecondary.opacity(0.15))
 
-            // Recipient field
+            // Recipient Address field
             inputField(
                 label: "RECIPIENT ADDRESS",
                 placeholder: "0x04a44...",
                 text: $recipientAddress,
+                monospaced: true
+            )
+
+            // Recipient IVK field
+            inputField(
+                label: "RECIPIENT VIEWING KEY (IVK)",
+                placeholder: "0x123abc...",
+                text: $recipientIVK,
                 monospaced: true
             )
 
@@ -188,6 +197,7 @@ struct PrivateTransferView: View {
 
     private var submitButton: some View {
         let valid = !recipientAddress.isEmpty
+            && !recipientIVK.isEmpty
             && (amountDouble ?? 0) > 0
             && (amountDouble ?? 0) <= walletManager.balance
 
@@ -223,6 +233,7 @@ struct PrivateTransferView: View {
                 let contract = networkManager.activeNetwork.contractAddress
                 let txHash = try await walletManager.executePrivateTransfer(
                     recipientAddress: recipientAddress,
+                    recipientIVK: recipientIVK,
                     amount: amount,
                     memo: memo,
                     rpcUrl: rpcUrl,
