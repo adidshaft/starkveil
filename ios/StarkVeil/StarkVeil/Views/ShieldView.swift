@@ -224,12 +224,15 @@ struct ShieldView: View {
                         network: network
                     )
                 } else {
-                    hash = try await walletManager.executeUnshield(
+                    let selfAddress = KeychainManager.accountAddress() ?? ""
+                    try await walletManager.executeUnshield(
+                        recipient: selfAddress,
                         amount: amount,
                         rpcUrl: rpcUrl,
                         contractAddress: contract,
                         network: network
                     )
+                    hash = walletManager.lastUnshieldTxHash ?? "submitted"
                 }
 
                 UINotificationFeedbackGenerator().notificationOccurred(.success)

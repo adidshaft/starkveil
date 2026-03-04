@@ -10,7 +10,7 @@ struct VaultView: View {
     @EnvironmentObject private var networkManager: NetworkManager
 
     @State private var bottomTab: BottomNavTab = .wallet
-    @State private var vaultTab: VaultSubTab = .assets
+    @State private var vaultTab: VaultTab = .assets
     @State private var isBalanceVisible = true
 
     // Sheet state — clean 3-action model
@@ -163,7 +163,7 @@ struct VaultView: View {
 
 
 // MARK: - Unified Send View (Phase 19)
-/// Just address + amount. Auto-detects svk: (private) vs 0x (public).
+/// Explicit U/S mode picker. U sends via ERC-20 transfer, S sends via private transfer.
 
 private struct UnifiedSendView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
@@ -171,20 +171,27 @@ private struct UnifiedSendView: View {
     @EnvironmentObject private var networkManager: NetworkManager
     @Binding var isPresented: Bool
 
+    enum SendMode: String, CaseIterable {
+        case unshielded = "Unshielded (U)"
+        case shielded = "Shielded (S)"
+    }
+
+    @State private var sendMode: SendMode = .unshielded
     @State private var recipientAddress = ""
     @State private var transferAmount = ""
     @State private var isSending = false
     @State private var errorMessage: String? = nil
     @State private var txHash: String? = nil
 
-    /// Detect if this is a shielded (private) or unshielded (public) send
-    private var isPrivateSend: Bool {
-        recipientAddress.lowercased().hasPrefix("svk:")
-    }
+    private var isPrivateSend: Bool { sendMode == .shielded }
 
     private var parsedAmount: Double? {
         guard let v = Double(transferAmount), v > 0, v.isFinite else { return nil }
         return v
+    }
+
+    private var availableBalance: Double {
+        isPrivateSend ? walletManager.balance : walletManager.publicBalance
     }
 
     private var canSend: Bool {
@@ -198,6 +205,18 @@ private struct UnifiedSendView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 20) {
+
+                        // ── U/S Mode picker ───────────────────────────────
+                        Picker("Send Mode", selection: $sendMode) {
+                            ForEach(SendMode.allCases, id: \.self) { m in
+                                Text(m.rawValue).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: sendMode) { _, _ in
+                            errorMessage = nil
+                            txHash = nil
+                        }
 
                         // ── Amount display ─────────────────────────────────
                         VStack(spacing: 4) {
@@ -216,8 +235,7 @@ private struct UnifiedSendView: View {
                                     .contentTransition(.numericText())
                             }
 
-                            // Auto-label
-                            Text(isPrivateSend ? "Private Send (Shielded)" : "Public Send (Unshielded)")
+                            Text(isPrivateSend ? "🛡 Private Send (Shielded)" : "🌐 Public Send (Unshielded)")
                                 .font(.system(size: 13))
                                 .foregroundStyle(isPrivateSend ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
                                 .padding(.top, 4)
@@ -235,7 +253,7 @@ private struct UnifiedSendView: View {
                                 Image(systemName: isPrivateSend ? "shield.lefthalf.filled" : "person.fill")
                                     .foregroundStyle(isPrivateSend ? Color(hex: "#9B6DFF") : themeManager.textSecondary)
                                     .frame(width: 20)
-                                TextField("0x… or svk:…", text: $recipientAddress)
+                                TextField(isPrivateSend ? "svk:0x… or 0x…" : "0x…", text: $recipientAddress)
                                     .foregroundStyle(themeManager.textPrimary)
                                     .font(.system(size: 14, design: .monospaced))
                                     .autocorrectionDisabled()
@@ -246,10 +264,9 @@ private struct UnifiedSendView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
 
-                            // Hint text
                             Text(isPrivateSend
-                                 ? "🛡 Private: uses shielded balance, recipient sees nothing on-chain"
-                                 : "🌐 Public: sends from your unshielded balance")
+                                 ? "Uses shielded balance. Recipient sees nothing on-chain."
+                                 : "Sends from your public ERC-20 STRK balance.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(themeManager.textSecondary.opacity(0.6))
                         }
@@ -279,10 +296,9 @@ private struct UnifiedSendView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
 
-                            // Available balance
                             HStack {
                                 Spacer()
-                                Text("Available: \(String(format: "%.4f", isPrivateSend ? walletManager.balance : walletManager.publicBalance)) STRK")
+                                Text("Available: \(String(format: "%.4f", availableBalance)) STRK")
                                     .font(.system(size: 11))
                                     .foregroundStyle(themeManager.textSecondary.opacity(0.6))
                             }
@@ -300,8 +316,7 @@ private struct UnifiedSendView: View {
                         // ── Success ─────────────────────────────────────
                         if let hash = txHash {
                             HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Sent successfully!")
                                         .font(.system(size: 14, weight: .semibold))
@@ -331,7 +346,7 @@ private struct UnifiedSendView: View {
                                         Text("Done")
                                     }
                                 } else {
-                                    Text("Send")
+                                    Text(isPrivateSend ? "Send (Private)" : "Send (Public)")
                                 }
                             }
                             .font(.system(size: 16, weight: .bold))
@@ -373,12 +388,15 @@ private struct UnifiedSendView: View {
                 let network = networkManager.activeNetwork
 
                 if isPrivateSend {
-                    // Extract IVK from svk: prefix
-                    let ivk = String(recipientAddress.dropFirst(4)) // remove "svk:"
-                    // For private send, we need the recipient's Starknet address too
-                    // In the current model, we use the IVK as both identifier and key
+                    // Shielded send — extract IVK from svk: prefix if present
+                    let ivk: String
+                    if recipientAddress.lowercased().hasPrefix("svk:") {
+                        ivk = String(recipientAddress.dropFirst(4))
+                    } else {
+                        ivk = recipientAddress
+                    }
                     let hash = try await walletManager.executePrivateTransfer(
-                        toAddress: ivk,  // IVK acts as recipient identifier
+                        recipientAddress: ivk,
                         recipientIVK: ivk,
                         amount: amount,
                         memo: "private send",
@@ -391,11 +409,11 @@ private struct UnifiedSendView: View {
                         isSending = false
                     }
                 } else {
-                    // Public unshield + send
-                    let hash = try await walletManager.executeUnshield(
+                    // Public ERC-20 transfer — no privacy pool involved
+                    let hash = try await walletManager.executePublicSend(
+                        recipient: recipientAddress,
                         amount: amount,
                         rpcUrl: rpcUrl,
-                        contractAddress: contract,
                         network: network
                     )
                     await MainActor.run {
@@ -418,38 +436,5 @@ private struct UnifiedSendView: View {
     }
 }
 
-// MARK: - STARK Proof Progress Overlay
 
-private struct STARKProofOverlay: View {
-    @EnvironmentObject private var themeManager: AppThemeManager
-    @State private var pulseAmount: CGFloat = 1.0
 
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.55).ignoresSafeArea()
-
-            VStack(spacing: 20) {
-                ZStack {
-                    Circle()
-                        .fill(Color(hex: "#6B3DE8").opacity(0.15))
-                        .frame(width: 80, height: 80)
-                        .scaleEffect(pulseAmount)
-                        .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: pulseAmount)
-                    Image(systemName: "shield.lefthalf.filled")
-                        .font(.system(size: 28))
-                        .foregroundStyle(Color(hex: "#9B6DFF"))
-                }
-                .onAppear { pulseAmount = 1.25 }
-
-                Text("GENERATING STARK PROOF")
-                    .font(.system(size: 12, weight: .bold))
-                    .tracking(3)
-                    .foregroundStyle(.white.opacity(0.9))
-
-                ProgressView()
-                    .tint(Color(hex: "#9B6DFF"))
-                    .scaleEffect(1.2)
-            }
-        }
-    }
-}

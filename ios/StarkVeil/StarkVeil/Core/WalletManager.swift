@@ -223,13 +223,114 @@ class WalletManager: ObservableObject {
             // Result is "low_hex, high_hex" — parse the u256
             let parts = rawResult.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             let lowHex = parts.first ?? "0x0"
-            let low = UInt64(lowHex.hasPrefix("0x") ? String(lowHex.dropFirst(2)) : lowHex, radix: 16) ?? 0
-            // For realistic balances, high is always 0
-            let weiBalance = Double(low)
-            publicBalance = weiBalance / 1e18
+            // UInt64 overflows for balances > 18.44 STRK. Use Decimal for safe parsing.
+            let hexDigits = lowHex.hasPrefix("0x") ? String(lowHex.dropFirst(2)) : lowHex
+            var weiDecimal = Decimal(0)
+            for ch in hexDigits {
+                weiDecimal *= 16
+                if let digit = Int(String(ch), radix: 16) {
+                    weiDecimal += Decimal(digit)
+                }
+            }
+            let strkBalance = weiDecimal / Decimal(sign: .plus, exponent: 18, significand: 1)
+            publicBalance = NSDecimalNumber(decimal: strkBalance).doubleValue
         } catch {
             print("[WalletManager] Failed to fetch public balance: \(error)")
         }
+    }
+
+    /// Phase 19: Send STRK from the public (unshielded) balance via ERC-20 transfer().
+    /// This is a plain on-chain transfer — no privacy pool interaction.
+    func executePublicSend(
+        recipient: String,
+        amount: Double,
+        rpcUrl: URL,
+        network: NetworkEnvironment
+    ) async throws -> String {
+        guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
+        guard amount <= publicBalance else {
+            throw NSError(domain: "StarkVeil", code: 30,
+                          userInfo: [NSLocalizedDescriptionKey: "Insufficient unshielded balance. You have \(String(format: "%.4f", publicBalance)) STRK (U)."])
+        }
+
+        guard let senderAddress = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated."])
+        }
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(domain: "StarkVeil", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
+        }
+
+        // STRK ERC-20 contract
+        let strkContract = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+        // transfer(recipient: ContractAddress, amount: u256)
+        let transferSelector = "0x83afd3f4caedc6eebf44246fe54e38c95e3179a5ec9ea81740eca5b482d12e"
+
+        // Convert amount to wei hex
+        let amountDecimal = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
+        let amountWeiStr = (amountDecimal as NSDecimalNumber).stringValue
+        var weiValue = Decimal(0)
+        for ch in amountWeiStr {
+            if let d = Int(String(ch)) {
+                weiValue = weiValue * 10 + Decimal(d)
+            }
+        }
+        var hex = ""
+        var remaining = weiValue
+        if remaining == 0 { hex = "0" }
+        while remaining > 0 {
+            let q = NSDecimalNumber(decimal: remaining).dividing(by: NSDecimalNumber(value: 16))
+            let qFloor = q.int64Value
+            let rVal = NSDecimalNumber(decimal: remaining).subtracting(NSDecimalNumber(value: qFloor).multiplying(by: NSDecimalNumber(value: 16))).intValue
+            hex = String(rVal, radix: 16) + hex
+            remaining = Decimal(qFloor)
+        }
+        let amountLow = "0x" + hex
+        let amountHigh = "0x0"
+
+        // Build calldata for __execute__ multicall: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data]
+        let callPayload = [recipient, amountLow, amountHigh]
+        var calldata: [String] = [
+            "0x1",              // call_array_len
+            strkContract,       // to (STRK ERC-20)
+            transferSelector,   // selector (transfer)
+            "0x0",              // data_offset
+            String(callPayload.count), // data_len
+            String(callPayload.count)  // calldata_len
+        ]
+        calldata.append(contentsOf: callPayload)
+
+        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        let resourceBounds = await RPCClient().estimateInvokeFee(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata,
+            nonce: chainNonce
+        )
+        let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
+            senderAddress: senderAddress,
+            calldata: calldata,
+            nonce: chainNonce,
+            resourceBounds: resourceBounds,
+            privateKeyHex: keys.privateKey.hexString,
+            network: network
+        )
+
+        try await RPCClient().submitInvokeV3(
+            rpcUrl: rpcUrl,
+            senderAddress: senderAddress,
+            calldata: calldata,
+            nonce: chainNonce,
+            resourceBounds: resourceBounds,
+            signature: signature
+        )
+
+        // Refresh public balance after send
+        await refreshPublicBalance(rpcUrl: rpcUrl)
+
+        return txHash
     }
 
     // MARK: - Unshield (Private → Public)
@@ -477,16 +578,49 @@ class WalletManager: ObservableObject {
         randomBytes[0] &= 0x07  // clamp to STARK prime range
         let noteNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
 
+        // Convert amount to wei hex for felt252 compatibility
+        let amountDecimal = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
+        let amountWeiStr = (amountDecimal as NSDecimalNumber).stringValue
+        // Convert decimal wei string to hex safely (no UInt64 overflow)
+        let amountWeiHex: String = {
+            // Parse the decimal string digit by digit into hex
+            var value = Decimal(0)
+            for ch in amountWeiStr {
+                if let d = Int(String(ch)) {
+                    value = value * 10 + Decimal(d)
+                }
+            }
+            // Convert Decimal to hex string
+            var hex = ""
+            var remaining = value
+            if remaining == 0 { return "0x0" }
+            while remaining > 0 {
+                let (q, r) = { (val: Decimal) -> (Decimal, Int) in
+                    let divisor = Decimal(16)
+                    let quotient = (val / divisor)
+                    let truncated = Decimal(sign: quotient.sign, exponent: 0, significand: quotient.significand)
+                    // Use NSDecimalNumber for floor
+                    let q = NSDecimalNumber(decimal: val).dividing(by: NSDecimalNumber(decimal: divisor))
+                    let qFloor = q.int64Value
+                    let rVal = NSDecimalNumber(decimal: val).subtracting(NSDecimalNumber(value: qFloor).multiplying(by: NSDecimalNumber(decimal: divisor))).intValue
+                    return (Decimal(qFloor), rVal)
+                }(remaining)
+                hex = String(r, radix: 16) + hex
+                remaining = q
+            }
+            return "0x" + hex
+        }()
+
         // 4-field Poseidon(value, asset_id, owner_pubkey, nonce) — matches contract spec
         let commitmentKey = try StarkVeilProver.noteCommitment(
-            value: String(format: "%.6f", amount),
+            value: amountWeiHex,
             assetId: "STRK",
             ownerPubkey: ownerPubkeyHex,
             nonce: noteNonce
         )
 
         let note = Note(
-            value: String(format: "%.6f", amount),
+            value: amountWeiHex,
             asset_id: "STRK",
             owner_ivk: ivkHex,
             owner_pubkey: ownerPubkeyHex,
@@ -496,11 +630,8 @@ class WalletManager: ObservableObject {
         )
 
 
-        // C-4 fix: u256 split at 2^128 (not 2^64). Use Decimal for lossless wei conversion.
-        // For all realistic STRK amounts (<340B STRK), u256.high == 0x0.
-        let amountDecimal = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
-        let amountWeiStr = (amountDecimal as NSDecimalNumber).stringValue
-        let amountLow = "0x" + String(UInt64(amountWeiStr) ?? UInt64(amount * 1e18), radix: 16)
+        // C-4 fix: u256 split at 2^128 (not 2^64). Use the hex we already computed.
+        let amountLow = amountWeiHex
         let amountHigh = "0x0"
 
         // Phase 15 Item 5: Encrypt the memo with AES-256-GCM using IVK-derived key.
