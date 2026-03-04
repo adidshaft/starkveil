@@ -146,8 +146,11 @@ class SyncEngine: ObservableObject {
                 let latestBlock = try await rpcClient.fetchLatestBlockNumber(rpcUrl: rpcUrl)
 
                 if latestBlock > currentBlock {
-                    // For the very first sync, scan the last 10 blocks to catch recent events.
-                    let fromBlock = currentBlock == 0 ? max(0, latestBlock - 10) : currentBlock + 1
+                    // For the very first sync, scan the last 500 blocks to catch any
+                    // recent transfers that arrived while the app was not running.
+                    // Sepolia produces ~1 block/sec, so 500 blocks ≈ 8 minutes of history.
+                    let fromBlock = currentBlock == 0 ? max(0, latestBlock - 500) : currentBlock + 1
+                    print("[SyncEngine] Scanning blocks \(fromBlock)→\(latestBlock) on \(networkName)")
 
                     let events = try await rpcClient.fetchEvents(
                         rpcUrl: rpcUrl,
@@ -253,19 +256,25 @@ class SyncEngine: ObservableObject {
                             let encMemoIdx = 1 + commitmentsLen + 2  // skip commitments + fee u256
                             let encMemoHex = event.data[encMemoIdx]
 
+                            print("[SyncEngine] Transfer event data[\(event.data.count)]: " +
+                                  "len=\(event.data[0]) encMemoIdx=\(encMemoIdx) " +
+                                  "encMemo=\(encMemoHex.prefix(20))…")
+
                             // Trial-decrypt using compactDecrypt — if it returns nil, note isn't for us.
                             // We try each commitment individually since keystream is commitment-specific.
                             for i in 0..<commitmentsLen {
                                 let commitment = event.data[1 + i]
                                 let clampedIVK = WalletManager.clampToFelt252(ivkHex)
-
+                                print("[SyncEngine] Transfer trial-decrypt commitment=\(commitment.prefix(10))… encMemo=\(encMemoHex.prefix(10))…")
                                 guard let decrypted = try? NoteEncryption.decryptCompact(
                                     encMemoHex,
                                     ivkHex: ivkHex,
                                     commitment: commitment
                                 ) else {
+                                    print("[SyncEngine] Transfer decryptCompact → nil (not ours)")
                                     continue   // not addressed to us
                                 }
+                                print("[SyncEngine] Transfer decryptCompact SUCCESS value=\(decrypted.valueWei) memo=\(decrypted.memo)")
 
                                 let note = Note(
                                     value: decrypted.valueWei.isEmpty ? "0" : decrypted.valueWei,

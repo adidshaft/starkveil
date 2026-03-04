@@ -162,8 +162,14 @@ struct NoteEncryption {
     /// Decrypts a compact felt252 ciphertext. Returns `(valueWei, memo)` or nil if auth fails.
     static func decryptCompact(_ encryptedHex: String, ivkHex: String, commitment: String) throws -> (valueWei: String, memo: String)? {
         let clean = encryptedHex.hasPrefix("0x") ? String(encryptedHex.dropFirst(2)) : encryptedHex
-        // Pad to 62 hex chars (31 bytes) if shorter
-        let padded = clean + String(repeating: "0", count: max(0, 62 - clean.count))
+        // LEFT-pad to 62 hex chars (31 bytes). Starknet nodes strip leading zeros from
+        // felt252 values (they're big-endian integers), so 0x00ff becomes 0xff on the wire.
+        // We must prepend zeros, NOT append — appending shifts all bytes right, breaking auth.
+        guard clean.count <= 62 else {
+            // ciphertext larger than a felt252 — not a valid compact memo
+            return nil
+        }
+        let padded = String(repeating: "0", count: max(0, 62 - clean.count)) + clean
         guard let data = Data(hexString: padded), data.count == 31 else {
             throw NoteEncryptionError.invalidCiphertext
         }
