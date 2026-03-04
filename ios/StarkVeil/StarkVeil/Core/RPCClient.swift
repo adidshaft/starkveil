@@ -51,18 +51,18 @@ class RPCClient {
         let bodyData = try encoder.encode(AnyEncodable(payload))
         request.httpBody = bodyData
 
-        // ── DEBUG ─────────────────────────────────────────────────────────────
-        if let bodyStr = String(data: bodyData, encoding: .utf8) {
-            print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
-        }
+        // ── DEBUG (commented out to reduce console noise — uncomment for RPC debugging) ──
+        // if let bodyStr = String(data: bodyData, encoding: .utf8) {
+        //     print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
+        // }
         // ─────────────────────────────────────────────────────────────────────
 
         let (data, response) = try await urlSession.data(for: request)
 
-        // ── DEBUG ─────────────────────────────────────────────────────────────
-        if let respStr = String(data: data, encoding: .utf8) {
-            print("[RPC←] \(respStr)")
-        }
+        // ── DEBUG (commented out to reduce console noise — uncomment for RPC debugging) ──
+        // if let respStr = String(data: data, encoding: .utf8) {
+        //     print("[RPC←] \(respStr)")
+        // }
         // ─────────────────────────────────────────────────────────────────────
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -128,6 +128,40 @@ class RPCClient {
         }
         guard let blockNumber = response.result else { throw RPCClientError.invalidResponse }
         return blockNumber
+    }
+
+    // MARK: - starknet_getClassHashAt
+
+    func getClassHashAt(rpcUrl: URL, address: String) async throws -> String? {
+        let requestPayload = RPCRequest(method: "starknet_getClassHashAt", params: ["latest", address])
+        do {
+            let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: requestPayload)
+            if let error = response.error {
+                return nil
+            }
+            return response.result
+        } catch {
+            return nil
+        }
+    }
+
+    /// Checks whether a given Starknet address has an on-chain contract deployed.
+    /// Returns `true` (optimistic) on network failures to avoid booting users on bad connections.
+    func isAddressDeployed(rpcUrl: URL, address: String) async -> Bool {
+        let requestPayload = RPCRequest(method: "starknet_getClassHashAt", params: ["latest", address])
+        do {
+            let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: requestPayload)
+            if let e = response.error {
+                // Code 20 = "Contract not found" — definitely not deployed
+                if e.code == 20 { return false }
+                // Any other server error — be optimistic (don't wipe valid wallets on bad RPC)
+                return true
+            }
+            return response.result != nil
+        } catch {
+            // Network failure — optimistic: don't invalidate on poor connectivity
+            return true
+        }
     }
 
     // MARK: - starknet_getEvents
@@ -293,10 +327,10 @@ class RPCClient {
         calldata: [String],
         nonce: String,
         multiplier: Double = 1.5
-    ) async -> ResourceBoundsMapping {
+    ) async throws -> ResourceBoundsMapping {
         let fallback = ResourceBoundsMapping(
-            l1_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800"),  // ~10k gas, ~100 Gwei
-            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_gas: ResourceBound(max_amount: "0x30d40", max_price_per_unit: "0x174876e800"),  // ~200k L1 gas, ~100 Gwei
+            l2_gas: ResourceBound(max_amount: "0x989680", max_price_per_unit: "0x174876e800"), // ~10M L2 gas, ~100 Gwei
             l1_data_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800")
         )
         struct EstimateInvokeTx: Encodable {
@@ -331,14 +365,21 @@ class RPCClient {
         )
         let payload = RPCRequest(method: "starknet_estimateFee",
                                  params: Params(request: [tx]))
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimateV3]>,
-              let estimate = response.result?.first else {
-            return fallback
+        do {
+            let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
+            if let estimate = response.result?.first {
+                return estimate.toResourceBounds(multiplier: multiplier)
+            }
+            if let err = response.error {
+                 throw RPCClientError.serverError(code: err.code, message: err.message)
+            }
+        } catch {
+            print("⚠️ [RPC] starknet_estimateFee failed: \(error.localizedDescription) — throwing error")
+            throw error
         }
-        return estimate.toResourceBounds(multiplier: multiplier)
+        return fallback
     }
 
-    /// Estimates the fee for a DEPLOY_ACCOUNT_V3 transaction.
     func estimateDeployFee(
         rpcUrl: URL,
         classHash: String,
@@ -346,10 +387,10 @@ class RPCClient {
         salt: String,
         contractAddress: String,
         multiplier: Double = 1.5
-    ) async -> ResourceBoundsMapping {
+    ) async throws -> ResourceBoundsMapping {
         let fallback = ResourceBoundsMapping(
-            l1_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800"),
-            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_gas: ResourceBound(max_amount: "0x30d40", max_price_per_unit: "0x174876e800"),  // ~200k L1 gas, ~100 Gwei
+            l2_gas: ResourceBound(max_amount: "0x989680", max_price_per_unit: "0x174876e800"), // ~10M L2 gas, ~100 Gwei
             l1_data_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800")
         )
         struct EstimateDeployTx: Encodable {
@@ -384,11 +425,19 @@ class RPCClient {
         )
         let payload = RPCRequest(method: "starknet_estimateFee",
                                  params: Params(request: [tx]))
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimateV3]>,
-              let estimate = response.result?.first else {
-            return fallback
+        do {
+            let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
+            if let estimate = response.result?.first {
+                return estimate.toResourceBounds(multiplier: multiplier)
+            }
+            if let err = response.error {
+                 throw RPCClientError.serverError(code: err.code, message: err.message)
+            }
+        } catch {
+            print("⚠️ [RPC] starknet_estimateFee (deploy) failed: \(error.localizedDescription) — throwing error")
+            throw error
         }
-        return estimate.toResourceBounds(multiplier: multiplier)
+        return fallback
     }
 
     // MARK: - Fee Estimate V3 Parsing

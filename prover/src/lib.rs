@@ -22,7 +22,11 @@ use starknet_crypto::{
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn felt_from_hex(hex: &str) -> Result<FieldElement, String> {
-    let s = if hex.starts_with("0x") { &hex[2..] } else { hex };
+    let s = if hex.starts_with("0x") || hex.starts_with("0X") {
+        &hex[2..]
+    } else {
+        hex
+    };
     FieldElement::from_hex_be(s).map_err(|e| format!("Invalid felt252 hex '{}': {}", hex, e))
 }
 
@@ -166,34 +170,65 @@ pub unsafe extern "C" fn stark_sign_transaction(
     let msg_hash = match felt_from_hex(hash_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
     let pk       = match felt_from_hex(pk_str)   { Ok(f) => f, Err(e) => return ffi_error(&e) };
 
-    // RFC-6979 deterministic k derivation:
-    // Feed private_key and msg_hash bytes into HMAC-DRBG(SHA-256) to produce
-    // a deterministic, unique k for each (pk, msg) pair.
+    // STARK EC group order N (NOT the field prime P).
+    // N = 0x0800000000000010FFFFFFFFFFFFFFFFB781126DCAE7B2321E66A241ADC64D2F
+    // N < P, so N is a valid FieldElement — but we compare raw bytes to avoid any issues.
+    let stark_order_bytes: [u8; 32] = [
+        0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xB7, 0x81, 0x12, 0x6D, 0xCA, 0xE7, 0xB2, 0x32,
+        0x1E, 0x66, 0xA2, 0x41, 0xAD, 0xC6, 0x4D, 0x2F,
+    ];
+
+    // RFC-6979 deterministic k derivation with retry loop.
+    // If the derived k is out of range or sign() rejects it, we re-derive
+    // with an incremented counter byte fed into HMAC-DRBG additional_data.
     let pk_bytes = pk.to_bytes_be();
     let msg_bytes = msg_hash.to_bytes_be();
-    let mut drbg = HmacDrbg::<Sha256>::new(&pk_bytes, &msg_bytes, &[]);
-    let mut k_bytes = [0u8; 32];
-    drbg.fill_bytes(&mut k_bytes);
-    // Clamp to STARK field: mask top 5 bits → value < 2^251 < STARK_ORDER
-    k_bytes[0] &= 0x07;
-    // Reject k = 0 (degenerate); increment last byte if so
-    if k_bytes.iter().all(|b| *b == 0) {
-        k_bytes[31] = 1;
-    }
-    let k = FieldElement::from_bytes_be(&k_bytes).unwrap_or(FieldElement::ONE);
 
-    match sign(&pk, &msg_hash, &k) {
-        Ok(sig) => {
-            let result = serde_json::json!({
-                "Ok": {
-                    "r": felt_to_hex(&sig.r),
-                    "s": felt_to_hex(&sig.s)
-                }
-            }).to_string();
-            CString::new(result).unwrap_or_else(|_| CString::new("{\"Err\":\"CString\"}").unwrap()).into_raw()
+    for attempt in 0u16..256 {
+        // Feed counter into additional_data so each attempt produces a different k
+        let extra = [attempt as u8];
+        let mut drbg = HmacDrbg::<Sha256>::new(&pk_bytes, &msg_bytes, &extra);
+        let mut k_bytes = [0u8; 32];
+        drbg.fill_bytes(&mut k_bytes);
+
+        // Clamp top 5 bits → value < 2^251 (well within both N and P)
+        k_bytes[0] &= 0x07;
+
+        // Skip k = 0 (degenerate)
+        if k_bytes.iter().all(|b| *b == 0) {
+            continue;
         }
-        Err(e) => ffi_error(&format!("ECDSA sign failed: {:?}", e)),
+
+        // Reject k >= N (STARK EC order) via raw byte comparison
+        if k_bytes >= stark_order_bytes {
+            continue;
+        }
+
+        // Parse as FieldElement — safe since k < N < P
+        let k = match FieldElement::from_bytes_be(&k_bytes) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        match sign(&pk, &msg_hash, &k) {
+            Ok(sig) => {
+                let result = serde_json::json!({
+                    "Ok": {
+                        "r": felt_to_hex(&sig.r),
+                        "s": felt_to_hex(&sig.s)
+                    }
+                }).to_string();
+                return CString::new(result)
+                    .unwrap_or_else(|_| CString::new("{\"Err\":\"CString\"}").unwrap())
+                    .into_raw();
+            }
+            Err(_) => continue,  // InvalidK from sign(), try next k
+        }
     }
+
+    ffi_error("ECDSA sign failed: could not derive valid k after 256 attempts")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

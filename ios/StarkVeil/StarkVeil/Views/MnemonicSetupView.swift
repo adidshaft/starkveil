@@ -11,6 +11,7 @@ struct MnemonicSetupView: View {
     @State private var confirmInput = ""
     @State private var errorMessage: String? = nil
     @State private var isSaving = false
+    @State private var isCopied = false
     var onComplete: () -> Void
 
     private enum SetupPhase { case generating, display, confirm }
@@ -85,6 +86,22 @@ struct MnemonicSetupView: View {
                     }
                 }
                 .padding(.vertical, 8)
+
+                // Copy all words button
+                Button(action: copyPhrase) {
+                    Label(
+                        isCopied ? "Copied!" : "Copy All Words",
+                        systemImage: isCopied ? "checkmark" : "doc.on.doc"
+                    )
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .foregroundStyle(themeManager.textPrimary)
+                    .background(themeManager.surface1)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(themeManager.surface2))
+                }
+                .animation(.easeInOut, value: isCopied)
 
                 // Continue button
                 Button(action: { prepareConfirmation() }) {
@@ -192,6 +209,14 @@ struct MnemonicSetupView: View {
                 mnemonic = words
                 phase = .display
             }
+        }
+    }
+
+    private func copyPhrase() {
+        UIPasteboard.general.string = mnemonic.joined(separator: " ")
+        withAnimation { isCopied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            withAnimation { isCopied = false }
         }
     }
 

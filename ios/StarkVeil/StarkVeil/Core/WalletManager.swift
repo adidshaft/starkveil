@@ -107,7 +107,8 @@ class WalletManager: ObservableObject {
         amount: String,
         assetId: String,
         counterparty: String,
-        txHash: String? = nil
+        txHash: String? = nil,
+        fee: String? = nil
     ) -> ActivityEvent {
         let ctx = persistence.context
         let event = ActivityEvent(
@@ -116,6 +117,7 @@ class WalletManager: ObservableObject {
             assetId: assetId,
             counterparty: counterparty,
             txHash: txHash,
+            fee: fee,
             networkId: activeNetworkId
         )
         ctx.insert(event)
@@ -408,11 +410,24 @@ class WalletManager: ObservableObject {
               let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
             throw NSError(domain: "StarkVeil", code: 11, userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
         }
-        let spendingKeyHex = keys.privateKey.hexString
-        let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
+        // Clamp to valid felt252 range BEFORE passing to Poseidon FFI (felt252 overflow fix)
+        let spendingKeyHex = WalletManager.clampToFelt252(keys.privateKey.hexString)
+        // The original (unclamped) key is used for ECDSA signing only
+        let signingKeyHex = keys.privateKey.hexString
+        
+        // STRK token contract on Sepolia. Notes store asset_id as the shortstring "0x5354524b" (ASCII "STRK")
+        // but the Cairo unshield() param is ContractAddress — the actual ERC-20 contract address.
+        let strkTokenAddress = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+        let safeAssetId: String = {
+            let raw = inputNote.asset_id
+            if raw == "STRK" || raw == "0xSTRK" || raw == "0x5354524b" { return strkTokenAddress }
+            return raw
+        }()
+        // For commitment reconstruction, use the canonical short asset id that was used at shield time
+        let commitmentAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
-            assetId: safeAssetId,
+            assetId: commitmentAssetId,
             ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
         )
@@ -471,8 +486,16 @@ class WalletManager: ObservableObject {
 
         // Build the complete flat payload first, then derive calldata_len from it.
         // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id]
+        // NOTE: asset here must be the STRK ERC-20 ContractAddress (safeAssetId), NOT the short string.
         var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
         callPayload += [nullifier, recipient, amountU256Low, amountU256High, safeAssetId]
+
+        print("[Unshield] nullifier=\(nullifier)")
+        print("[Unshield] recipient=\(recipient)")
+        print("[Unshield] amount=\(amountU256Low) (wei)")
+        print("[Unshield] asset=\(safeAssetId)")
+        print("[Unshield] proof items=\(proofCalldata.count)")
+        print("[Unshield] calldata_len=\(callPayload.count)")
 
         var calldata: [String] = [
             "0x1",                          // number of calls
@@ -506,7 +529,7 @@ class WalletManager: ObservableObject {
             resourceBounds: resourceBounds,
             nonce: chainNonce,
             chainID: network.chainIdFelt252,
-            privateKey: keys.privateKey.hexString
+            privateKey: signingKeyHex   // ECDSA uses the original (unclamped) key
         )
         let txHash = try await RPCClient().addInvokeTransaction(
             rpcUrl: rpcUrl,
@@ -826,12 +849,15 @@ class WalletManager: ObservableObject {
         }
 
         let spendingKeyHex = WalletManager.clampToFelt252(keys.privateKey.hexString)
+        // Original (unclamped) key for ECDSA signing — MUST NOT be the clamped value
+        let signingKeyHex = keys.privateKey.hexString
         let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
 
         // C-COMMITMENT-MISMATCH fix: use the PERSISTED nonce from StoredNote.
         // The shield step stored the exact random nonce used in Poseidon(value,asset,pubkey,nonce).
         // Re-deriving it (Poseidon(ivk,value,asset)) produces a different value → wrong commitment.
-        let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
+        // Always use shortstring "0x5354524b" for the commitment (matches what shield() stored).
+        let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK" || inputNote.asset_id == "0x5354524b") ? "0x5354524b" : inputNote.asset_id
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
             assetId: safeAssetId,
@@ -896,6 +922,11 @@ class WalletManager: ObservableObject {
         callPayload += ["1", outputCommitment]                                 // new_commitments array
         callPayload += ["0x0", "0x0"]                                          // fee: u256
 
+        print("[PrivateTransfer] nullifier=\(nullifier)")
+        print("[PrivateTransfer] outputCommitment=\(outputCommitment)")
+        print("[PrivateTransfer] proof items=\(proofPayload.proof.count)")
+        print("[PrivateTransfer] calldata_len=\(callPayload.count)")
+
         let calldata: [String] = [
             "0x1",                      // number of calls
             contractAddress,            // to
@@ -912,7 +943,7 @@ class WalletManager: ObservableObject {
             resourceBounds: resourceBounds,
             nonce: chainNonce,
             chainID: network.chainIdFelt252,
-            privateKey: spendingKeyHex
+            privateKey: signingKeyHex   // ECDSA uses original (unclamped) key
         )
         let broadcastedHash = try await RPCClient().addInvokeTransaction(
             rpcUrl: rpcUrl,
@@ -923,10 +954,10 @@ class WalletManager: ObservableObject {
             nonce: chainNonce
         )
 
-        // 7. Optimistically remove spent note
+        // 7. Optimistically remove spent note and recompute balance
         didSuccessfullySubmit = true
         removeNote(inputNote)
-        balance = notes.reduce(0) { $0 + (Double($1.value) ?? 0) }
+        recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
         return broadcastedHash
     }
 

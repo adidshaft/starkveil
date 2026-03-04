@@ -80,48 +80,63 @@ struct StarkVeilApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if isWalletSetUp && isAccountDeployed {
-                // ── Full VaultView (normal operation) ─────────────────
-                BiometricGateView(
-                    appSettings: coordinator.appSettings,
-                    onWalletDeleted: {
+            Group {
+                if isWalletSetUp && isAccountDeployed {
+                    // ── Full VaultView (normal operation) ─────────────────
+                    BiometricGateView(
+                        appSettings: coordinator.appSettings,
+                        onWalletDeleted: {
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                isWalletSetUp     = false
+                                isAccountDeployed = false
+                            }
+                        }
+                    )
+                    .environmentObject(coordinator.themeManager)
+                    .environmentObject(coordinator.networkManager)
+                    .environmentObject(coordinator.walletManager)
+                    .environmentObject(coordinator.syncEngine)
+                    .environmentObject(coordinator.appSettings)
+                    .transition(.opacity)
+
+                } else if isWalletSetUp && !isAccountDeployed {
+                    // ── Phase 11: account needed ───────────────────────────
+                    AccountActivationView {
                         withAnimation(.easeInOut(duration: 0.4)) {
-                            isWalletSetUp     = false
+                            isAccountDeployed = true
+                        }
+                    }
+                    .environmentObject(coordinator.themeManager)
+                    .environmentObject(coordinator.networkManager)
+                    .transition(.opacity)
+
+                } else {
+                    // ── Onboarding (new install / wallet deleted) ──────────
+                    WalletOnboardingView {
+                        withAnimation(.easeInOut(duration: 0.4)) {
+                            isWalletSetUp = true
                             isAccountDeployed = false
                         }
                     }
-                )
-                .environmentObject(coordinator.themeManager)
-                .environmentObject(coordinator.networkManager)
-                .environmentObject(coordinator.walletManager)
-                .environmentObject(coordinator.syncEngine)
-                .environmentObject(coordinator.appSettings)
-                .transition(.opacity)
-
-            } else if isWalletSetUp && !isAccountDeployed {
-                // ── Phase 11: account needed ───────────────────────────
-                // Seed is set up but the Starknet account contract is not deployed yet.
-                // Show the activation flow (fund address → deploy → enter vault).
-                AccountActivationView {
-                    withAnimation(.easeInOut(duration: 0.4)) {
-                        isAccountDeployed = true
-                    }
+                    .environmentObject(coordinator.themeManager)
+                    .transition(.opacity)
                 }
-                .environmentObject(coordinator.themeManager)
-                .environmentObject(coordinator.networkManager)
-                .transition(.opacity)
-
-            } else {
-                // ── Onboarding (new install / wallet deleted) ──────────
-                WalletOnboardingView {
-                    withAnimation(.easeInOut(duration: 0.4)) {
-                        isWalletSetUp = true
-                        // After onboarding, always go through activation before vault
+            }
+            .task {
+                // On cold start: verify Keychain deployment flag against the sequencer.
+                // iOS Keychain survives app reinstalls — this catches stale flags.
+                guard KeychainManager.hasWallet, KeychainManager.isAccountDeployed,
+                      let address = KeychainManager.accountAddress() else { return }
+                let rpcUrl = coordinator.networkManager.activeNetwork.rpcUrl
+                let isDeployed = await RPCClient().isAddressDeployed(rpcUrl: rpcUrl, address: address)
+                if !isDeployed {
+                    // Stale flag — reset only the deployed flag, keep the seed so user
+                    // can re-activate without re-entering their seed phrase
+                    try? KeychainManager.markAccountNotDeployed()
+                    await MainActor.run {
                         isAccountDeployed = false
                     }
                 }
-                .environmentObject(coordinator.themeManager)
-                .transition(.opacity)
             }
         }
     }

@@ -110,7 +110,7 @@ struct VaultView: View {
         }
         .onDisappear { syncEngine.stopSyncing() }
         // Send sheet — unified (address + amount only)
-        .sheet(isPresented: $showSendSheet) {
+        .sheet(isPresented: $showSendSheet, onDismiss: refreshBalance) {
             UnifiedSendView(isPresented: $showSendSheet)
                 .environmentObject(themeManager)
                 .environmentObject(walletManager)
@@ -123,11 +123,17 @@ struct VaultView: View {
                 .environmentObject(networkManager)
         }
         // Shield/Unshield toggle sheet
-        .sheet(isPresented: $showShieldSheet) {
+        .sheet(isPresented: $showShieldSheet, onDismiss: refreshBalance) {
             ShieldView()
                 .environmentObject(themeManager)
                 .environmentObject(walletManager)
                 .environmentObject(networkManager)
+        }
+    }
+
+    private func refreshBalance() {
+        Task {
+            await walletManager.refreshPublicBalance(rpcUrl: networkManager.activeNetwork.rpcUrl)
         }
     }
 

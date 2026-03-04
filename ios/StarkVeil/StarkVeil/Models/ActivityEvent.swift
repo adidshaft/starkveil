@@ -17,10 +17,11 @@ enum ActivityKind: String, Codable {
 final class ActivityEvent {
     @Attribute(.unique) var id: UUID
     var kindRaw: String           // ActivityKind.rawValue
-    var amount: String            // human-readable, e.g. "1.5"
+    var amount: String            // human-readable STRK, e.g. "1.5"
     var assetId: String
     var counterparty: String      // recipient address (unshield) or shielded memo (transfer)
     var txHash: String?           // on-chain tx hash, nil until confirmed
+    var fee: String?              // estimated fee in STRK, e.g. "0.000123", nil if unknown
     var timestamp: Date
     var networkId: String
 
@@ -30,6 +31,7 @@ final class ActivityEvent {
         assetId: String,
         counterparty: String,
         txHash: String? = nil,
+        fee: String? = nil,
         networkId: String
     ) {
         self.id = UUID()
@@ -38,6 +40,7 @@ final class ActivityEvent {
         self.assetId = assetId
         self.counterparty = counterparty
         self.txHash = txHash
+        self.fee = fee
         self.timestamp = Date()
         self.networkId = networkId
     }

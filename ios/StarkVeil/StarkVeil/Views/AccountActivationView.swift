@@ -364,9 +364,26 @@ struct AccountActivationView: View {
                 ethBalance   = ethBal
                 strkBalance  = strkBal
                 detectedGasToken = tokenLabel
-                deploymentState  = anyFunded ? .funded : .idle
                 errorMessage = anyFunded ? nil
                     : "No ETH or STRK detected yet. Send either token and try again."
+            }
+
+            if anyFunded {
+                let rpc = RPCClient()
+                if let _ = try? await rpc.getClassHashAt(rpcUrl: rpcUrl, address: address) {
+                    try? KeychainManager.markAccountDeployed()
+                    await MainActor.run {
+                        deploymentState = .deployed
+                        // Auto-dismiss after 1 second so user jumps straight to the vault
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            self.onActivated()
+                        }
+                    }
+                } else {
+                    await MainActor.run { deploymentState = .funded }
+                }
+            } else {
+                await MainActor.run { deploymentState = .idle }
             }
         } catch {
             await MainActor.run {
@@ -388,7 +405,7 @@ struct AccountActivationView: View {
             // Phase 14: estimate fee before computing the tx hash.
             // V3: estimate fee → resource bounds are committed inside the tx hash
             // V3: estimate fee returns resource bounds (STRK gas pricing)
-            let resourceBounds = await rpc.estimateDeployFee(
+            let resourceBounds = try await rpc.estimateDeployFee(
                 rpcUrl: rpcUrl,
                 classHash: StarknetCurve.ozAccountClassHash,
                 constructorCalldata: [pubKeyHex],

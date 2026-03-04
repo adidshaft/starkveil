@@ -52,7 +52,10 @@ struct QRCodeView: View {
         let scaleY = size / output.extent.height
         let scaled = output.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
 
-        return UIImage(ciImage: scaled)
+        // Use explicit CIContext render — UIImage(ciImage:) can silently fail on recent iOS
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }
 

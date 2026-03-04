@@ -209,7 +209,7 @@ class SyncEngine: ObservableObject {
 
                         let note = Note(
                             value: String(format: "%.9f", amountDouble),
-                            asset_id: "0xSTRK",
+                            asset_id: "0x5354524b",
                             owner_ivk: ivkHex,
                             owner_pubkey: ivkHex,      // SyncEngine uses IVK as pubkey for incoming
                             nonce: commitment,          // commitment acts as unique note ID

@@ -32,8 +32,10 @@ enum KeychainManager {
     }
 
     /// Stores the master seed (64-byte PBKDF2 output) derived from the user's mnemonic.
-    /// Overwrites any previously stored seed.
     static func storeMasterSeed(_ seed: Data) throws {
+        // Reset the deployed flag. If the user deleted the app, iOS doesn't wipe Keychain.
+        // A new wallet or restored wallet must re-verify deployment state.
+        try? store(Data([0]), account: .accountDeployed)
         try store(seed, account: .masterSeed)
     }
 
@@ -66,6 +68,12 @@ enum KeychainManager {
     /// Marks the account as deployed on-chain (called after deploy tx is confirmed).
     static func markAccountDeployed() throws {
         try store(Data([1]), account: .accountDeployed)
+    }
+
+    /// Resets the deployed flag without wiping the wallet seed.
+    /// Used when on-chain verification shows the Keychain flag is stale.
+    static func markAccountNotDeployed() throws {
+        try store(Data([0]), account: .accountDeployed)
     }
 
     /// True once the user has broadcast (and confirmed) the deploy account transaction.
