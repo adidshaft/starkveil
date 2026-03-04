@@ -100,23 +100,31 @@ struct PrivateTransferView: View {
                 monospaced: true
             )
 
-            // Recipient IVK field + QR scan button
-            HStack(spacing: 8) {
-                inputField(
-                    label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
-                    placeholder: "svk:0x123abc…",
-                    text: $recipientIVK,
-                    monospaced: true
-                )
-                Button(action: { showQRScanner = true }) {
+            // Recipient IVK field
+            inputField(
+                label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
+                placeholder: "svk:0x123abc…",
+                text: $recipientIVK,
+                monospaced: true
+            )
+
+            // QR Scan Button — prominent, full-width
+            Button(action: { showQRScanner = true }) {
+                HStack(spacing: 8) {
                     Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 22))
-                        .foregroundStyle(themeManager.textPrimary)
-                        .padding(10)
-                        .background(themeManager.textSecondary.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .font(.system(size: 18, weight: .medium))
+                    Text("Scan QR Code")
+                        .font(.system(size: 14, weight: .semibold))
                 }
-                .padding(.top, 16)  // align with field
+                .foregroundStyle(themeManager.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(themeManager.textSecondary.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(themeManager.textSecondary.opacity(0.2), lineWidth: 1)
+                )
             }
             .sheet(isPresented: $showQRScanner) {
                 QRScannerView { scanned in

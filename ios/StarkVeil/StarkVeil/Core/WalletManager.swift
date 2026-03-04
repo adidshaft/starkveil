@@ -1048,17 +1048,18 @@ class WalletManager: ObservableObject {
 
         // 7. Optimistically update local state
         didSuccessfullySubmit = true
+        print("[PrivateTransfer] BEFORE removeNote: notes.count=\(notes.count) balance=\(balance)")
         removeNote(inputNote)
+        print("[PrivateTransfer] AFTER removeNote: notes.count=\(notes.count) balance=\(balance)")
 
         // If there's a change note, add it back to the sender's wallet immediately.
-        // The change note is our own note — we generated its nonce and commitment —
-        // so we don't need to wait for SyncEngine to detect it on-chain.
         if hasChange, let cn = changePlainNote, let cc = changeCommitment {
             addNote(cn, commitment: cc)
-            print("[PrivateTransfer] change note added locally: \(changeWeiStr) wei commitment=\(cc.prefix(10))…")
+            print("[PrivateTransfer] AFTER addNote(change): notes.count=\(notes.count) balance=\(balance) changeWei=\(changeWeiStr)")
         }
 
-        recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
+        recomputeBalance()
+        print("[PrivateTransfer] FINAL: notes.count=\(notes.count) balance=\(balance)")
 
         // 8. Log to activity feed
         let strkAmount = String(format: "%.6f", amount)
