@@ -903,21 +903,22 @@ class WalletManager: ObservableObject {
         }
         outputRandomBytes[0] &= 0x07  // clamp to STARK prime range
         let outputNonce = "0x" + outputRandomBytes.map { String(format: "%02x", $0) }.joined()
-        // H-4 fix: use recipientIVK as ownerPubkey instead of recipientAddress.
-        // Account address ≠ EC public key; using address makes notes unspendable.
-        // IVK is shared specifically for this purpose.
+        // Clamp the recipient IVK to felt252 range before ANY Rust FFI call.
+        // SVK is 32 bytes (256 bits); felt252 max is ~252 bits. Passing a raw
+        // 256-bit value to Rust throws "Invalid felt252 hex: number out of range".
+        let recipientIVKClamped = WalletManager.clampToFelt252(recipientIVK)
+
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
             assetId: safeAssetId,
-            ownerPubkey: recipientIVK,
+            ownerPubkey: recipientIVKClamped,
             nonce: outputNonce
         )
 
         // M-2 fix: make encryption throwing — abort if memo can't be encrypted.
-        // Never fall back to plaintext (privacy violation).
         let encryptedMemo = try NoteEncryption.encryptMemo(
             memo.isEmpty ? "private transfer" : memo,
-            ivkHex: recipientIVK
+            ivkHex: recipientIVKClamped
         )
 
         // C-6 fix: Cairo private_transfer() expects:
