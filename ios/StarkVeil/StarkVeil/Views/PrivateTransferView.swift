@@ -33,7 +33,7 @@ struct PrivateTransferView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                themeManager.background.ignoresSafeArea()
+                themeManager.bgColor.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 24) {
                         header
@@ -148,7 +148,7 @@ struct PrivateTransferView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(10)
-                .background(themeManager.background.opacity(0.6))
+                .background(themeManager.bgColor.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }

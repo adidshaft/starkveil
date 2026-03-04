@@ -1,9 +1,35 @@
 import Foundation
 
-enum RPCClientError: Error {
+enum RPCClientError: Error, LocalizedError {
     case invalidResponse
     case httpError(statusCode: Int)
     case serverError(code: Int, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "RPC returned an unexpected response format."
+        case .httpError(let code):
+            return "HTTP error \(code) from RPC node."
+        case .serverError(let code, let message):
+            return "RPC error \(code): \(message)"
+        }
+    }
+}
+
+// MARK: - V3 Resource Bounds
+
+/// Starknet V3 resource bounds for a single resource (L1_GAS or L2_GAS).
+struct ResourceBound: Encodable {
+    let max_amount: String    // hex: max gas units
+    let max_price_per_unit: String  // hex: max STRK per gas unit (in fri = 1e-18 STRK)
+}
+
+/// Container for L1 gas, L2 gas, and L1 data gas bounds (Starknet RPC v0.8+).
+struct ResourceBoundsMapping: Encodable {
+    let l1_gas: ResourceBound
+    let l2_gas: ResourceBound
+    let l1_data_gas: ResourceBound
 }
 
 class RPCClient {
@@ -18,12 +44,26 @@ class RPCClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15   // explicit 15-second timeout
 
-        // Encode the JSON-RPC payload
         let encoder = JSONEncoder()
-        request.httpBody = try encoder.encode(AnyEncodable(payload))
+        encoder.outputFormatting = .prettyPrinted
+        let bodyData = try encoder.encode(AnyEncodable(payload))
+        request.httpBody = bodyData
+
+        // ── DEBUG ─────────────────────────────────────────────────────────────
+        if let bodyStr = String(data: bodyData, encoding: .utf8) {
+            print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         let (data, response) = try await urlSession.data(for: request)
+
+        // ── DEBUG ─────────────────────────────────────────────────────────────
+        if let respStr = String(data: data, encoding: .utf8) {
+            print("[RPC←] \(respStr)")
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw RPCClientError.invalidResponse
@@ -36,6 +76,37 @@ class RPCClient {
         return try decoder.decode(RPCResponse<T>.self, from: data)
     }
 
+    /// Tries each URL in `urls` in order.
+    /// Network errors and HTTP errors trigger the next fallback.
+    /// Server errors (-32xxx) are NOT retried — a different node returns the same error.
+    func performRequestWithFallback<T: Decodable>(urls: [URL], payload: Encodable) async throws -> RPCResponse<T> {
+        let encoder = JSONEncoder()
+        let body = try encoder.encode(AnyEncodable(payload))
+        var lastError: Error = RPCClientError.invalidResponse
+        for url in urls {
+            do {
+                var req = URLRequest(url: url)
+                req.httpMethod  = "POST"
+                req.httpBody    = body
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("application/json", forHTTPHeaderField: "Accept")
+                let (data, response) = try await urlSession.data(for: req)
+                guard let http = response as? HTTPURLResponse else { continue }
+                guard (200..<300).contains(http.statusCode) else {
+                    print("[RPC] HTTP \(http.statusCode) from \(url.host ?? url.absoluteString) — trying next")
+                    lastError = RPCClientError.httpError(statusCode: http.statusCode)
+                    continue
+                }
+                let decoded: RPCResponse<T> = try JSONDecoder().decode(RPCResponse<T>.self, from: data)
+                return decoded
+            } catch {
+                print("[RPC] \(url.host ?? url.absoluteString) failed: \(error.localizedDescription) — trying next")
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
     // A type-erased Encodable wrapper to allow passing generic Encodable payloads
     private struct AnyEncodable: Encodable {
         private let _encode: (Encoder) throws -> Void
@@ -46,83 +117,63 @@ class RPCClient {
             try _encode(encoder)
         }
     }
-    
+
     // MARK: - starknet_blockNumber
-    
-    /// Fetches the latest confirmed block height from Starknet
+
     func fetchLatestBlockNumber(rpcUrl: URL) async throws -> Int {
         let requestPayload = RPCRequest(method: "starknet_blockNumber", params: [] as [String])
         let response: RPCResponse<Int> = try await performRequest(url: rpcUrl, payload: requestPayload)
-        
         if let error = response.error {
             throw RPCClientError.serverError(code: error.code, message: error.message)
         }
-        guard let result = response.result else {
-            throw RPCClientError.invalidResponse
-        }
-        return result
+        guard let blockNumber = response.result else { throw RPCClientError.invalidResponse }
+        return blockNumber
     }
-    
+
     // MARK: - starknet_getEvents
-    
-    /// Fetches events emitted by the given contract between the block bounds.
+
     func fetchEvents(
         rpcUrl: URL,
         fromBlock: Int,
         toBlock: Int,
-        contractAddress: String,
-        keys: [[String]] = []
+        contractAddress: String
     ) async throws -> [EmittedEvent] {
-        // Construct the `starknet_getEvents` argument array structure which expects:
-        // { "filter": { "from_block": {"block_number": X}, "to_block": {"block_number": Y}, "address": "..", "keys": [[".."]] }, "chunk_size": 100 }
-        
-        // Define a custom param structure for the JSON-RPC
-        struct GetEventsArgs: Encodable {
-            let filter: EventFilter
-            let chunk_size: Int
-        }
-        
-        let filter = EventFilter(
-            from_block: .number(fromBlock),
-            to_block: .number(toBlock),
-            address: contractAddress,
-            keys: keys
-        )
-        
         var allEvents: [EmittedEvent] = []
         var continuationToken: String? = nil
-        
-        // Handle pagination using the continuation_token if necessary
         repeat {
-            struct PagedArgs: Encodable {
-                let filter: EventFilter
+            // Build filter with optional continuation token
+            struct EventFilterWithToken: Encodable {
+                let from_block: BlockId
+                let to_block: BlockId
+                let address: String
+                let keys: [[String]]
                 let chunk_size: Int
                 let continuation_token: String?
             }
-            
-            let args = PagedArgs(filter: filter, chunk_size: 100, continuation_token: continuationToken)
-            let requestPayload = RPCRequest(method: "starknet_getEvents", params: args)
-            
-            let page: RPCResponse<EventPageResponse> = try await performRequest(url: rpcUrl, payload: requestPayload)
-            
-            if let error = page.error {
+            let filter = EventFilterWithToken(
+                from_block: .number(fromBlock),
+                to_block: .number(toBlock),
+                address: contractAddress,
+                keys: [],
+                chunk_size: 100,
+                continuation_token: continuationToken
+            )
+            struct Args: Encodable { let filter: EventFilterWithToken }
+            let requestPayload = RPCRequest(method: "starknet_getEvents", params: Args(filter: filter))
+            let response: RPCResponse<EventPageResponse> = try await performRequest(url: rpcUrl, payload: requestPayload)
+            if let error = response.error {
                 throw RPCClientError.serverError(code: error.code, message: error.message)
             }
-            guard let result = page.result else {
-                break
-            }
-            
-            allEvents.append(contentsOf: result.events)
-            continuationToken = result.continuation_token
-            
+            guard let page = response.result else { throw RPCClientError.invalidResponse }
+            allEvents.append(contentsOf: page.events)
+            continuationToken = page.continuation_token
         } while continuationToken != nil
-        
         return allEvents
     }
-    
-    // MARK: - starknet_getNonce  (Phase 13)
 
-    /// Fetches the current nonce for a Starknet account.
+    // MARK: - starknet_getNonce
+
+    /// Returns the current on-chain nonce for the given account address.
     /// Must be called before every invoke or deploy transaction.
     func getNonce(rpcUrl: URL, address: String) async throws -> String {
         struct Params: Encodable {
@@ -139,42 +190,43 @@ class RPCClient {
         return result   // hex string e.g. "0x3"
     }
 
-    // MARK: - starknet_addInvokeTransaction
+    // MARK: - starknet_addInvokeTransaction  (V3)
 
-    /// Struct matching the Starknet JSON-RPC `INVOKE_TXN_V1` spec.
-    struct InvokeTransaction: Encodable {
+    /// Struct matching the Starknet JSON-RPC `INVOKE_TXN_V3` spec.
+    struct InvokeTransactionV3: Encodable {
         let type: String = "INVOKE"
         let sender_address: String
         let calldata: [String]
-        let max_fee: String
-        let version: String = "0x1"
+        let version: String = "0x3"
         let signature: [String]
         let nonce: String
+        let resource_bounds: ResourceBoundsMapping
+        let tip: String = "0x0"
+        let paymaster_data: [String] = []
+        let account_deployment_data: [String] = []
+        let nonce_data_availability_mode: String = "L1"
+        let fee_data_availability_mode: String = "L1"
     }
 
-    /// Submits a signed invoke transaction to the Starknet sequencer.
-    /// Phase 13: nonce and signature must be computed by the caller using
-    /// StarknetTransactionBuilder.buildAndSign() before calling this.
+    /// Submits a signed V3 invoke transaction to the Starknet sequencer.
     @discardableResult
     func addInvokeTransaction(
         rpcUrl: URL,
         senderAddress: String,
         calldata: [String],
-        maxFee: String,
+        resourceBounds: ResourceBoundsMapping,
         signature: [String],
         nonce: String
     ) async throws -> String {
-        struct Params: Encodable {
-            let invoke_transaction: InvokeTransaction
-        }
-        let tx = InvokeTransaction(
+        let tx = InvokeTransactionV3(
             sender_address: senderAddress,
             calldata: calldata,
-            max_fee: maxFee,
             signature: signature,
-            nonce: nonce
+            nonce: nonce,
+            resource_bounds: resourceBounds
         )
-        let payload = RPCRequest(method: "starknet_addInvokeTransaction", params: Params(invoke_transaction: tx))
+        let payload = RPCRequest(method: "starknet_addInvokeTransaction",
+                                 params: [tx])
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -184,42 +236,44 @@ class RPCClient {
         return result.transaction_hash
     }
 
-    // MARK: - starknet_addDeployAccountTransaction  (Phase 11)
+    // MARK: - starknet_addDeployAccountTransaction  (V3)
 
-    /// Broadcasts an OZ v0.8 deploy account transaction.
-    /// The deployer must pre-fund the counterfactual address with enough ETH for gas
-    /// before calling this. Returns the transaction hash.
+    /// Broadcasts an OZ v0.8 deploy account transaction using V3 format.
+    /// The deployer must pre-fund the counterfactual address with STRK or ETH for gas.
     @discardableResult
     func deployAccount(
         rpcUrl: URL,
         classHash: String,
         constructorCalldata: [String],   // OZ v0.8: [publicKey]
         contractAddressSalt: String,     // = publicKey (OZ convention)
-        maxFee: String = "0x2386f26fc10000", // 0.01 ETH — sufficient for deploy on Sepolia
+        resourceBounds: ResourceBoundsMapping,
         signature: [String] = ["0x0", "0x0"],
         nonce: String = "0x0"
     ) async throws -> String {
-        struct DeployAccountTx: Encodable {
+        struct DeployAccountTxV3: Encodable {
             let type: String = "DEPLOY_ACCOUNT"
-            let max_fee: String
-            let version: String = "0x1"
+            let version: String = "0x3"
             let signature: [String]
             let nonce: String
             let contract_address_salt: String
             let constructor_calldata: [String]
             let class_hash: String
+            let resource_bounds: ResourceBoundsMapping
+            let tip: String = "0x0"
+            let paymaster_data: [String] = []
+            let nonce_data_availability_mode: String = "L1"
+            let fee_data_availability_mode: String = "L1"
         }
-        struct Params: Encodable { let deploy_account_transaction: DeployAccountTx }
-        let tx = DeployAccountTx(
-            max_fee: maxFee,
+        let tx = DeployAccountTxV3(
             signature: signature,
             nonce: nonce,
             contract_address_salt: contractAddressSalt,
             constructor_calldata: constructorCalldata,
-            class_hash: classHash
+            class_hash: classHash,
+            resource_bounds: resourceBounds
         )
         let payload = RPCRequest(method: "starknet_addDeployAccountTransaction",
-                                 params: Params(deploy_account_transaction: tx))
+                                 params: [tx])
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -229,95 +283,161 @@ class RPCClient {
         return result.transaction_hash
     }
 
-    // MARK: - starknet_estimateFee  (Phase 14)
+    // MARK: - starknet_estimateFee  (V3)
 
-    /// Estimates the fee for an INVOKE_V1 transaction and returns a suggested maxFee
-    /// with a configurable safety multiplier (default 1.5 × — gives headroom for mempool spikes).
-    ///
-    /// Falls back to the conservative hardcoded amount if the RPC call fails,
-    /// so callers don't need to handle the error specially.
+    /// Estimates the fee for an INVOKE_V3 transaction and returns ResourceBoundsMapping
+    /// with a 1.5x safety multiplier.
     func estimateInvokeFee(
         rpcUrl: URL,
         senderAddress: String,
         calldata: [String],
         nonce: String,
-        fallback: String = "0x2386f26fc10000",   // 0.01 ETH — safe upper-bound
         multiplier: Double = 1.5
-    ) async -> String {
+    ) async -> ResourceBoundsMapping {
+        let fallback = ResourceBoundsMapping(
+            l1_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800"),  // ~10k gas, ~100 Gwei
+            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_data_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800")
+        )
         struct EstimateInvokeTx: Encodable {
             let type: String = "INVOKE"
             let sender_address: String
             let calldata: [String]
-            let max_fee: String = "0xffffffffffffffffffffffffffffffff"  // sentinel — ignored by node
-            let version: String = "0x1"
-            let signature: [String] = []   // empty sig for estimation
+            let version: String = "0x3"
+            let signature: [String] = []
             let nonce: String
+            let resource_bounds: ResourceBoundsMapping
+            let tip: String = "0x0"
+            let paymaster_data: [String] = []
+            let account_deployment_data: [String] = []
+            let nonce_data_availability_mode: String = "L1"
+            let fee_data_availability_mode: String = "L1"
         }
         struct Params: Encodable {
             let request: [EstimateInvokeTx]
             let block_id: String = "latest"
-            let simulation_flags: [String] = ["SKIP_VALIDATE"]  // don't validate sig for estimate
+            let simulation_flags: [String] = ["SKIP_VALIDATE"]
         }
-        struct FeeEstimate: Decodable {
-            let overall_fee: String           // hex wei
-            let gas_price: String?
-        }
-        let tx = EstimateInvokeTx(sender_address: senderAddress, calldata: calldata, nonce: nonce)
+        let maxBounds = ResourceBoundsMapping(
+            l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
+            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_data_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff")
+        )
+        let tx = EstimateInvokeTx(
+            sender_address: senderAddress,
+            calldata: calldata,
+            nonce: nonce,
+            resource_bounds: maxBounds
+        )
         let payload = RPCRequest(method: "starknet_estimateFee",
                                  params: Params(request: [tx]))
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimate]>,
-              let estimate = response.result?.first,
-              let feeValue = UInt64(estimate.overall_fee.dropFirst(2), radix: 16) else {
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimateV3]>,
+              let estimate = response.result?.first else {
             return fallback
         }
-        // Apply multiplier and cap at a sensible maximum (0.05 ETH)
-        let suggested = Double(feeValue) * multiplier
-        let capped = min(suggested, 2.8e16)   // 0.028 ETH
-        return "0x\(String(UInt64(capped), radix: 16))"
+        return estimate.toResourceBounds(multiplier: multiplier)
     }
 
-    /// Estimates the fee for a DEPLOY_ACCOUNT_V1 transaction.
+    /// Estimates the fee for a DEPLOY_ACCOUNT_V3 transaction.
     func estimateDeployFee(
         rpcUrl: URL,
         classHash: String,
         constructorCalldata: [String],
         salt: String,
         contractAddress: String,
-        fallback: String = "0x2386f26fc10000",
         multiplier: Double = 1.5
-    ) async -> String {
+    ) async -> ResourceBoundsMapping {
+        let fallback = ResourceBoundsMapping(
+            l1_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800"),
+            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_data_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800")
+        )
         struct EstimateDeployTx: Encodable {
             let type: String = "DEPLOY_ACCOUNT"
-            let max_fee: String = "0xffffffffffffffffffffffffffffffff"
-            let version: String = "0x1"
+            let version: String = "0x3"
             let signature: [String] = []
             let nonce: String = "0x0"
             let contract_address_salt: String
             let constructor_calldata: [String]
             let class_hash: String
+            let resource_bounds: ResourceBoundsMapping
+            let tip: String = "0x0"
+            let paymaster_data: [String] = []
+            let nonce_data_availability_mode: String = "L1"
+            let fee_data_availability_mode: String = "L1"
         }
         struct Params: Encodable {
             let request: [EstimateDeployTx]
             let block_id: String = "latest"
             let simulation_flags: [String] = ["SKIP_VALIDATE"]
         }
-        struct FeeEstimate: Decodable { let overall_fee: String }
-        let tx = EstimateDeployTx(contract_address_salt: salt,
-                                  constructor_calldata: constructorCalldata,
-                                  class_hash: classHash)
+        let maxBounds = ResourceBoundsMapping(
+            l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
+            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l1_data_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff")
+        )
+        let tx = EstimateDeployTx(
+            contract_address_salt: salt,
+            constructor_calldata: constructorCalldata,
+            class_hash: classHash,
+            resource_bounds: maxBounds
+        )
         let payload = RPCRequest(method: "starknet_estimateFee",
                                  params: Params(request: [tx]))
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimate]>,
-              let estimate = response.result?.first,
-              let feeValue = UInt64(estimate.overall_fee.dropFirst(2), radix: 16) else {
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[FeeEstimateV3]>,
+              let estimate = response.result?.first else {
             return fallback
         }
-        let suggested = Double(feeValue) * multiplier
-        let capped = min(suggested, 2.8e16)
-        return "0x\(String(UInt64(capped), radix: 16))"
+        return estimate.toResourceBounds(multiplier: multiplier)
     }
 
-    // MARK: - starknet_getTransactionReceipt  (Phase 14)
+    // MARK: - Fee Estimate V3 Parsing
+
+    /// Starknet V3 fee estimate response.
+    struct FeeEstimateV3: Decodable {
+        // Actual field names returned by Starknet RPC v0.8
+        let overall_fee: String
+        let l1_gas_consumed: String?
+        let l1_gas_price: String?
+        let l2_gas_consumed: String?
+        let l2_gas_price: String?
+        let l1_data_gas_consumed: String?
+        let l1_data_gas_price: String?
+        let unit: String?   // "FRI" (STRK) or "WEI" (ETH)
+
+        /// Converts per-resource-type estimate to ResourceBoundsMapping.
+        /// Applies multiplier to each independently — L2 gas is the dominant
+        /// execution cost on Starknet v0.13+ (Volition).
+        func toResourceBounds(multiplier: Double = 1.5) -> ResourceBoundsMapping {
+            func bounds(_ consumed: String?, _ price: String?, minGas: UInt64 = 100, minPrice: UInt64 = 1) -> ResourceBound {
+                let gas   = parseHex(consumed ?? "0x0")
+                let pri   = parseHex(price   ?? "0x0")
+                let maxG  = max(UInt64(Double(gas) * multiplier), minGas)
+                let maxP  = max(UInt64(Double(pri) * multiplier), minPrice)
+                return ResourceBound(
+                    max_amount: "0x\(String(maxG, radix: 16))",
+                    max_price_per_unit: "0x\(String(maxP, radix: 16))"
+                )
+            }
+
+            return ResourceBoundsMapping(
+                l1_gas: bounds(l1_gas_consumed, l1_gas_price,
+                               minGas: 100, minPrice: 1_000_000_000),
+                l2_gas: bounds(l2_gas_consumed, l2_gas_price,
+                               minGas: 10_000, minPrice: 1_000_000_000),
+                l1_data_gas: bounds(l1_data_gas_consumed, l1_data_gas_price,
+                                    minGas: 100, minPrice: 1_000)
+            )
+        }
+
+        private func parseHex(_ hex: String) -> UInt64 {
+            let s = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+            if s.count > 16 { return UInt64(s.prefix(16), radix: 16) ?? 0 }
+            return UInt64(s, radix: 16) ?? 0
+        }
+    }
+
+    // MARK: - starknet_getTransactionReceipt
 
     /// Execution and finality status of a submitted transaction.
     struct TransactionReceipt: Decodable {
@@ -350,56 +470,69 @@ class RPCClient {
         return result
     }
 
-    // MARK: - Poll until accepted  (Phase 14)
-    //
-    // Replaces the isContractDeployed loop in AccountActivationView.
-    // Uses starknet_getTransactionReceipt which is the canonical confirmation signal.
-
-    enum TxFinalityResult {
-        case accepted(TransactionReceipt)
-        case reverted(reason: String)
+    /// Poll result
+    enum TxPollResult {
+        case accepted
+        case reverted(String)
         case rejected
         case timeout
     }
 
-    /// Polls until the tx is accepted or reverted, with a configurable interval and timeout.
+    /// Polls `starknet_getTransactionReceipt` until the tx reaches a terminal state
+    /// or the maximum number of retries is exhausted.
     func pollUntilAccepted(
         rpcUrl: URL,
         txHash: String,
-        intervalSeconds: UInt64 = 3,
-        maxAttempts: Int = 40    // 40 × 3s = 120s max wait
-    ) async -> TxFinalityResult {
-        for _ in 0..<maxAttempts {
-            // Respect Task cancellation between polls
-            if Task.isCancelled { return .timeout }
-            try? await Task.sleep(nanoseconds: intervalSeconds * 1_000_000_000)
-            if Task.isCancelled { return .timeout }
-
-            guard let receipt = try? await getTransactionReceipt(rpcUrl: rpcUrl, txHash: txHash) else {
-                // Node hasn't indexed it yet — keep polling
-                continue
+        maxRetries: Int = 30,
+        intervalSeconds: UInt64 = 4
+    ) async -> TxPollResult {
+        for _ in 0..<maxRetries {
+            do {
+                let receipt = try await getTransactionReceipt(rpcUrl: rpcUrl, txHash: txHash)
+                if receipt.isAccepted { return .accepted }
+                if receipt.isReverted { return .reverted(receipt.revert_reason ?? "Unknown revert") }
+                if receipt.isRejected { return .rejected }
+            } catch {
+                // tx not yet known — keep polling
             }
-            if receipt.isAccepted  { return .accepted(receipt) }
-            if receipt.isReverted  { return .reverted(reason: receipt.revert_reason ?? "unknown") }
-            if receipt.isRejected  { return .rejected }
-            // Still RECEIVED — keep polling
+            try? await Task.sleep(nanoseconds: intervalSeconds * 1_000_000_000)
         }
         return .timeout
     }
 
-    // MARK: - is_nullifier_spent  (Phase 15 — double-spend prevention)
+    // MARK: - Nullifier check
 
-    /// Queries the PrivacyPool contract to check if a nullifier has already been spent.
-    /// Returns false on any RPC error so we don't silently block legitimate spends;
-    /// the contract's on-chain check is the authoritative guard.
+    /// Calls PrivacyPool.is_nullifier_spent(nullifier) → bool.
     func isNullifierSpent(
         rpcUrl: URL,
         contractAddress: String,
-        nullifierHex: String
+        nullifier: String
     ) async -> Bool {
-        // Keccak-250 of "is_nullifier_spent".
-        // python3: hex(int(hashlib.sha3_256(b'is_nullifier_spent').hexdigest(),16) & ((1<<250)-1))
-        let selector = "0x243759dd8b145b290cb0ebd7289fcba6c154362acb1c778339ec59a2be5527b"
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String = "latest"
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let selector = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
+        let payload = RPCRequest(method: "starknet_call",
+                                 params: Params(request: Params.CallReq(
+                                     contract_address: contractAddress,
+                                     entry_point_selector: selector,
+                                     calldata: [nullifier])))
+        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[String]>,
+              let first = response.result?.first else { return false }
+        return first == "0x1"
+    }
+
+    // MARK: - ETH balance
+
+    func getETHBalance(rpcUrl: URL, address: String) async throws -> String {
+        let ethContract = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
+        let selector    = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
         struct Params: Encodable {
             let request: CallReq
             let block_id: String = "latest"
@@ -412,15 +545,47 @@ class RPCClient {
         let payload = RPCRequest(
             method: "starknet_call",
             params: Params(request: Params.CallReq(
-                contract_address: contractAddress,
+                contract_address: ethContract,
                 entry_point_selector: selector,
-                calldata: [nullifierHex]
+                calldata: [address]
             ))
         )
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[String]>,
-              let first = response.result?.first else { return false }
-        // Cairo bool: "0x1" = spent, "0x0" = unspent
-        return first == "0x1"
+        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        let parts = response.result ?? ["0x0", "0x0"]
+        return parts.joined(separator: ", ")
+    }
+
+    // MARK: - STRK balance
+
+    func getSTRKBalance(rpcUrl: URL, address: String) async throws -> String {
+        let strkContract = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+        let selector     = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String = "latest"
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let payload = RPCRequest(
+            method: "starknet_call",
+            params: Params(request: Params.CallReq(
+                contract_address: strkContract,
+                entry_point_selector: selector,
+                calldata: [address]
+            ))
+        )
+        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        let parts = response.result ?? ["0x0", "0x0"]
+        return parts.joined(separator: ", ")
     }
 }
 

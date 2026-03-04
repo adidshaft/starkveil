@@ -192,3 +192,62 @@ Resolved 2C + 4H + 5M audit vulnerabilities:
 - **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so history is retained after notes are spent.
 - **`PersistenceController`**: SwiftData `ModelContainer` singleton with a single shared `ModelContext` — inserts and fetches share the same context.
 - **3-State App Flow**: `Onboarding` (no seed) → `AccountActivation` (seed exists, account not deployed) → `Vault` (full operation). Each state is persisted in Keychain and survives reinstall.
+- **ResourceBoundsMapping**: V3 transaction fee structure with three gas markets: `l1_gas` (L2→L1 messages), `l2_gas` (execution computation, dominant cost), `l1_data_gas` (state diff blob posting). Each has `max_amount` (u64) and `max_price_per_unit` (u128).
+- **V3 Resource Bound Encoding**: Each bound encoded as a 252-bit felt252: `resource_name(60 bits) | max_amount(64 bits) | max_price_per_unit(128 bits)`. Resource names: `L1_GAS=0x4c315f474153`, `L2_GAS=0x4c325f474153`, `L1_DATA=0x4c315f44415441`.
+- **V3 Gas Hash**: `Poseidon(tip, l1_gas_bound, l2_gas_bound, l1_data_gas_bound)` — tip is the first element inside this hash, not a separate field in the outer hash.
+
+---
+
+### Phase 17: V3 Transaction Migration — Starknet RPC v0.8 (Completed)
+
+Starknet Sepolia deprecated V1 transactions (error code 61: "version not supported"). Full migration to V3 was required for `DEPLOY_ACCOUNT`, `INVOKE`, and `starknet_estimateFee`.
+
+**What changed:**
+
+| V1 (deprecated) | V3 (current) |
+|---|---|
+| `max_fee: String` (ETH wei) | `resource_bounds: {l1_gas, l2_gas, l1_data_gas}` (STRK fri) |
+| `version: "0x1"` | `version: "0x3"` |
+| Pedersen tx hash | Poseidon tx hash |
+| No extra fields | `tip`, `paymaster_data`, `nonce_data_availability_mode`, `fee_data_availability_mode` |
+
+**Debug journey — errors resolved in sequence:**
+
+1. **RPC error 61** — "version not supported": root cause was `version: "0x1"` on the transaction. Fixed by migrating all transaction structs to V3.
+
+2. **RPC error -32602 (invalid params)** — first instance: params were being sent as a named object `{"deploy_account_transaction": {...}}` instead of a positional array `[{...}]`. Fixed.
+
+3. **RPC error -32602 (invalid params)** — second instance (`"missing field: l1_data_gas"`): the `ResourceBoundsMapping` struct only had `l1_gas` + `l2_gas`. Starknet RPC v0.8 requires all three gas markets. Added `l1_data_gas: ResourceBound` to the struct and all construction sites.
+
+4. **RPC error 53** — "resources don't cover fee": the `FeeEstimateV3` decoder was reading fields `gas_consumed` / `gas_price` which don't exist in the v0.8 response. The actual fields are `l1_gas_consumed`, `l2_gas_consumed`, `l1_data_gas_consumed` plus corresponding `_price` fields. Because parsing always returned nil, the fallback was used (`l2_gas: 0x0`) — but the deploy actually needed `l2_gas_consumed: 0xb1600` (726k units). Fixed by rewriting `FeeEstimateV3` to decode correct field names and build per-resource-type bounds with a 1.5× multiplier.
+
+5. **Hash mismatch (signature failure)**: The V3 Poseidon hash computation had two bugs versus the official spec:
+   - `tip` was placed **outside** the gas hash; spec requires it **inside**: `Poseidon(tip, l1_gas_bounds, l2_gas_bounds, l1_data_gas_bounds)`
+   - Resource bound felt252 encoding was missing the 60-bit resource name prefix per the spec: `resource_name(60) | max_amount(64) | max_price(128)`
+
+**Files modified:**
+- `RPCClient.swift`: New `ResourceBoundsMapping` (3 gas types), V3 structs for all tx types, corrected `FeeEstimateV3` decoder, RPC fallback with 15s timeout
+- `StarknetTransactionBuilder.swift`: V3 Poseidon hash for INVOKE and DEPLOY_ACCOUNT with correct resource encoding and tip placement
+- `WalletManager.swift`: All 3 invoke call sites migrated from `maxFee` → `resourceBounds`
+- `AccountActivationView.swift`: Deploy flow uses V3 resource bounds end-to-end
+
+**Outcome**: Wallet activation (`DEPLOY_ACCOUNT` V3) successfully broadcast and confirmed on Starknet Sepolia testnet.
+
+---
+
+### Phase 18: End-to-End Audit Fix Sweep (Completed)
+
+Resolved all remaining Phase 8 critical/high/medium bugs to make Shield, Private Transfer, and Unshield execute correctly on Sepolia.
+
+| Bug ID | Fix |
+|---|---|
+| **H-2** | RFC-6979 deterministic ECDSA nonces — `k` now derived inside Rust via `rfc6979` crate. Swift no longer supplies `k`. Eliminates nonce-reuse private key extraction. |
+| **H-7** | Removed underscore from mock proof hex `0x504c414345484f4c444552_50524f4f46` → `0x504c414345484f4c444552`. |
+| **C-4** | u256 split uses `Decimal` arithmetic at the 2^128 boundary (was 2^64). Affects all amount conversions. |
+| **C-5** | Shield calldata now sends 5 args matching Cairo `shield(asset, amount_low, amount_high, note_commitment, encrypted_memo)`. Was sending 3. |
+| **C-6** | Private transfer calldata now encodes `Array<felt252>` with length prefixes: `[len, ...elements]` for proof, nullifiers, new_commitments, plus u256 fee. |
+| **H-4** | Recipient's IVK used as `ownerPubkey` in output commitment (was using account address ≠ EC pubkey → unspendable notes). |
+| **M-2** | Encryption failure in private transfer now throws (was falling back to plaintext hex on-chain). |
+| **M-6** | `executeShield` polls `starknet_getTransactionReceipt` before `addNote()` — no more phantom notes on revert. |
+
+**Files modified:** `lib.rs`, `Cargo.toml`, `starkveil_prover.h`, `StarkVeilProver.swift`, `WalletManager.swift`, `StoredNote.swift`, `SyncEngine.swift`.

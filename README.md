@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 16 Complete — Phases 12–16 Full Privacy Suite):** Real Poseidon commitments + nullifiers via Rust FFI, IVK derivation (Incoming Viewing Key), AES-256-GCM encrypted memos on-chain, IVK trial-decryption in SyncEngine, on-chain nullifier double-spend check, private-to-private transfer with recipient IVK, deterministic note nonces, pending-spend state management, and all 11 Phase 15–16 audit vulnerabilities resolved. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
+**Current status (Phase 18 Complete — End-to-End Sepolia Execution + All Phase 8 Audit Fixes):** All 8 remaining Phase 8 critical/high audit bugs resolved: RFC-6979 deterministic ECDSA signing (H-2), correct Cairo ABI encoding for shield/transfer/unshield (C-5, C-6), u256 128-bit split (C-4), recipient IVK as ownerPubkey (H-4), no plaintext fallback (M-2), confirmation-before-addNote (M-6), valid mock proof hex (H-7). V3 transactions on Starknet RPC v0.8. Wallet activation live on Sepolia. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -601,7 +601,11 @@ _Completed across 7 audit passes (Phases 4–16). Last updated: Phase 16._
 | Deploy account signature | Real STARK ECDSA via `stark_sign_transaction` FFI | ✅ Phase 12 |
 | Invoke transaction signature | Real STARK ECDSA | ✅ Phase 12 |
 | Chain nonce | `starknet_getNonce` before every tx | ✅ Phase 13 |
-| Invoke tx hash | Chained Pedersen over tx fields | ✅ Phase 13 |
+| V3 tx format | All transactions use version `0x3` with `resource_bounds` | ✅ Phase 17 |
+| V3 tx hash | Poseidon over `(tip, l1_gas_bounds, l2_gas_bounds, l1_data_gas_bounds)` per spec | ✅ Phase 17 |
+| Resource bound encoding | `resource_name(60-bit) \| max_amount(64-bit) \| max_price(128-bit)` per felt252 | ✅ Phase 17 |
+| Fee estimation | `starknet_estimateFee` with per-resource-type parsing (`l1_gas_consumed`, `l2_gas_consumed`, `l1_data_gas_consumed`) | ✅ Phase 17 |
+| Wallet activation (Sepolia) | `DEPLOY_ACCOUNT` V3 successfully broadcast and confirmed on Sepolia | ✅ Phase 17 |
 
 ### Layer 6 — Privacy Properties
 

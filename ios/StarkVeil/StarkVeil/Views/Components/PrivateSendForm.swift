@@ -3,10 +3,13 @@ import SwiftUI
 struct PrivateSendForm: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
+    @EnvironmentObject private var networkManager: NetworkManager
 
     @Binding var recipientAddress: String
     @Binding var transferAmount: String
     @Binding var errorMessage: String?
+
+    @State private var memo = ""
 
     var parsedAmount: Double? {
         guard let v = Double(transferAmount), v > 0, v.isFinite, v <= walletManager.balance else {
@@ -114,7 +117,16 @@ struct PrivateSendForm: View {
             let resultFeedback = UINotificationFeedbackGenerator()
             resultFeedback.prepare()
             do {
-                try await walletManager.executePrivateTransfer(recipient: recipientAddress, amount: amount)
+                let network = networkManager.activeNetwork
+                try await walletManager.executePrivateTransfer(
+                    recipientAddress: recipientAddress,
+                    recipientIVK: recipientAddress,  // IVK == address in shielded address model
+                    amount: amount,
+                    memo: memo,
+                    rpcUrl: network.rpcUrl,
+                    contractAddress: network.contractAddress,
+                    network: network
+                )
                 resultFeedback.notificationOccurred(.success)
             } catch {
                 errorMessage = error.localizedDescription

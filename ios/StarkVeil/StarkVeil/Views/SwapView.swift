@@ -5,6 +5,7 @@ import SwiftUI
 struct SwapView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
+    @EnvironmentObject private var networkManager: NetworkManager
 
     // Supported tokens
     private let tokens = ["STRK", "ETH", "USDC"]
@@ -336,9 +337,15 @@ struct SwapView: View {
             do {
                 // Swap is a private transfer to self — the change note re-enters the pool
                 // in the target token denomination (full implementation needs AMM routing).
+                let network = networkManager.activeNetwork
                 try await walletManager.executePrivateTransfer(
-                    recipient: "0xSHIELDED_POOL_ROUTER",
-                    amount: amount
+                    recipientAddress: "0xSHIELDED_POOL_ROUTER",
+                    recipientIVK: "0xSHIELDED_POOL_ROUTER",
+                    amount: amount,
+                    memo: "",
+                    rpcUrl: network.rpcUrl,
+                    contractAddress: network.contractAddress,
+                    network: network
                 )
                 withAnimation {
                     showSuccessBanner = true

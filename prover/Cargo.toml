@@ -13,3 +13,6 @@ libc = "0.2"
 # Phase 12: Real Starknet cryptography
 # starknet-crypto provides: pedersen_hash, poseidon_hash, stark_pubkey (EC multiply), ECDSA sign/verify
 starknet-crypto = "0.6"
+# Phase 18: RFC-6979 deterministic ECDSA nonce (H-2 fix — removes caller-supplied k)
+rfc6979 = "0.4"
+sha2 = "0.10"

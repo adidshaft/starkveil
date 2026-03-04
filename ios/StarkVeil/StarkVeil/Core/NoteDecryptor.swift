@@ -77,21 +77,8 @@ enum NoteDecryptor {
 // MARK: - Data helpers
 
 private extension Data {
-    init?(hexString: String) {
-        let hex = hexString.hasPrefix("0x") ? String(hexString.dropFirst(2)) : hexString
-        guard hex.count % 2 == 0 else { return nil }
-        var bytes = [UInt8]()
-        var idx = hex.startIndex
-        while idx < hex.endIndex {
-            let nextIdx = hex.index(idx, offsetBy: 2)
-            guard let byte = UInt8(hex[idx..<nextIdx], radix: 16) else { return nil }
-            bytes.append(byte)
-            idx = nextIdx
-        }
-        self = Data(bytes)
-    }
-
     func hexEncodedString() -> String {
         map { String(format: "%02hhx", $0) }.joined()
     }
 }
+

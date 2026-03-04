@@ -6,6 +6,9 @@ use std::os::raw::c_char;
 use types::{Note, TransferPayload, FFIResult};
 
 // Phase 12: Real Starknet cryptography via starknet-crypto crate
+// Phase 18: RFC-6979 deterministic ECDSA nonce (H-2 audit fix)
+use rfc6979::HmacDrbg;
+use sha2::Sha256;
 use starknet_crypto::{
     get_public_key,
     pedersen_hash,
@@ -139,34 +142,45 @@ pub unsafe extern "C" fn stark_poseidon_hash(
 /// Signs a Starknet transaction hash with the account's spending key.
 /// Returns the (r, s) ECDSA signature pair as felt252 hex strings.
 ///
+/// Phase 18 (H-2 fix): k is derived deterministically via RFC-6979 inside Rust.
+/// The caller CANNOT supply k — this eliminates the ECDSA nonce-reuse vulnerability.
+///
 /// Input:
-///   - tx_hash_hex:   0x-prefixed transaction hash felt252
+///   - tx_hash_hex:    0x-prefixed transaction hash felt252
 ///   - private_key_hex: 0x-prefixed spending key felt252
-///   - k_hex:          0x-prefixed random nonce k (or 0x1 for deterministic RFC6979-style)
 ///
 /// Output: C string JSON: {"Ok": {"r": "0x...", "s": "0x..."}} or {"Err": "message"}
 ///
 /// Swift: StarkVeilProver.signTransaction(txHash: String, privateKey: String) -> (r: String, s: String)
-///
-/// IMPORTANT: k must be a fresh random felt252 for each signature.
-/// Using the same k twice breaks key security (ECDSA nonce reuse attack).
-/// In production, k should be derived via RFC 6979 deterministic nonce generation.
 #[no_mangle]
 pub unsafe extern "C" fn stark_sign_transaction(
     tx_hash_hex: *const c_char,
     private_key_hex: *const c_char,
-    k_hex: *const c_char,
 ) -> *mut c_char {
-    if tx_hash_hex.is_null() || private_key_hex.is_null() || k_hex.is_null() {
+    if tx_hash_hex.is_null() || private_key_hex.is_null() {
         return ffi_error("null pointer");
     }
     let hash_str = match CStr::from_ptr(tx_hash_hex).to_str() { Ok(s) => s, Err(_) => return ffi_error("Invalid UTF-8 hash") };
     let pk_str   = match CStr::from_ptr(private_key_hex).to_str() { Ok(s) => s, Err(_) => return ffi_error("Invalid UTF-8 pk") };
-    let k_str    = match CStr::from_ptr(k_hex).to_str() { Ok(s) => s, Err(_) => return ffi_error("Invalid UTF-8 k") };
 
     let msg_hash = match felt_from_hex(hash_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
     let pk       = match felt_from_hex(pk_str)   { Ok(f) => f, Err(e) => return ffi_error(&e) };
-    let k        = match felt_from_hex(k_str)    { Ok(f) => f, Err(e) => return ffi_error(&e) };
+
+    // RFC-6979 deterministic k derivation:
+    // Feed private_key and msg_hash bytes into HMAC-DRBG(SHA-256) to produce
+    // a deterministic, unique k for each (pk, msg) pair.
+    let pk_bytes = pk.to_bytes_be();
+    let msg_bytes = msg_hash.to_bytes_be();
+    let mut drbg = HmacDrbg::<Sha256>::new(&pk_bytes, &msg_bytes, &[]);
+    let mut k_bytes = [0u8; 32];
+    drbg.fill_bytes(&mut k_bytes);
+    // Clamp to STARK field: mask top 5 bits → value < 2^251 < STARK_ORDER
+    k_bytes[0] &= 0x07;
+    // Reject k = 0 (degenerate); increment last byte if so
+    if k_bytes.iter().all(|b| *b == 0) {
+        k_bytes[31] = 1;
+    }
+    let k = FieldElement::from_bytes_be(&k_bytes).unwrap_or(FieldElement::ONE);
 
     match sign(&pk, &msg_hash, &k) {
         Ok(sig) => {
@@ -334,10 +348,11 @@ pub unsafe extern "C" fn generate_transfer_proof(
     // ── Mock proof bytes (replace with Cairo STARK proof when prover is integrated) ──
     // Format: [proof_length, ...proof_felts]
     // The proof shape is correct for the Cairo verifier ABI; content is not verified.
+    // H-7 fix: removed underscore from hex literal (invalid felt252 character)
     let mock_proof = vec![
         "0x0000000000000002".to_string(),  // proof_length = 2 (minimal)
-        "0x504c414345484f4c444552_50524f4f46".to_string(),  // "PLACEHOLDER PROOF"
-        "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+        "0x504c414345484f4c444552".to_string(),  // "PLACEHOLDER" — valid hex
+        "0x0000000000000001".to_string(),
     ];
 
     let payload = TransferPayload {

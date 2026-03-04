@@ -39,10 +39,9 @@ const char* stark_poseidon_hash(const char* elements_json);
 /// Inputs:  tx_hash_hex, private_key_hex, k_hex — all 0x-prefixed felt252 hex C strings.
 /// Output: JSON {"Ok": {"r": "0x...", "s": "0x..."}} or {"Error": "message"}.
 ///         Caller must free the returned pointer via free_rust_string.
-/// Warning: k MUST be unique per signature. Reusing k leaks the private key.
+/// Phase 18 (H-2 fix): k is derived via RFC-6979 inside Rust. No caller-supplied nonce.
 const char* stark_sign_transaction(const char* tx_hash_hex,
-                                   const char* private_key_hex,
-                                   const char* k_hex);
+                                   const char* private_key_hex);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 15: Note Commitment, Nullifier, and Viewing Key

@@ -8,8 +8,9 @@ import CryptoKit
 //
 // Flow:
 //  1. App computes the counterfactual address and displays it with a QR code.
-//  2. User sends ETH to that address from any source (exchange, friend, bridge).
-//  3. App polls starknet_getClassAt to detect when the address is funded enough.
+//  2. User sends ETH or STRK to that address for deployment gas.
+//     Both tokens work — Starknet v0.13.1+ supports dual gas payment.
+//  3. App checks both token balances in parallel.
 //  4. User taps "Activate Wallet" → starknet_addDeployAccountTransaction is broadcast.
 //  5. App polls for tx confirmation → marks account deployed → navigates to VaultView.
 
@@ -23,14 +24,16 @@ struct AccountActivationView: View {
     @State private var accountKeys: StarknetAccount.AccountKeys? = nil
     @State private var deploymentState: DeploymentState = .idle
     @State private var ethBalance: String = "0x0"
+    @State private var strkBalance: String = "0x0"
+    @State private var detectedGasToken: String = ""   // "ETH" | "STRK" | "both"
     @State private var deployTxHash: String? = nil
     @State private var errorMessage: String? = nil
     @State private var isCopied = false
 
     enum DeploymentState {
         case idle            // Showing address, waiting for funding
-        case checkingFunds   // Polling ETH balance
-        case funded          // Balance > 0 detected
+        case checkingFunds   // Polling ETH + STRK balances
+        case funded          // Balance > 0 detected in at least one gas token
         case deploying       // Deploy tx in-flight
         case confirming      // Polling for confirmation
         case deployed        // Done
@@ -70,7 +73,7 @@ struct AccountActivationView: View {
             Text("Activate Your Wallet")
                 .font(.system(size: 26, weight: .bold))
                 .foregroundStyle(themeManager.textPrimary)
-            Text("Your Starknet account address is ready.\nSend ETH to it for gas, then tap **Activate**.")
+            Text("Your Starknet account is ready.\nSend **ETH or STRK** for gas, then tap **Activate**.")
                 .font(.system(size: 14))
                 .foregroundStyle(themeManager.textSecondary)
                 .multilineTextAlignment(.center)
@@ -177,9 +180,9 @@ struct AccountActivationView: View {
 
     private func stepsList() -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            stepRow(num: "1", text: "Send ETH to the address above for gas fees (~0.01 ETH is enough)")
+            stepRow(num: "1", text: "Send **ETH or STRK** to the address above for gas fees (~0.01 ETH or ~50 STRK is enough)")
             stepRow(num: "2", text: "Tap **Check Balance** once the transfer arrives")
-            stepRow(num: "3", text: "Tap **Activate Wallet** — the app will deploy your account contract")
+            stepRow(num: "3", text: "Tap **Activate Wallet** — the app deploys your account contract")
             stepRow(num: "4", text: "Done! Your privacy shield is live.")
         }
         .padding(16)
@@ -236,11 +239,19 @@ struct AccountActivationView: View {
     }
 
     private func fundedBanner() -> some View {
-        HStack {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            Text("ETH detected — ready to activate!")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(themeManager.textPrimary)
+        VStack(spacing: 4) {
+            HStack {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                let tokenLabel = detectedGasToken.isEmpty ? "Gas token" : detectedGasToken
+                Text("\(tokenLabel) detected — ready to activate!")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(themeManager.textPrimary)
+            }
+            if detectedGasToken == "both" {
+                Text("Both ETH and STRK found — Starknet will use whichever covers the fee.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(themeManager.textSecondary)
+            }
         }
         .padding(12)
         .background(Color.green.opacity(0.12))
@@ -315,19 +326,47 @@ struct AccountActivationView: View {
     private func checkBalance(keys: StarknetAccount.AccountKeys) async {
         await MainActor.run { deploymentState = .checkingFunds }
         let rpcUrl = networkManager.activeNetwork.rpcUrl
+        let address = keys.address
         do {
-            let balance = try await RPCClient().getETHBalance(rpcUrl: rpcUrl, address: keys.address)
-            // M-BALANCE-PARSE fix: starknet_call returns [low_u128, high_u128] for a u256.
-            // Parsing only the low word via UInt64 truncates balances > 18.44 ETH.
-            // Any non-zero value in either word means the address is funded.
-            let parts = balance.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-            let low  = UInt64(parts.first?.replacingOccurrences(of: "0x", with: "") ?? "0", radix: 16) ?? 0
-            let high = UInt64(parts.dropFirst().first?.replacingOccurrences(of: "0x", with: "") ?? "0", radix: 16) ?? 0
-            let isFunded = low > 0 || high > 0
+            // Query ETH and STRK in parallel — Starknet v0.13.1+ supports both as gas tokens
+            async let ethResult = RPCClient().getETHBalance(rpcUrl: rpcUrl, address: address)
+            async let strkResult = RPCClient().getSTRKBalance(rpcUrl: rpcUrl, address: address)
+            let (ethBal, strkBal) = try await (ethResult, strkResult)
+
+            // Parse u256 low/high words — any non-zero word = funded
+            // u256 is returned as [low_u128_hex, high_u128_hex].
+            // Low word can be up to 128 bits (e.g. 0x821ab0d4414980000 = ~148 STRK)
+            // which overflows UInt64 — do NOT parse with UInt64.
+            // Instead: strip 0x, check that not all digits are '0'.
+            func isFunded(_ bal: String) -> Bool {
+                let parts = bal.split(separator: ",").map {
+                    String($0).trimmingCharacters(in: .whitespaces)
+                        .replacingOccurrences(of: "0x", with: "")
+                        .replacingOccurrences(of: "0X", with: "")
+                }
+                return parts.contains { hex in
+                    !hex.isEmpty && hex.contains(where: { $0 != "0" })
+                }
+            }
+            let ethFunded  = isFunded(ethBal)
+            let strkFunded = isFunded(strkBal)
+            let anyFunded  = ethFunded || strkFunded
+
+            let tokenLabel: String
+            switch (ethFunded, strkFunded) {
+            case (true, true):   tokenLabel = "both"
+            case (true, false):  tokenLabel = "ETH"
+            case (false, true):  tokenLabel = "STRK"
+            default:             tokenLabel = ""
+            }
+
             await MainActor.run {
-                ethBalance = balance
-                deploymentState = isFunded ? .funded : .idle
-                errorMessage = isFunded ? nil : "No ETH detected yet. Check your transfer and try again."
+                ethBalance   = ethBal
+                strkBalance  = strkBal
+                detectedGasToken = tokenLabel
+                deploymentState  = anyFunded ? .funded : .idle
+                errorMessage = anyFunded ? nil
+                    : "No ETH or STRK detected yet. Send either token and try again."
             }
         } catch {
             await MainActor.run {
@@ -347,21 +386,22 @@ struct AccountActivationView: View {
         let rpc       = RPCClient()
         do {
             // Phase 14: estimate fee before computing the tx hash.
-            // maxFee is committed inside the hash so it must be known upfront.
-            let maxFee = await rpc.estimateDeployFee(
+            // V3: estimate fee → resource bounds are committed inside the tx hash
+            // V3: estimate fee returns resource bounds (STRK gas pricing)
+            let resourceBounds = await rpc.estimateDeployFee(
                 rpcUrl: rpcUrl,
                 classHash: StarknetCurve.ozAccountClassHash,
                 constructorCalldata: [pubKeyHex],
                 salt: pubKeyHex,
                 contractAddress: keys.address
             )
-            // M-DEPLOY-ZERO-SIG fix: compute real DEPLOY_ACCOUNT_V1 tx hash + ECDSA signature.
+            // Compute V3 DEPLOY_ACCOUNT tx hash (Poseidon-based) + ECDSA signature
             let deployHash = try StarknetTransactionBuilder.deployAccountHash(
                 contractAddress: keys.address,
                 constructorCalldata: [pubKeyHex],
                 classHash: StarknetCurve.ozAccountClassHash,
                 salt: pubKeyHex,
-                maxFee: maxFee,
+                resourceBounds: resourceBounds,
                 nonce: "0x0",
                 chainID: networkManager.activeNetwork.chainIdFelt252
             )
@@ -374,7 +414,7 @@ struct AccountActivationView: View {
                 classHash: StarknetCurve.ozAccountClassHash,
                 constructorCalldata: [pubKeyHex],
                 contractAddressSalt: pubKeyHex,
-                maxFee: maxFee,
+                resourceBounds: resourceBounds,
                 signature: [deploySig.r, deploySig.s],
                 nonce: "0x0"
             )

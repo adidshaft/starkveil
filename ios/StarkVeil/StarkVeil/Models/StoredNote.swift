@@ -37,6 +37,6 @@ final class StoredNote {
 
     func toNote() -> Note {
         Note(value: value, asset_id: asset_id, owner_ivk: owner_ivk,
-             owner_pubkey: owner_pubkey, nonce: nonce, memo: memo)
+             owner_pubkey: owner_pubkey, nonce: nonce, spending_key: nil, memo: memo)
     }
 }

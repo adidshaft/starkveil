@@ -1,0 +1,11 @@
+--- /Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/RPCClient.swift
++++ /Users/amanpandey/Desktop/starknetWallet/ios/StarkVeil/StarkVeil/Core/RPCClient.swift
+@@ -29,6 +29,8 @@
+             throw RPCClientError.invalidResponse
+         }
+         guard (200..<300).contains(httpResponse.statusCode) else {
++            if let responseString = String(data: data, encoding: .utf8) {
++                print("🚨 HTTP Error \(httpResponse.statusCode): \(responseString)")
++            }
+             throw RPCClientError.httpError(statusCode: httpResponse.statusCode)
+         }

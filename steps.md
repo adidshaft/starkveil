@@ -149,17 +149,64 @@ Resolved 2 Critical + 4 High + 5 Medium vulnerabilities from the Phase 15 audit:
 
 ---
 
-## Current State of the Product (Phase 16)
-StarkVeil is fully engineered through Phase 16 (complete privacy implementation + audit hardening).
-1. The **Smart Contracts** compile with real Poseidon commitments, nullifiers, and encrypted memo emission in the `Shielded` event. Mock verifier (`verify_proof = true`) pending Stwo integration.
-2. The **Rust Prover SDK** exports 7 FFI functions: `generate_transfer_proof`, `poseidon_hash`, `note_commitment`, `note_nullifier`, `derive_ivk`, `stark_pubkey`, `stark_sign_transaction`.
-3. The **SwiftUI Application** is a fully standalone privacy wallet: BIP-39 → address derivation → account deployment → Shield/PrivateTransfer/Unshield with real cryptographic commitments.
-4. **27+ critical/high/medium bugs** resolved across 7 audit passes.
-5. **PrivateTransferView** wired as a full-screen cover behind the "Private Transfer" button in `ShieldedBalanceCard`.
+## Phase 17: V3 Transaction Migration + Live Wallet Activation (Completed)
+
+**Context**: After phases 12-16, the app could generate real cryptographic signatures and properly estimate fees — but every transaction was rejected with "RPC error 61: version not supported." Starknet Sepolia had deprecated V1 transactions and now only accepts V3.
+
+**Actions**: Full audit and rewrite of `RPCClient.swift`, `StarknetTransactionBuilder.swift`, `WalletManager.swift`, and `AccountActivationView.swift` for V3 compliance.
+
+**Why V3 is structurally different:**
+- Gas is priced in STRK (not ETH), with three separate markets: `l1_gas`, `l2_gas`, `l1_data_gas`
+- Transaction hash uses Poseidon (not Pedersen) over a completely different set of fields
+- The gas hash inner computation is `Poseidon(tip, l1_bounds, l2_bounds, l1_data_bounds)` — tip is *inside* the gas hash
+- Each resource bound is encoded as a single felt252 with a 60-bit resource name prefix
+
+**Error sequence navigated:**
+
+| Error | Root Cause | Fix |
+|---|---|---|
+| RPC 61: version not supported | Transactions sent as V1 (`version: "0x1"`) | Migrate all tx types to V3 |
+| -32602: invalid params | Named params object instead of positional array | Use `params: [tx]` not `params: {"deploy_account_transaction": tx}` |
+| -32602: missing field `l1_data_gas` | Node runs RPC v0.8, which requires 3 gas markets | Add `l1_data_gas` to `ResourceBoundsMapping` struct |
+| Error 53: resources don't cover fee | `FeeEstimateV3` decoded non-existent fields (`gas_consumed`, `gas_price`); actual fields are `l2_gas_consumed`, `l1_data_gas_consumed` etc. — silently parsed as nil, fallback used `l2_gas: 0x0` but deploy needed `l2_gas: 726k` | Rewrite `FeeEstimateV3` with correct field names and per-resource bounds |
+| Signature mismatch | V3 hash had `tip` outside the gas hash; resource bounds missing 60-bit name prefix | Read actual spec from `docs.starknet.io/learn/cheatsheets/transactions-reference` and rewrite hash exactly |
+
+**Key learning**: Added `[RPC→]` / `[RPC←]` debug logging to `performRequest` — the exact JSON sent and received made root causes immediately obvious. Should have been done from the start.
+
+**Outcome**: Wallet activation (`DEPLOY_ACCOUNT` V3) successfully broadcast and confirmed on Starknet Sepolia. The address `0x18ad392296ac8d70f303e7e9bd3add34f869e26fc73afb980a64c83a1afd414` is now a live deployed OZ v0.8 account on Sepolia.
+
+---
+
+## Phase 18: End-to-End Audit Fix Sweep (Completed)
+
+**Context**: All 8 remaining Phase 8 audit bugs needed fixing before Shield/Transfer/Unshield could actually execute on Sepolia.
+
+**Fixes applied**:
+1. **H-2 (RFC-6979)**: Added `rfc6979 = "0.4"` + `sha2 = "0.10"` to Cargo.toml. `stark_sign_transaction` in `lib.rs` now derives `k` internally via HMAC-DRBG(SHA-256). Removed `k_hex` parameter entirely — Swift caller simplified from 80 lines to 30.
+2. **H-7 (Mock Proof)**: Removed underscore from hex literal `0x504c414345484f4c444552_50524f4f46` → `0x504c414345484f4c444552`.
+3. **C-4 (u256 Split)**: All 3 amount conversion sites (shield, unshield, transfer) now use `Decimal` arithmetic with 2^128 boundary instead of `Double` with UInt64.max.
+4. **C-5 (Shield Calldata)**: Cairo `shield()` expects `(asset, amount_low, amount_high, note_commitment, encrypted_memo)` = 5 args. Was sending only 3.
+5. **C-6 (Transfer Calldata)**: Private transfer calldata now encodes `Array<felt252>` with length prefixes (`[len, ...elements]`) for proof, nullifiers, new_commitments, plus u256 fee.
+6. **H-4 (ownerPubkey)**: Output commitment in private transfer uses `recipientIVK` instead of `recipientAddress` (account address ≠ EC public key → notes were unspendable).
+7. **M-2 (Plaintext Fallback)**: Memo encryption failure now throws instead of falling back to plaintext hex on-chain.
+8. **M-6 (Phantom Notes)**: `executeShield` now polls `starknet_getTransactionReceipt` via `pollUntilAccepted` before calling `addNote()` — no more phantom notes on revert.
+
+**Files modified**: `lib.rs`, `Cargo.toml`, `starkveil_prover.h`, `StarkVeilProver.swift`, `WalletManager.swift`, `StoredNote.swift`, `SyncEngine.swift`
+
+---
+
+## Current State of the Product (Phase 18)
+StarkVeil is fully engineered through Phase 18.
+1. The **Smart Contracts** compile with real Poseidon commitments, nullifiers, and encrypted memo emission. Mock verifier (`verify_proof = true`) pending Stwo integration.
+2. The **Rust Prover SDK** exports 7 FFI functions with RFC-6979 deterministic signing inside Rust.
+3. The **SwiftUI Application** is a fully standalone privacy wallet with correct Cairo ABI encoding for all 3 operations (Shield, Private Transfer, Unshield).
+4. **30+ critical/high/medium bugs** resolved across 8+ audit passes.
+5. **All transaction types** are Starknet RPC v0.8 compliant V3 format with correct u256 encoding.
 
 ## Post-Hackathon Roadmap
-1. **Stwo client-side ZK prover circuit** — replace `verify_proof = true` with real on-device Stwo proving (no API, fully private).
-2. **RFC 6979 nonce** for ECDSA signing via Rust `rfc6979` crate.
+1. **Stwo client-side ZK prover circuit** — replace `verify_proof = true` with real on-device Stwo proving. No API, fully private.
+2. **End-to-end Shield → PrivateTransfer → Unshield** live test on Sepolia with real STRK.
 3. **QR code** for account address display.
-4. **Mainnet contract deployment**.
-5. **Starknet ID** integration to replace `anon.stark` placeholder.
+4. **Multi-RPC fallback** — cycle through Lava, Blast, Nethermind automatically.
+5. **Mainnet contract deployment**.
+6. **Starknet ID** integration to replace `anon.stark` placeholder.

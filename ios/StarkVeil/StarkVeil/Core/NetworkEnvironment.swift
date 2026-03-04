@@ -7,12 +7,27 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
 
     var id: String { self.rawValue }
 
+    /// Primary RPC URL — used for all requests.
     var rpcUrl: URL {
+        rpcUrls[0]
+    }
+
+    /// Ordered list of public RPC endpoints — tried in order if the primary fails.
+    /// All are keyless public nodes so no API credentials are stored in the binary.
+    var rpcUrls: [URL] {
         switch self {
         case .mainnet:
-            return URL(string: "https://free-rpc.nethermind.io/mainnet-juno")!
+            return [
+                URL(string: "https://rpc.starknet.lava.build")!,           // Primary (Lava)
+                URL(string: "https://starknet-mainnet.public.blastapi.io")!, // Fallback 1
+                URL(string: "https://free-rpc.nethermind.io/mainnet-juno")!  // Fallback 2
+            ]
         case .sepolia:
-            return URL(string: "https://free-rpc.nethermind.io/sepolia-juno")!
+            return [
+                URL(string: "https://rpc.starknet-testnet.lava.build")!,    // Primary (Lava)
+                URL(string: "https://starknet-sepolia.public.blastapi.io")!, // Fallback 1
+                URL(string: "https://free-rpc.nethermind.io/sepolia-juno")!  // Fallback 2
+            ]
         }
     }
 

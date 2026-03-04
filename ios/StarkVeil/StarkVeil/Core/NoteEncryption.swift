@@ -57,7 +57,8 @@ struct NoteEncryption {
         }
         let info = Data("note-enc-v1".utf8)
         // HKDF-SHA256: extract + expand into 32 bytes (256-bit AES key)
-        let prk  = HKDF<SHA256>.extract(inputKeyMaterial: SymmetricKey(data: ikm), salt: nil)
+        // Salt is omitted — IVK is already high-entropy key material (RFC 5869 §2.2)
+        let prk  = HKDF<SHA256>.extract(inputKeyMaterial: SymmetricKey(data: ikm), salt: Data())
         let okm  = HKDF<SHA256>.expand(pseudoRandomKey: prk, info: info, outputByteCount: 32)
         return okm
     }

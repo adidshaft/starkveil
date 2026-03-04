@@ -211,6 +211,9 @@ class SyncEngine: ObservableObject {
                             value: String(format: "%.9f", amountDouble),
                             asset_id: "0xSTRK",
                             owner_ivk: ivkHex,
+                            owner_pubkey: ivkHex,      // SyncEngine uses IVK as pubkey for incoming
+                            nonce: commitment,          // commitment acts as unique note ID
+                            spending_key: nil,
                             memo: decryptedMemo ?? "Shielded deposit"
                         )
                         decodedNotes.append((note: note, blockNumber: event.block_number))

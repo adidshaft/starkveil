@@ -163,6 +163,7 @@ struct VaultView: View {
 private struct SendSheetView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
+    @EnvironmentObject private var networkManager: NetworkManager
     @Binding var isPresented: Bool
 
     @State private var recipientAddress = ""
@@ -353,7 +354,16 @@ private struct SendSheetView: View {
         Task {
             let feedback = UINotificationFeedbackGenerator(); feedback.prepare()
             do {
-                try await walletManager.executePrivateTransfer(recipient: recipientAddress, amount: amount)
+                let network = networkManager.activeNetwork
+                try await walletManager.executePrivateTransfer(
+                    recipientAddress: recipientAddress,
+                    recipientIVK: recipientAddress,
+                    amount: amount,
+                    memo: "",
+                    rpcUrl: network.rpcUrl,
+                    contractAddress: network.contractAddress,
+                    network: network
+                )
                 feedback.notificationOccurred(.success)
                 isPresented = false
             } catch {

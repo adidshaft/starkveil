@@ -12,6 +12,9 @@ struct Note: Codable {
     // in computeCommitment. Both fields are now passed through FFI JSON.
     let owner_pubkey: String
     let nonce: String
+    // Phase 18 (C-6 fix): spending_key for nullifier derivation in generate_transfer_proof.
+    // Optional so existing Note construction sites (addNote, SyncEngine) don't break.
+    let spending_key: String?
     let memo: String
 }
 
@@ -142,11 +145,10 @@ class StarkVeilProver {
     // ─────────────────────────────────────────────────────────────────────────
     // Helper: calls a Rust FFI fn that takes a single C string and returns
     // a JSON string like {"Ok": "0x..."} or {"Err": "message"}.
-    // L-CALLSINGLEARG-RETTYPE fix: fn must return UnsafeMutablePointer (not Unsafe)
-    // to match the *mut c_char return type of all Rust FFI exports.
+    // The FFI functions return UnsafePointer<CChar>? (const *c_char in Rust).
     // ─────────────────────────────────────────────────────────────────────────
     private static func callSingleArg(
-        _ fn: (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?,
+        _ fn: @Sendable (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?,
         arg: String
     ) throws -> String {
         let buf = arg.utf8CString
@@ -160,10 +162,11 @@ class StarkVeilProver {
                               userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
             }
             let json = String(cString: rawPtr)
-            free_rust_string(rawPtr)   // no cast needed: already UnsafeMutablePointer
+            free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
             return try decodeOkString(json: json)
         }
     }
+
 
     private static func decodeOkString(json: String) throws -> String {
         guard let data = json.data(using: .utf8),
@@ -314,78 +317,37 @@ class StarkVeilProver {
         let s: String
     }
 
-    /// Signs a Starknet transaction hash with the account spending key.
-    /// - Parameters:
-    ///   - txHash:     The Pedersen hash of the transaction fields (felt252 hex).
-    ///   - privateKey: The STARK spending key (felt252 hex, from KeyDerivationEngine).
-    ///
-    /// C-K-RETRY fix: original SHA-256(pk||txHash) produced the same k for the same
-    /// txHash on every retry attempt — a retried failed tx would share k with the original,
-    /// enabling private key extraction from two signatures with the same k.
-    ///
-    /// C-K-DOMAIN fix: SHA-256 output is 256-bit; STARK_ORDER ≈ 2^251.6, so ~6.25% of
-    /// SHA-256 outputs exceed STARK_ORDER and cause the Rust sign() to return Err.
-    ///
-    /// Combined fix: HMAC-SHA256(key=privateKey, data=txHash||counter) in a retry loop.
-    ///   - unique per (pk, txHash, attempt) — retries produce different k values
-    ///   - clamped to [1, STARK_ORDER) by masking to 252 bits and rejecting 0
-    ///   - follows the structure of RFC 6979 without requiring the full DRBG
+    /// Phase 18 (H-2 fix): k is now derived deterministically inside Rust via RFC-6979.
+    /// The Swift side simply passes txHash + privateKey. No nonce logic needed here.
     static func signTransaction(txHash: String, privateKey: String) throws -> ECDSASignature {
-        // STARK_ORDER: 2^251 + 17*2^192 + 1 (251.58-bit value, first 5 bits of a 256-bit word are 0)
-        // Masking with 0x07 in the top byte gives us < 2^251, which is safely below the order
-        // on every iteration — eliminating the 6.25% domain failure entirely.
-        let pkKey = SymmetricKey(data: Data(privateKey.utf8))
-        var counter: UInt8 = 0
-        while counter < 100 {   // bounded retry — should never exceed 1-2 iterations
-            var msg = Data(txHash.utf8)
-            msg.append(counter)
-            let mac = HMAC<SHA256>.authenticationCode(for: msg, using: pkKey)
-            var kBytes = Array(mac)
-            // Clamp: mask top 5 bits so the value is always < 2^251 ≤ STARK_ORDER
-            kBytes[0] &= 0x07
-            // Reject k = 0 (degenerate; would produce r = 0)
-            if kBytes.allSatisfy({ $0 == 0 }) { counter += 1; continue }
-            let kValue = "0x" + kBytes.map { String(format: "%02x", $0) }.joined()
-            let txBuf = txHash.utf8CString
-            let pkBuf = privateKey.utf8CString
-            let kBuf  = kValue.utf8CString
-            let result = try txBuf.withUnsafeBufferPointer { txPtr in
-                try pkBuf.withUnsafeBufferPointer { pkPtr in
-                    try kBuf.withUnsafeBufferPointer { kPtr in
-                        guard let tx = txPtr.baseAddress, let pk = pkPtr.baseAddress, let kp = kPtr.baseAddress else {
-                            throw NSError(domain: "FFIError", code: 1,
-                                          userInfo: [NSLocalizedDescriptionKey: "Null C string buffer"])
-                        }
-                        guard let rawPtr = stark_sign_transaction(tx, pk, kp) else {
-                            throw NSError(domain: "FFIError", code: 2,
-                                          userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
-                        }
-                        let json = String(cString: rawPtr)
-                        free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
-                        return json
-                    }
+        let txBuf = txHash.utf8CString
+        let pkBuf = privateKey.utf8CString
+        let result = try txBuf.withUnsafeBufferPointer { txPtr in
+            try pkBuf.withUnsafeBufferPointer { pkPtr in
+                guard let tx = txPtr.baseAddress, let pk = pkPtr.baseAddress else {
+                    throw NSError(domain: "FFIError", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Null C string buffer"])
                 }
+                guard let rawPtr = stark_sign_transaction(tx, pk) else {
+                    throw NSError(domain: "FFIError", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "Rust returned null"])
+                }
+                let json = String(cString: rawPtr)
+                free_rust_string(UnsafeMutablePointer(mutating: rawPtr))
+                return json
             }
-            // Decode: {"Ok": {"r": "0x...", "s": "0x..."}} or {"Err": "..."} / {"Error": "..."}
-            guard let data = result.data(using: .utf8),
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw NSError(domain: "FFIError", code: 3,
-                              userInfo: [NSLocalizedDescriptionKey: "Cannot parse sign result: \(result)"])
-            }
-            if let ok = dict["Ok"] as? [String: String],
-               let r = ok["r"], let s = ok["s"] {
-                return ECDSASignature(r: r, s: s)
-            }
-            // Rust Err: k may have been invalid (r=0, s=0) — retry with next counter
-            let errMsg = dict["Error"] as? String ?? dict["Err"] as? String ?? result
-            if errMsg.contains("invalid k") || errMsg.contains("ECDSA") {
-                counter += 1
-                continue
-            }
-            throw NSError(domain: "CryptoFFI", code: 4,
-                          userInfo: [NSLocalizedDescriptionKey: errMsg])
         }
-        throw NSError(domain: "CryptoFFI", code: 5,
-                      userInfo: [NSLocalizedDescriptionKey: "Could not produce a valid ECDSA signature after \(counter) attempts"])
+        guard let data = result.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "FFIError", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot parse sign result: \(result)"])
+        }
+        if let ok = dict["Ok"] as? [String: String],
+           let r = ok["r"], let s = ok["s"] {
+            return ECDSASignature(r: r, s: s)
+        }
+        let errMsg = dict["Error"] as? String ?? dict["Err"] as? String ?? result
+        throw NSError(domain: "CryptoFFI", code: 4,
+                      userInfo: [NSLocalizedDescriptionKey: "Sign error: \(errMsg)"])
     }
 }
