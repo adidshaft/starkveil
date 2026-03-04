@@ -253,37 +253,28 @@ class SyncEngine: ObservableObject {
                             let encMemoIdx = 1 + commitmentsLen + 2  // skip commitments + fee u256
                             let encMemoHex = event.data[encMemoIdx]
 
-                            // Trial-decrypt the memo — if it fails, the note isn't for us
-                            guard !encMemoHex.isEmpty, encMemoHex != "0x0" else { continue }
-                            guard let decryptedMemo = try? NoteEncryption.decryptMemo(encMemoHex, ivkHex: ivkHex) else {
-                                continue   // not addressed to us
-                            }
-
-                            // Process each commitment in the array
+                            // Trial-decrypt using compactDecrypt — if it returns nil, note isn't for us.
+                            // We try each commitment individually since keystream is commitment-specific.
                             for i in 0..<commitmentsLen {
                                 let commitment = event.data[1 + i]
                                 let clampedIVK = WalletManager.clampToFelt252(ivkHex)
 
-                                // Parse structured memo: "v:<wei_integer>|<user_memo>"
-                                // This carries the actual transfer value so the receiver's
-                                // balance is accurate even though the event doesn't include amount.
-                                var noteValue = "0"
-                                var displayMemo = decryptedMemo
-                                if decryptedMemo.hasPrefix("v:"),
-                                   let pipeIdx = decryptedMemo.firstIndex(of: "|") {
-                                    let weiStr = String(decryptedMemo[decryptedMemo.index(decryptedMemo.startIndex, offsetBy: 2)..<pipeIdx])
-                                    noteValue = weiStr   // raw wei integer string
-                                    displayMemo = String(decryptedMemo[decryptedMemo.index(after: pipeIdx)...])
+                                guard let decrypted = try? NoteEncryption.decryptCompact(
+                                    encMemoHex,
+                                    ivkHex: ivkHex,
+                                    commitment: commitment
+                                ) else {
+                                    continue   // not addressed to us
                                 }
 
                                 let note = Note(
-                                    value: noteValue,
+                                    value: decrypted.valueWei.isEmpty ? "0" : decrypted.valueWei,
                                     asset_id: "0x5354524b",
                                     owner_ivk: ivkHex,
                                     owner_pubkey: clampedIVK,
                                     nonce: commitment,
                                     spending_key: nil,
-                                    memo: "Private: \(displayMemo)"
+                                    memo: decrypted.memo.isEmpty ? "Private transfer" : "Private: \(decrypted.memo)"
                                 )
                                 decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
                             }

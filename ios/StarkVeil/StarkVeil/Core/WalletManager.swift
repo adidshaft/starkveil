@@ -817,13 +817,34 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
-        // note.value is raw wei; amount is STRK — convert before matching
+        // Pre-fetch pending note commitments so we can exclude them from selection.
+        let ctxPre = persistence.context
+        let netIdPre = activeNetworkId
+        let descPre = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netIdPre })
+        let pendingCommitments = Set((try? ctxPre.fetch(descPre))?
+            .filter { $0.isPendingSpend }
+            .map { $0.commitment } ?? [])
+
+        // Exact-match only: the ZK circuit is single-input / single-output.
+        // There is no change output — spending a 0.2 note for 0.1 sends 0.2 to recipient.
         guard let inputNote = notes.first(where: {
             guard let weiDouble = Double($0.value) else { return false }
+            guard !pendingCommitments.contains($0.nonce) else { return false }
             let strk = weiDouble / 1e18
             return abs(strk - amount) < 1e-9
-        }) ?? selectNotes(for: amount).first
-        else { throw ProverError.noMatchingNote }
+        }) else {
+            let hasLarger = notes.contains {
+                guard let w = Double($0.value) else { return false }
+                return (w / 1e18) > amount
+            }
+            if hasLarger {
+                throw NSError(domain: "StarkVeil", code: 50,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "No note matches \(amount) STRK exactly. " +
+                        "Shield exactly \(amount) STRK first, then transfer that note."])
+            }
+            throw ProverError.noMatchingNote
+        }
 
         isTransferInFlight = true
         defer { isTransferInFlight = false }
@@ -832,7 +853,8 @@ class WalletManager: ObservableObject {
         let ctx = persistence.context
         let netId = activeNetworkId
         let desc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
-        guard let storedNote = (try? ctx.fetch(desc))?.first(where: {
+        let allStoredNotes = (try? ctx.fetch(desc)) ?? []
+        guard let storedNote = allStoredNotes.first(where: {
             $0.value     == inputNote.value    &&
             $0.asset_id  == inputNote.asset_id &&
             $0.memo      == inputNote.memo     &&
@@ -913,17 +935,16 @@ class WalletManager: ObservableObject {
             nonce: outputNonce
         )
 
-        // M-2 fix: make encryption throwing — abort if memo can't be encrypted.
-        // Encode the transfer value inside the memo so the receiver can reconstruct balance.
-        // Format: "v:<wei_integer>|<user_memo>"  — SyncEngine parses this on receive.
-        let userMemo = memo.isEmpty ? "private transfer" : memo
-        let structuredMemo = "v:\(inputNote.value)|\(userMemo)"
-        let encryptedMemoRaw = try NoteEncryption.encryptMemo(
-            structuredMemo,
-            ivkHex: recipientIVKClamped
+        // Compact felt252 memo: encryptCompact produces exactly 31 bytes,
+        // safely fits in a single felt252. Uses XOR-keystream + 4-byte HMAC
+        // (no nonce needed — commitment is unique per note).
+        let userMemo = memo.isEmpty ? "" : memo
+        let encryptedMemo = try NoteEncryption.encryptCompact(
+            valueWei: inputNote.value,
+            memo: userMemo,
+            ivkHex: recipientIVKClamped,
+            commitment: outputCommitment
         )
-        // C-FELT-OVERFLOW: felt252 max = 31 bytes (62 hex chars). Truncate to fit.
-        let encryptedMemo = "0x" + String(encryptedMemoRaw.prefix(62))
 
         // C-6 fix: Cairo private_transfer() expects:
         //   proof: Array<felt252>, nullifiers: Array<felt252>,
@@ -987,6 +1008,17 @@ class WalletManager: ObservableObject {
         didSuccessfullySubmit = true
         removeNote(inputNote)
         recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
+
+        // 8. Log to activity feed
+        let strkAmount = String(format: "%.6f", amount)
+        logEvent(
+            kind: .transfer,
+            amount: strkAmount,
+            assetId: "STRK",
+            counterparty: recipientAddress,
+            txHash: broadcastedHash
+        )
+
         return broadcastedHash
     }
 
@@ -995,16 +1027,23 @@ class WalletManager: ObservableObject {
     /// Removes a note from the in-memory array and deletes its persisted SwiftData counterpart.
     private func removeNote(_ note: Note) {
         if let idx = notes.firstIndex(where: {
-            $0.value == note.value && $0.asset_id == note.asset_id && $0.owner_ivk == note.owner_ivk && $0.nonce == note.nonce
+            $0.value == note.value && $0.asset_id == note.asset_id &&
+            $0.owner_ivk == note.owner_ivk && $0.nonce == note.nonce
         }) {
             notes.remove(at: idx)
         }
-        // Also remove from SwiftData
+        // Also remove from SwiftData — match by commitment (nonce field stores it)
+        // to avoid deleting a different note with the same value.
         let ctx = persistence.context
         let netId = activeNetworkId
         let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
         if let allStored = try? ctx.fetch(descriptor),
-           let match = allStored.first(where: { $0.value == note.value && $0.asset_id == note.asset_id }) {
+           let match = allStored.first(where: {
+               // Prefer commitment match; fall back to value+asset if no commitment stored
+               if !note.nonce.isEmpty && $0.commitment == note.nonce { return true }
+               return $0.value == note.value && $0.asset_id == note.asset_id &&
+                      $0.owner_ivk == note.owner_ivk
+           }) {
             ctx.delete(match)
             try? ctx.save()
         }

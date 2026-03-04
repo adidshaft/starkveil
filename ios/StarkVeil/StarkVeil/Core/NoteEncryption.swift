@@ -100,7 +100,107 @@ struct NoteEncryption {
         }
     }
 
-    // MARK: - Note Commitment
+    // MARK: - Compact felt252 Encryption (for on-chain Transfer events)
+    //
+    // AES-GCM is not usable for on-chain memos: its minimum overhead is
+    // 12 (nonce) + 16 (tag) = 28 bytes, leaving only 3 bytes for plaintext
+    // in a 31-byte felt252. Instead we use:
+    //
+    //   keystream = HKDF-SHA256(ikm=EK, info=commitment_bytes, length=27)
+    //   payload   = [value_8bytes || memo_up_to_19bytes]
+    //   auth      = HMAC-SHA256(EK, payload)[0..<4]
+    //   ciphertext = auth(4) || XOR(payload, keystream)[0..<27]
+    //
+    // Total = 4 + 27 = 31 bytes = exactly one felt252.
+    // The commitment is unique per note, so keystream is unique (no nonce needed).
+    // Auth failure → returns nil, identical to AES-GCM for SyncEngine trial-decrypt.
+
+    static let compactPayloadSize = 27   // 31 - 4 (auth tag)
+    static let compactValueSize   = 8    // 8 bytes = u64, supports up to ~1.8e19 wei
+
+    /// Encrypts `(valueWei, memo)` into a 31-byte felt252-safe compact ciphertext.
+    /// - `valueWei`: raw integer string e.g. "100000000000000000"
+    /// - `commitment`: the output note commitment, used as a unique nonce
+    static func encryptCompact(valueWei: String, memo: String, ivkHex: String, commitment: String) throws -> String {
+        let aesKey = try encryptionKey(from: ivkHex)
+
+        // Build plaintext: 8-byte big-endian value + memo bytes (truncated to fit)
+        var valueInt = UInt64(valueWei) ?? 0
+        var valueBytes = (0..<8).map { i -> UInt8 in
+            let shift = (7 - i) * 8
+            return UInt8((valueInt >> shift) & 0xFF)
+        }
+        let memoBytes = Array(memo.utf8.prefix(compactPayloadSize - compactValueSize))
+        let payload: [UInt8] = valueBytes + memoBytes
+
+        // Derive keystream from EK + commitment (unique per note → no replay)
+        guard let commitData = Data(hexString: commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment) else {
+            throw NoteEncryptionError.invalidCiphertext
+        }
+        let keystreamKey = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: aesKey,
+            info: commitData,
+            outputByteCount: compactPayloadSize
+        )
+        let keystreamBytes = keystreamKey.withUnsafeBytes { Array($0) }
+
+        // XOR encrypt
+        let cipherPayload = zip(payload, keystreamBytes.prefix(payload.count)).map { $0 ^ $1 }
+
+        // 4-byte auth tag: HMAC-SHA256(aesKey, payload)[0..<4]
+        var hmacKey = aesKey
+        let authFull = HMAC<SHA256>.authenticationCode(for: Data(payload), using: hmacKey)
+        let auth = Array(authFull.prefix(4))
+
+        // Concatenate: auth(4) || cipherPayload(≤27), pad to 31 bytes with zeros
+        var result = auth + cipherPayload
+        while result.count < 31 { result.append(0) }
+        let hex = result.map { String(format: "%02x", $0) }.joined()
+        return "0x" + hex
+    }
+
+    /// Decrypts a compact felt252 ciphertext. Returns `(valueWei, memo)` or nil if auth fails.
+    static func decryptCompact(_ encryptedHex: String, ivkHex: String, commitment: String) throws -> (valueWei: String, memo: String)? {
+        let clean = encryptedHex.hasPrefix("0x") ? String(encryptedHex.dropFirst(2)) : encryptedHex
+        // Pad to 62 hex chars (31 bytes) if shorter
+        let padded = clean + String(repeating: "0", count: max(0, 62 - clean.count))
+        guard let data = Data(hexString: padded), data.count == 31 else {
+            throw NoteEncryptionError.invalidCiphertext
+        }
+        let bytes = Array(data)
+        let auth = Array(bytes[0..<4])
+        let cipherPayload = Array(bytes[4..<31])
+
+        // Derive keystream
+        let aesKey = try encryptionKey(from: ivkHex)
+        guard let commitData = Data(hexString: commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment) else {
+            throw NoteEncryptionError.invalidCiphertext
+        }
+        let keystreamKey = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: aesKey,
+            info: commitData,
+            outputByteCount: compactPayloadSize
+        )
+        let keystreamBytes = keystreamKey.withUnsafeBytes { Array($0) }
+
+        // XOR decrypt
+        let payload = zip(cipherPayload, keystreamBytes).map { $0 ^ $1 }
+
+        // Verify auth tag
+        let authFull = HMAC<SHA256>.authenticationCode(for: Data(payload), using: aesKey)
+        let expectedAuth = Array(authFull.prefix(4))
+        guard auth == expectedAuth else { return nil }   // auth failure → not for us
+
+        // Parse value (8-byte big-endian u64)
+        let valueInt = payload.prefix(compactValueSize).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        let memoBytes = Array(payload.dropFirst(compactValueSize))
+            .prefix(while: { $0 != 0 })   // strip zero padding
+        let memo = String(bytes: Array(memoBytes), encoding: .utf8) ?? ""
+
+        return (valueWei: String(valueInt), memo: memo)
+    }
+
+
 
     /// Computes the real Poseidon note commitment via Rust FFI.
     /// commitment = Poseidon(value, asset_id, owner_pubkey, nonce)
