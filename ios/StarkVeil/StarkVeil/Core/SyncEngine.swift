@@ -193,6 +193,7 @@ class SyncEngine: ObservableObject {
                         return
                     }
 
+                    print("[SyncEngine] decryptIVK=\(ivkHex)")
                     // ── Event selector hashes (sn_keccak of event name) ──────────
                     // Used to differentiate Shielded vs Transfer vs Unshielded events.
                     let shieldedSelector  = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"

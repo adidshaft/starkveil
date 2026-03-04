@@ -926,10 +926,13 @@ class WalletManager: ObservableObject {
         let changeWeiStr  = String(changeWeiVal)
         let hasChange     = changeWeiVal > 0
 
-        // Clamp the recipient IVK to felt252 range before ANY Rust FFI call.
-        let recipientIVKClamped = WalletManager.clampToFelt252(recipientIVK)
-        // Sender's own IVK (for change note)
-        let senderIVKClamped = WalletManager.clampToFelt252(ivkHex)
+        // The recipient IVK (from SVK address) is already a valid felt252 — it's a
+        // Poseidon hash output, always < STARK prime. Do NOT clamp it, because
+        // clamping can change the value, making the encryption key different from
+        // what the receiver derives. For Poseidon noteCommitment we pass it directly.
+        // For encryptCompact we MUST use the exact same value the receiver will use.
+        print("[PrivateTransfer] recipientIVK=\(recipientIVK)")
+        print("[PrivateTransfer] senderIVK=\(ivkHex)")
 
         // ── Recipient output commitment ──────────────────────────────────────────
         // IMPORTANT: use amountWeiStr, NOT inputNote.value — the recipient's note
@@ -937,7 +940,7 @@ class WalletManager: ObservableObject {
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: amountWeiStr,
             assetId: safeAssetId,
-            ownerPubkey: recipientIVKClamped,
+            ownerPubkey: recipientIVK,      // raw IVK, not clamped
             nonce: outputNonce
         )
 
@@ -956,7 +959,7 @@ class WalletManager: ObservableObject {
             let cc = try StarkVeilProver.noteCommitment(
                 value: changeWeiStr,
                 assetId: safeAssetId,
-                ownerPubkey: senderIVKClamped,
+                ownerPubkey: ivkHex,       // sender's raw IVK, not clamped
                 nonce: changeNonceStr
             )
             changeCommitment = cc
@@ -964,7 +967,7 @@ class WalletManager: ObservableObject {
                 value: changeWeiStr,
                 asset_id: "0x5354524b",
                 owner_ivk: ivkHex,
-                owner_pubkey: senderIVKClamped,
+                owner_pubkey: ivkHex,      // raw IVK
                 nonce: changeNonceStr,
                 spending_key: nil,
                 memo: "Change"
@@ -975,11 +978,12 @@ class WalletManager: ObservableObject {
         // ── Encrypt memo for recipient (compact 31-byte felt252 scheme) ──────────
         let userMemo = memo.isEmpty ? "" : memo
         let encryptedMemo = try NoteEncryption.encryptCompact(
-            valueWei: amountWeiStr,          // recipient gets amountWei, not inputNote.value
+            valueWei: amountWeiStr,
             memo: userMemo,
-            ivkHex: recipientIVKClamped,
+            ivkHex: recipientIVK,           // RAW IVK, not clamped — must match receiver's
             commitment: outputCommitment
         )
+        print("[PrivateTransfer] encryptedMemo=\(encryptedMemo)")
 
         // C-6 fix: Cairo private_transfer() expects:
         //   proof: Array<felt252>, nullifiers: Array<felt252>,

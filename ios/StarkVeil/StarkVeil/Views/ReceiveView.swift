@@ -21,9 +21,12 @@ struct ReceiveView: View {
 
     private var ivkHex: String {
         if let seed = KeychainManager.masterSeed(),
-           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed),
-           let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString) {
-            return derivedIVK
+           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
+            // MUST use clamped key — same as SyncEngine and executePrivateTransfer.
+            let clamped = WalletManager.clampToFelt252(keys.privateKey.hexString)
+            if let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: clamped) {
+                return derivedIVK
+            }
         }
         return "unavailable"
     }
