@@ -251,3 +251,52 @@ Resolved all remaining Phase 8 critical/high/medium bugs to make Shield, Private
 | **M-6** | `executeShield` polls `starknet_getTransactionReceipt` before `addNote()` — no more phantom notes on revert. |
 
 **Files modified:** `lib.rs`, `Cargo.toml`, `starkveil_prover.h`, `StarkVeilProver.swift`, `WalletManager.swift`, `StoredNote.swift`, `SyncEngine.swift`.
+
+---
+
+### Phase 20: Live Sepolia Deployment & Core Bug Fixes (Completed)
+
+Deployed PrivacyPool to Starknet Sepolia and resolved 4 production bugs discovered during end-to-end testing.
+
+#### Deployed Contract (Sepolia)
+
+| | |
+|---|---|
+| **Contract address** | `0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74` |
+| **Class hash** | `0x6d5bfe6fe2243398e0edad308bd54d5c74b8e7e4944fda952170505818a18de` |
+| **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` — Cartridge, JSON-RPC v0.9.0 |
+| **RPC (fallback)** | `https://rpc.starknet-testnet.lava.build` — Lava, v0.8.1 |
+| **Deployed via** | `deploy_contract.js` — starknet.js v9 programmatic deploy (sncast/starkli were incompatible with v0.9.0) |
+
+**Entry points (computed from deployed ABI):**
+
+| Function | Selector |
+|---|---|
+| `shield` | `0x1d142bf165333b22247aed261a8174bd8ba65a3f9b25570d99a8b8f2c32e3ba` |
+| `private_transfer` | `0x2605e7681cf37ab3a81d1732a9c8a75f2544c5967628a4d6999f276c6ba513c` |
+| `unshield` | `0x3079978d9c0e08ca0a86356d70a7eea2408b5d3882425b2f30a60818eac5b1b` |
+
+#### Bug Fixes
+
+| Bug | Root Cause | Fix |
+|---|---|---|
+| **Shielded balance shows raw wei** | `recomputeBalance()` summed `Double(note.value)` directly. Notes store value as raw wei (e.g. `100000000000000000` = 0.1 STRK). | Divide by `1e18` in `recomputeBalance()`. |
+| **Activity log shows raw wei** | `addNote()` passed `note.value` (raw wei string) to `logEvent()`. | Convert wei → STRK before logging. |
+| **Unshield RPC Error 41** | The multicall `calldata_len` was set before the full payload was assembled, so the sequencer read the wrong number of args. | Build the complete `callPayload` first, then derive `calldata_len = callPayload.count`. |
+| **Private transfer felt252 overflow** | `spendingKeyHex = keys.privateKey.hexString` is a raw 32-byte value; top bits may exceed the STARK field prime, making it an invalid felt252. | `clampToFelt252()` helper masks the top 3 bits of the MSB (`bytes[0] &= 0x07`) before use in Poseidon hashes. Privacy-preserving: clamping does not weaken the key, it only ensures field validity. |
+
+#### Note Value Format
+- Notes are **stored** with `value` as a raw wei decimal string (e.g. `"100000000000000000"`).
+- `recomputeBalance()` divides by `1e18` so `WalletManager.balance` is always in **STRK**.
+- The activity log and UI both display STRK amounts.
+
+#### Felt252 Clamping Rule
+The STARK field prime is `P = 2^251 + 17·2^192 + 1` (slightly less than `2^252`). Any 32-byte private key whose top 3 bits are non-zero overflows `P`. The `clampToFelt252` helper (static on `WalletManager`) masks those bits, guaranteeing the value is in-range for Cairo felt252. This matches the clamping Cairo/starknet-rs apply internally. Applied to `spendingKeyHex` whenever it is used as a felt252 argument in FFI calls.
+
+#### UI Improvements
+- **Shield/Unshield success banner**: tx hash is now a tappable `Link` opening `https://sepolia.voyager.online/tx/<hash>` so users can independently verify on-chain.
+- **ReceiveView — Shielded QR**: labelled *"Shielded Address — for private receives"* above the QR image.
+- **ReceiveView — Public address card**: labelled *"Public Address (U) — for exchanges & public sends"* with copy-with-checkmark feedback.
+
+**Files modified:** `NetworkEnvironment.swift`, `WalletManager.swift`, `ShieldView.swift`, `ReceiveView.swift`, `Scarb.toml`.
+

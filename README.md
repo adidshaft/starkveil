@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 19 Complete — Zashi-Style Inherently Private UX):** Wallet now uses a clean U (Unshielded) / S (Shielded) model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two addresses: S (`svk:0x…`) and U (`0x…`) with QR codes. 4-tab nav: Wallet | Swap | Activity | Settings.
+**Current status (Phase 20 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings.
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -11,126 +11,76 @@ StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial
 
 ---
 
-## 🚀 How to Spin Up the Sandbox (Hackathon Guide)
+## 🚀 How to Run on Starknet Sepolia (Testnet)
 
-This repo is completely configured for local testing. Follow these steps sequentially to spin the architecture back up.
+The PrivacyPool contract is **already deployed** on Sepolia. No local node required.
 
-### 1. Launch the Local Chain
-Open a fresh terminal, ensure the Starknet Dojo toolchain is installed (`katana`), and start the node:
+### Deployed Contract
+| | |
+|---|---|
+| **Network** | Starknet Sepolia |
+| **Contract address** | `0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74` |
+| **Class hash** | `0x6d5bfe6fe2243398e0edad308bd54d5c74b8e7e4944fda952170505818a18de` |
+| **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
+| **Explorer** | [Voyager Sepolia](https://sepolia.voyager.online/contract/0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74) |
+
+### 1. Build the Rust Prover
 ```bash
-katana --dev
+cd prover
+./build_ios.sh
+# Expected output: prover/target/StarkVeilProver.xcframework
 ```
-*Leave this running in the background. It spins up local accounts and an RPC endpoint on `127.0.0.1:5050`.*
 
-### 2. Deploy the Cairo Contract
-In a second terminal, navigate to the `contracts/` directory and build the Cairo code into Sierra format using `scarb`. 
+### 2. Build the Cairo Contract (optional — already deployed)
 ```bash
 cd contracts
-scarb build
+scarb build   # Produces Sierra + CASM in target/dev/
 ```
 
-Link an `sncast` account pointing to one of the Katana pre-funded accounts (Katana prints these Private Keys directly in its terminal when it boots up).
-```bash
-sncast account import --name katana_test --address <PUB_KEY> --private-key <PRIV_KEY> --type open_zeppelin --url http://127.0.0.1:5050
-```
-
-Declare and Deploy the Privacy Pool using **sncast 0.50.0** (required for Katana RPC 0.9.0):
-```bash
-# Ensure correct sncast version
-snfoundryup -v 0.50.0
-
-# 1. Declare the contract
-sncast --profile katana_test declare --contract-name PrivacyPool
-
-# 2. Deploy via Katana's UDC (Universal Deployer Contract)
-# Grab your CLASS_HASH from the output above, then run:
-sncast --profile katana_test invoke \
-  --contract-address 0x41a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf \
-  --function "deployContract" \
-  --calldata <CLASS_HASH> 0x0 0x0 0x0
-```
-*Your deployed contract address will be located in the receipt `event data[0]`.*
-
-### 3. Build the STARK Rust Prover for iOS
-Navigate to the `prover/` directory and use the pre-configured bash script to trigger `cargo` targeting Apple ARM architecture and automatically generate the universal `StarkVeilProver.xcframework` bundle.
-```bash
-cd prover
-./build_ios.sh
-```
-*This generates `/prover/target/StarkVeilProver.xcframework`.*
-
-### 4. Run the Xcode Simulator
-The Xcode project `ios/StarkVeil/StarkVeil.xcodeproj` is fully configured. It statically maps to the newly generated Rust `.xcframework`.
-1. Open the project in Xcode.
-2. Select **iPhone 15 Simulator** or a **Physical Device** as the target.
-3. Hit **Command + R** to build and run the SwiftUI cypherpunk visual interface.
-
----
-
-## ✅ Verification Guide — Reproduce All Wallet Functionality
-
-This section lets anyone reproduce and confirm every feature of StarkVeil end-to-end. Follow the steps in order against a local Katana node or Sepolia Testnet.
-
-### Prerequisites
-```bash
-# Required tools
-katana --version          # Starknet Dojo (v1.7.1+)
-scarb --version           # Cairo build tool (2.x)
-sncast --version          # Starknet Foundry 0.50.0
-cargo --version           # Rust 1.75+
-xcodebuild -version       # Xcode 15+
-```
-
----
-
-### Step 1 · Build the Rust Prover
-```bash
-cd prover
-./build_ios.sh
-# Expected: prover/target/StarkVeilProver.xcframework exists
-ls prover/target/StarkVeilProver.xcframework
-```
-
-### Step 2 · Start the Local Chain
-```bash
-katana --dev
-# Leave running. Note the funded account addresses and private keys printed on startup.
-# Default RPC: http://127.0.0.1:5050
-```
-
-### Step 3 · Deploy the PrivacyPool Contract
-```bash
-cd contracts && scarb build
-
-# Import a Katana account (use keys from Step 2)
-sncast account import \
-  --name katana_test \
-  --address <KATANA_ADDRESS> \
-  --private-key <KATANA_PRIV_KEY> \
-  --type open_zeppelin \
-  --url http://127.0.0.1:5050
-
-# Declare the contract class
-sncast --profile katana_test declare --contract-name PrivacyPool
-# → note the CLASS_HASH in the output
-
-# Deploy via Katana UDC
-sncast --profile katana_test invoke \
-  --contract-address 0x41a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf \
-  --function deployContract \
-  --calldata <CLASS_HASH> 0x0 0x0 0x0
-# → CONTRACT_ADDRESS is in event data[0] of the receipt
-```
-
-### Step 4 · Build & Run the iOS App
+### 3. Run the iOS App
 ```bash
 open ios/StarkVeil/StarkVeil.xcodeproj
-# In Xcode: select physical iOS device or Simulator → ⌘R
+# Select iPhone 15 Simulator or physical device → ⌘R
 ```
+The app points to Sepolia by default. No configuration needed.
 
-**In the app, set the RPC URL to:** `http://127.0.0.1:5050` and contract address to the value from Step 3.
+### 4. Fund Your Wallet
+1. Create or import a wallet in the app.
+2. Tap the avatar → **Activate Wallet** to see your Starknet address.
+3. Fund it with Sepolia STRK from the [Starknet Faucet](https://starknet-faucet.vercel.app/).
+4. Tap **Activate** — this deploys your OpenZeppelin account on-chain.
+
+### 5. Shielding
+1. Tap **Shield** on the main screen.
+2. Enter an amount (e.g. `0.1`) and tap **Shield**.
+3. Approve + shield multicall submits in one tx.
+4. On success: a banner appears with a tappable tx hash linking to Voyager.
+5. Your shielded balance updates immediately.
+
+### 6. Private Transfer (S → S)
+1. Ask the recipient to share their SVK from **Receive → Shielded Address (S)**.
+2. Tap **Send** → select **Shielded (S)** mode.
+3. Paste the `svk:0x…` address and amount.
+4. Tap **Send (Private)** — no amounts or addresses visible on-chain.
+
+### 7. Unshield (S → U)
+1. Tap **Shield** → switch to **Unshield** tab.
+2. Enter the amount matching an existing shielded note.
+3. Tap **Unshield** — STRK returns to your public balance.
 
 ---
+
+### Local Development (optional)
+For local chain testing with Katana:
+```bash
+katana --dev   # RPC: http://127.0.0.1:5050
+```
+Then re-deploy the contract:
+```bash
+cd /path/to/starknetWallet
+node deploy_contract.js   # Declares + deploys PrivacyPool via starknet.js
+```
+Update `NetworkEnvironment.swift` local case with your new contract address.
 
 ### Step 5 · Wallet Onboarding — Create or Import
 | Checkpoint | Expected Result |
@@ -222,9 +172,9 @@ open ios/StarkVeil/StarkVeil.xcodeproj
 |---|---|---|
 | Stwo client-side ZK prover circuit | Critical | Replace mock verifier in `privacy_pool.cairo` with real on-chain Stwo verifier |
 | RFC 6979 nonce for ECDSA signing | High | Replace SHA-256 deterministic k with proper RFC 6979 |
-| QR code for account address | Medium | Address display in `AccountActivationView` |
 | Mainnet contract deployment | Medium | Upgrade from Sepolia |
 | Starknet ID integration | Low | Replace `anon.stark` placeholder |
+| Mainnet STRK faucet / deposit flow | Low | UX for onboarding new users |
 
 ---
 - **Poseidon Zero Hashes**: For the STARK proof to cryptographically verify on iOS, the Merkle tree `get_zero_hash()` constants in `.cairo` and the Rust STARK circuits must match exactly.
