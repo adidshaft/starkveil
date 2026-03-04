@@ -1,27 +1,26 @@
 import SwiftUI
 
+/// Phase 19: Zashi-style main vault view.
+/// Total balance card + 3 actions (Send/Receive/Shield) + dual U/S asset rows.
+/// Bottom nav: Wallet | Swap | Activity | Settings
 struct VaultView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
-    @EnvironmentObject private var appSettings: AppSettings
 
-    // Splash gate
-    @State private var showSplash = true
-    @State private var splashOpacity: Double = 1.0
-
-    // Global balance visibility (drives all tabs simultaneously, matching prototype)
-    @State private var isBalanceVisible = false
-
-    // Tab state
-    @State private var vaultTab: VaultTab = .assets
     @State private var bottomTab: BottomNavTab = .wallet
+    @State private var vaultTab: VaultSubTab = .assets
+    @State private var isBalanceVisible = true
 
-    // Transaction sheets
-    @State private var showSendSheet          = false
-    @State private var showUnshieldSheet      = false
-    @State private var showPrivateTransferSheet = false
+    // Sheet state — clean 3-action model
+    @State private var showSendSheet    = false
+    @State private var showReceiveSheet = false
+    @State private var showShieldSheet  = false
+
+    // Splash
+    @State private var showSplash = true
+    @State private var splashOpacity: Double = 1
 
     // Wallet deleted callback
     var onWalletDeleted: (() -> Void)? = nil
@@ -31,22 +30,21 @@ struct VaultView: View {
             // ── Background ──────────────────────────────────────────
             themeManager.bgColor.ignoresSafeArea()
 
-            // Ambient glow orbs matching the prototype
-            Circle()
-                .fill(themeManager.textPrimary.opacity(0.07))
-                .frame(width: 300, height: 300)
-                .blur(radius: 100)
-                .offset(x: -80, y: -300)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-
-            Circle()
-                .fill(themeManager.textSecondary.opacity(0.06))
-                .frame(width: 300, height: 300)
-                .blur(radius: 100)
-                .offset(x: 100, y: 200)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            // Gradient overlay at top
+            VStack {
+                LinearGradient(
+                    colors: [
+                        Color(hex: "#6B3DE8").opacity(0.04),
+                        Color.clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 320)
+                Spacer()
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
 
             // ── Main Content ─────────────────────────────────────────
             VStack(spacing: 0) {
@@ -62,8 +60,8 @@ struct VaultView: View {
                 case .swap:
                     SwapView()
                         .padding(.bottom, 60)
-                case .zkProofs:
-                    ZKProofsView()
+                case .activity:
+                    ActivityTabView(isBalanceVisible: isBalanceVisible)
                         .padding(.bottom, 60)
                 case .settings:
                     SettingsView(onWalletDeleted: onWalletDeleted)
@@ -71,14 +69,14 @@ struct VaultView: View {
                 }
             }
 
-            // ── Bottom Nav (always on top of content) ────────────────
+            // ── Bottom Nav ────────────────────────────────────────
             VStack(spacing: 0) {
                 Spacer()
                 BottomNavView(selectedTab: $bottomTab)
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // ── STARK Proof overlay (shown during sends / swaps) ─────
+            // ── STARK Proof overlay ─────────────────────────────────
             if walletManager.isProving {
                 STARKProofOverlay()
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
@@ -92,9 +90,8 @@ struct VaultView: View {
                     .zIndex(50)
                     .transition(.opacity)
                     .onAppear {
-                        // Match prototype: 2.5s delay, then 0.8s fade
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            withAnimation(.easeInOut(duration: 0.8)) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation(.easeOut(duration: 0.8)) {
                                 splashOpacity = 0
                             }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
@@ -105,41 +102,48 @@ struct VaultView: View {
             }
         }
         .preferredColorScheme(themeManager.colorScheme)
-        .onAppear { syncEngine.startSyncing() }
+        .onAppear {
+            syncEngine.startSyncing()
+            Task {
+                await walletManager.refreshPublicBalance(rpcUrl: networkManager.activeNetwork.rpcUrl)
+            }
+        }
         .onDisappear { syncEngine.stopSyncing() }
-        // Send sheet
+        // Send sheet — unified (address + amount only)
         .sheet(isPresented: $showSendSheet) {
-            SendSheetView(isPresented: $showSendSheet)
-                .environmentObject(themeManager)
-                .environmentObject(walletManager)
-        }
-        .sheet(isPresented: $showUnshieldSheet) {
-            UnshieldFormView(isPresented: $showUnshieldSheet)
+            UnifiedSendView(isPresented: $showSendSheet)
                 .environmentObject(themeManager)
                 .environmentObject(walletManager)
                 .environmentObject(networkManager)
         }
-        .fullScreenCover(isPresented: $showPrivateTransferSheet) {
-            PrivateTransferView()
+        // Receive sheet — U + S addresses with QR
+        .sheet(isPresented: $showReceiveSheet) {
+            ReceiveView()
+                .environmentObject(themeManager)
+                .environmentObject(networkManager)
+        }
+        // Shield/Unshield toggle sheet
+        .sheet(isPresented: $showShieldSheet) {
+            ShieldView()
+                .environmentObject(themeManager)
                 .environmentObject(walletManager)
                 .environmentObject(networkManager)
-                .environmentObject(themeManager)
         }
     }
 
-    // MARK: - Wallet tab layout (extracted to keep body readable)
+    // MARK: - Wallet tab layout
     @ViewBuilder
     private var walletTabContent: some View {
-        // Balance card
+        // Balance card with 3 actions
         ShieldedBalanceCard(
             isBalanceVisible: $isBalanceVisible,
-            showSendSheet:     $showSendSheet,
-            showUnshieldSheet: $showUnshieldSheet,
-            showPrivateTransferSheet: $showPrivateTransferSheet
+            showSendSheet:    $showSendSheet,
+            showReceiveSheet: $showReceiveSheet,
+            showShieldSheet:  $showShieldSheet
         )
         .padding(.bottom, 28)
 
-        // Tab switcher
+        // Tab switcher (Assets / Activity sub-tab inside wallet tab)
         TabSwitcherView(selectedTab: $vaultTab)
             .padding(.bottom, 20)
 
@@ -158,232 +162,294 @@ struct VaultView: View {
 }
 
 
-// MARK: - Send Sheet (moved out of main scroll)
+// MARK: - Unified Send View (Phase 19)
+/// Just address + amount. Auto-detects svk: (private) vs 0x (public).
 
-private struct SendSheetView: View {
+private struct UnifiedSendView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
     @Binding var isPresented: Bool
 
     @State private var recipientAddress = ""
-    @State private var transferAmount   = ""
+    @State private var transferAmount = ""
+    @State private var isSending = false
     @State private var errorMessage: String? = nil
-    @State private var memo = ""
+    @State private var txHash: String? = nil
 
-    var parsedAmount: Double? {
-        guard let v = Double(transferAmount), v > 0, v.isFinite, v <= walletManager.balance else { return nil }
+    /// Detect if this is a shielded (private) or unshielded (public) send
+    private var isPrivateSend: Bool {
+        recipientAddress.lowercased().hasPrefix("svk:")
+    }
+
+    private var parsedAmount: Double? {
+        guard let v = Double(transferAmount), v > 0, v.isFinite else { return nil }
         return v
     }
-    var canSend: Bool { !walletManager.isProving && !recipientAddress.isEmpty && parsedAmount != nil }
+
+    private var canSend: Bool {
+        !walletManager.isProving && !recipientAddress.isEmpty && parsedAmount != nil && !isSending
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 themeManager.bgColor.ignoresSafeArea()
+
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 20) {
 
-                        // ZODL big dashes / amount display
-                        HStack(spacing: 10) {
-                            Image(systemName: "shield.lefthalf.filled")
-                                .font(.system(size: 28))
-                                .foregroundStyle(themeManager.textSecondary)
+                        // ── Amount display ─────────────────────────────────
+                        VStack(spacing: 4) {
+                            Image(systemName: isPrivateSend ? "shield.lefthalf.filled" : "arrow.up.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundStyle(isPrivateSend ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
+
                             if transferAmount.isEmpty {
                                 Text("– – – – – –")
-                                    .font(.system(size: 32, weight: .bold, design: .monospaced))
+                                    .font(.system(size: 38, weight: .bold, design: .monospaced))
                                     .foregroundStyle(themeManager.textSecondary)
                             } else {
-                                Text(transferAmount)
-                                    .font(.system(size: 32, weight: .bold, design: .monospaced))
+                                Text("\(transferAmount) STRK")
+                                    .font(.system(size: 38, weight: .bold, design: .monospaced))
                                     .foregroundStyle(themeManager.textPrimary)
                                     .contentTransition(.numericText())
                             }
-                        }
-                        .padding(.top, 4)
 
-                        // Send to label + address
+                            // Auto-label
+                            Text(isPrivateSend ? "Private Send (Shielded)" : "Public Send (Unshielded)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(isPrivateSend ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
+                                .padding(.top, 4)
+                        }
+                        .padding(.top, 8)
+
+                        // ── Recipient ────────────────────────────────────
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Send to")
-                                .font(.system(size: 13))
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(themeManager.textSecondary)
+                                .tracking(0.5)
+
                             HStack {
-                                Image(systemName: "person.crop.circle.badge.checkmark")
-                                    .foregroundStyle(themeManager.textSecondary)
-                                TextField("Shielded address (0x...)", text: $recipientAddress)
+                                Image(systemName: isPrivateSend ? "shield.lefthalf.filled" : "person.fill")
+                                    .foregroundStyle(isPrivateSend ? Color(hex: "#9B6DFF") : themeManager.textSecondary)
+                                    .frame(width: 20)
+                                TextField("0x… or svk:…", text: $recipientAddress)
                                     .foregroundStyle(themeManager.textPrimary)
-                                    .autocorrectionDisabled()
-                                    .autocapitalization(.none)
                                     .font(.system(size: 14, design: .monospaced))
+                                    .autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never)
+                            }
+                            .padding(14)
+                            .background(themeManager.surface1)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
+
+                            // Hint text
+                            Text(isPrivateSend
+                                 ? "🛡 Private: uses shielded balance, recipient sees nothing on-chain"
+                                 : "🌐 Public: sends from your unshielded balance")
+                                .font(.system(size: 11))
+                                .foregroundStyle(themeManager.textSecondary.opacity(0.6))
+                        }
+
+                        // ── Amount ──────────────────────────────────────
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Amount")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(themeManager.textSecondary)
+                                .tracking(0.5)
+
+                            HStack {
+                                Image(systemName: "diamond.fill")
+                                    .foregroundStyle(Color(hex: "#B9B4F8"))
+                                    .frame(width: 20)
+                                TextField("0.0", text: $transferAmount)
+                                    .keyboardType(.decimalPad)
+                                    .foregroundStyle(themeManager.textPrimary)
+                                    .font(.system(size: 18, weight: .semibold, design: .monospaced))
                                 Spacer()
-                                Button(action: { /* QR scan — future */ }) {
-                                    Image(systemName: "qrcode.viewfinder")
-                                        .font(.system(size: 18))
+                                Text("STRK")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(themeManager.textSecondary)
+                            }
+                            .padding(14)
+                            .background(themeManager.surface1)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
+
+                            // Available balance
+                            HStack {
+                                Spacer()
+                                Text("Available: \(String(format: "%.4f", isPrivateSend ? walletManager.balance : walletManager.publicBalance)) STRK")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(themeManager.textSecondary.opacity(0.6))
+                            }
+                        }
+
+                        // ── Error ───────────────────────────────────────
+                        if let err = errorMessage {
+                            HStack(spacing: 8) {
+                                Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                                Text(err).font(.system(size: 13)).foregroundStyle(.red)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        // ── Success ─────────────────────────────────────
+                        if let hash = txHash {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Sent successfully!")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(themeManager.textPrimary)
+                                    Text("Tx: \(hash.prefix(16))…")
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundStyle(themeManager.textSecondary)
                                 }
                             }
                             .padding(14)
-                            .background(themeManager.surface1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.green.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
                         }
 
-                        // Amount
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Amount")
-                                .font(.system(size: 13))
-                                .foregroundStyle(themeManager.textSecondary)
-                            HStack {
-                                Image(systemName: "shield.lefthalf.filled")
-                                    .foregroundStyle(themeManager.textSecondary).frame(width: 20)
-                                TextField("0.0", text: $transferAmount)
-                                    .keyboardType(.decimalPad)
-                                    .foregroundStyle(themeManager.textPrimary)
-                                    .font(.system(size: 16, design: .monospaced))
-                                Spacer()
-                                Text("STRK")
-                                    .foregroundStyle(themeManager.textSecondary)
-                                    .font(.system(size: 13))
-                            }
-                            .padding(14)
-                            .background(themeManager.surface1)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
-                        }
-
-                        // Encrypted memo (ZODL-style)
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Message")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(themeManager.textSecondary)
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(themeManager.textSecondary)
-                            }
-                            ZStack(alignment: .topLeading) {
-                                if memo.isEmpty {
-                                    Text("Write encrypted message here…")
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(themeManager.textSecondary.opacity(0.45))
-                                        .padding(.top, 12)
-                                        .padding(.leading, 2)
+                        // ── Send button ────────────────────────────────
+                        Button(action: { executeSend() }) {
+                            Group {
+                                if isSending {
+                                    HStack(spacing: 10) {
+                                        ProgressView().tint(themeManager.bgColor)
+                                        Text("Sending…")
+                                    }
+                                } else if txHash != nil {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "checkmark")
+                                        Text("Done")
+                                    }
+                                } else {
+                                    Text("Send")
                                 }
-                                TextEditor(text: $memo)
-                                    .foregroundStyle(themeManager.textPrimary)
-                                    .font(.system(size: 14))
-                                    .scrollContentBackground(.hidden)
-                                    .background(Color.clear)
-                                    .frame(minHeight: 100, maxHeight: 140)
                             }
-                            HStack {
-                                Spacer()
-                                Text("\(memo.count)/512")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(themeManager.textSecondary.opacity(0.5))
-                            }
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(canSend ? themeManager.bgColor : themeManager.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(canSend ? themeManager.textPrimary : themeManager.surface2)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
-                        .padding(14)
-                        .background(themeManager.surface1)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(themeManager.surface2, lineWidth: 1))
-                        .onChange(of: memo) { _, new in if new.count > 512 { memo = String(new.prefix(512)) } }
+                        .disabled(!canSend && txHash == nil)
 
-                        // Error
-                        if let msg = walletManager.transferError ?? errorMessage {
-                            Text(msg).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
-                        }
-
-                        // Review / Send button
-                        Button(action: sendAction) {
-                            if walletManager.isProving {
-                                ProofSynthesisSkeleton()
-                            } else {
-                                Text("Review")
-                                    .font(.headline.weight(.heavy))
-                                    .tracking(0.5)
-                                    .foregroundStyle(canSend ? themeManager.bgColor : themeManager.textSecondary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(canSend ? themeManager.textPrimary : themeManager.surface2)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            }
-                        }
-                        .disabled(!canSend)
-                        .animation(.easeInOut(duration: 0.3), value: walletManager.isProving)
-
-                        if let hash = walletManager.lastProvedTxHash {
-                            HStack {
-                                Image(systemName: "checkmark.shield.fill")
-                                Text("Sent! \(hash.prefix(10))…")
-                            }
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.green)
-                        }
-
-                        Spacer()
+                        Spacer(minLength: 40)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 40)
+                    .padding(20)
                 }
             }
-            .navigationTitle("SEND")
+            .navigationTitle("Send STRK")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { isPresented = false } label: {
-                        Image(systemName: "arrow.backward")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(themeManager.textPrimary)
-                    }
+                    Button(txHash != nil ? "Done" : "Cancel") { isPresented = false }
+                        .foregroundStyle(themeManager.textSecondary)
                 }
             }
         }
         .preferredColorScheme(themeManager.colorScheme)
     }
 
-    private func sendAction() {
+    private func executeSend() {
+        guard let amount = parsedAmount else { return }
         errorMessage = nil
-        guard let amount = parsedAmount else {
-            errorMessage = Double(transferAmount).map { $0 > walletManager.balance ? "Exceeds balance." : "Invalid amount." } ?? "Enter a valid amount > 0."
-            return
-        }
-        let tap = UIImpactFeedbackGenerator(style: .medium)
-        tap.prepare(); tap.impactOccurred()
+        isSending = true
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
         Task {
-            let feedback = UINotificationFeedbackGenerator(); feedback.prepare()
             do {
+                let rpcUrl = networkManager.activeNetwork.rpcUrl
+                let contract = networkManager.activeNetwork.contractAddress
                 let network = networkManager.activeNetwork
-                try await walletManager.executePrivateTransfer(
-                    recipientAddress: recipientAddress,
-                    recipientIVK: recipientAddress,
-                    amount: amount,
-                    memo: "",
-                    rpcUrl: network.rpcUrl,
-                    contractAddress: network.contractAddress,
-                    network: network
-                )
-                feedback.notificationOccurred(.success)
+
+                if isPrivateSend {
+                    // Extract IVK from svk: prefix
+                    let ivk = String(recipientAddress.dropFirst(4)) // remove "svk:"
+                    // For private send, we need the recipient's Starknet address too
+                    // In the current model, we use the IVK as both identifier and key
+                    let hash = try await walletManager.executePrivateTransfer(
+                        toAddress: ivk,  // IVK acts as recipient identifier
+                        recipientIVK: ivk,
+                        amount: amount,
+                        memo: "private send",
+                        rpcUrl: rpcUrl,
+                        contractAddress: contract,
+                        network: network
+                    )
+                    await MainActor.run {
+                        txHash = hash
+                        isSending = false
+                    }
+                } else {
+                    // Public unshield + send
+                    let hash = try await walletManager.executeUnshield(
+                        amount: amount,
+                        rpcUrl: rpcUrl,
+                        contractAddress: contract,
+                        network: network
+                    )
+                    await MainActor.run {
+                        txHash = hash
+                        isSending = false
+                    }
+                }
+
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
                 isPresented = false
             } catch {
-                errorMessage = error.localizedDescription
-                feedback.notificationOccurred(.error)
+                await MainActor.run {
+                    isSending = false
+                    errorMessage = error.localizedDescription
+                }
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
     }
 }
 
-// MARK: - Previews
+// MARK: - STARK Proof Progress Overlay
 
-struct VaultView_Previews: PreviewProvider {
-    static var previews: some View {
-        let networkManager = NetworkManager()
-        VaultView()
-            .environmentObject(AppThemeManager())
-            .environmentObject(networkManager)
-            .environmentObject(WalletManager())
-            .environmentObject(SyncEngine(networkManager: networkManager))
-            .environmentObject(AppSettings())
+private struct STARKProofOverlay: View {
+    @EnvironmentObject private var themeManager: AppThemeManager
+    @State private var pulseAmount: CGFloat = 1.0
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: "#6B3DE8").opacity(0.15))
+                        .frame(width: 80, height: 80)
+                        .scaleEffect(pulseAmount)
+                        .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: pulseAmount)
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Color(hex: "#9B6DFF"))
+                }
+                .onAppear { pulseAmount = 1.25 }
+
+                Text("GENERATING STARK PROOF")
+                    .font(.system(size: 12, weight: .bold))
+                    .tracking(3)
+                    .foregroundStyle(.white.opacity(0.9))
+
+                ProgressView()
+                    .tint(Color(hex: "#9B6DFF"))
+                    .scaleEffect(1.2)
+            }
+        }
     }
 }

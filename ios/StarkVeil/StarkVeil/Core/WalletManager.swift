@@ -35,6 +35,8 @@ class WalletManager: ObservableObject {
     @Published private(set) var notes: [Note] = []
     // Derived: sum of note values. Updated by recomputeBalance() after any note change.
     @Published private(set) var balance: Double = 0.0
+    // Phase 19: Public (unshielded) STRK balance from on-chain ERC-20
+    @Published private(set) var publicBalance: Double = 0.0
 
     // Activity feed — persisted, shown in the Activity tab
     @Published private(set) var activityEvents: [ActivityEvent] = []
@@ -210,6 +212,24 @@ class WalletManager: ObservableObject {
 
     private func recomputeBalance() {
         balance = notes.compactMap { Double($0.value) }.reduce(0, +)
+    }
+
+    /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
+    /// Updates `publicBalance` which is displayed as the U balance in the Zashi-style UI.
+    func refreshPublicBalance(rpcUrl: URL) async {
+        guard let address = KeychainManager.accountAddress() else { return }
+        do {
+            let rawResult = try await RPCClient().getSTRKBalance(rpcUrl: rpcUrl, address: address)
+            // Result is "low_hex, high_hex" — parse the u256
+            let parts = rawResult.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let lowHex = parts.first ?? "0x0"
+            let low = UInt64(lowHex.hasPrefix("0x") ? String(lowHex.dropFirst(2)) : lowHex, radix: 16) ?? 0
+            // For realistic balances, high is always 0
+            let weiBalance = Double(low)
+            publicBalance = weiBalance / 1e18
+        } catch {
+            print("[WalletManager] Failed to fetch public balance: \(error)")
+        }
     }
 
     // MARK: - Unshield (Private → Public)

@@ -2,10 +2,10 @@ import SwiftUI
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-/// ZODL-style Receive screen.
-/// Shows the shielded IVK address prominently (with purple card like ZODL) so the user
-/// can share it for incoming shielded deposits. Transparent/public address is shown
-/// below for reference, with a clear privacy nudge.
+/// Phase 19: Zashi-style Receive screen.
+/// Shows two addresses:
+/// - S address: svk:<IVK_hex> for private receives (shielded)
+/// - U address: 0x<account_address> for public receives (unshielded)
 ///
 /// Privacy model: IVK is a public receive key — safe to share.
 /// It cannot spend funds or link to past transactions.
@@ -23,14 +23,21 @@ struct ReceiveView: View {
         guard let data = KeychainManager.ownerIVK() else { return "unavailable" }
         return "0x" + data.map { String(format: "%02x", $0) }.joined()
     }
-    private var shortIVK: String {
-        guard ivkHex.count > 20 else { return ivkHex }
-        return "\(ivkHex.prefix(10))…\(ivkHex.suffix(8))"
+    /// Phase 19: S address with svk: prefix for auto-detection by senders
+    private var svkAddress: String {
+        "svk:\(ivkHex)"
     }
-    // Stub transparent/public address derived from IVK prefix (not a real spending address)
+    private var shortSVK: String {
+        guard ivkHex.count > 20 else { return svkAddress }
+        return "svk:\(ivkHex.prefix(10))…\(ivkHex.suffix(8))"
+    }
+    /// Real Starknet account address from Keychain (not a stub)
     private var publicAddress: String {
-        guard ivkHex.count > 14 else { return "0x…" }
-        return "0x" + ivkHex.dropFirst(2).prefix(10) + "…" + ivkHex.suffix(8)
+        KeychainManager.accountAddress() ?? "Account not activated"
+    }
+    private var shortPublicAddress: String {
+        guard publicAddress.count > 20 else { return publicAddress }
+        return "\(publicAddress.prefix(10))…\(publicAddress.suffix(8))"
     }
 
     var body: some View {
@@ -98,10 +105,10 @@ struct ReceiveView: View {
                         .foregroundStyle(Color(hex: "#9B6DFF"))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("StarkVeil Shielded Address")
+                    Text("Shielded Address (S)")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text(shortIVK)
+                    Text(shortSVK)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -116,7 +123,7 @@ struct ReceiveView: View {
             // Action buttons row — mirroring ZODL
             HStack(spacing: 10) {
                 actionButton(icon: "doc.on.doc.fill", label: "Copy") {
-                    UIPasteboard.general.string = ivkHex
+                    UIPasteboard.general.string = svkAddress
                     withAnimation { copiedShielded = true }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         withAnimation { copiedShielded = false }
@@ -167,7 +174,7 @@ struct ReceiveView: View {
     // MARK: - QR Card
     private var qrCard: some View {
         VStack(spacing: 12) {
-            if let qr = generateQR(from: ivkHex) {
+            if let qr = generateQR(from: svkAddress) {
                 Image(uiImage: qr)
                     .interpolation(.none)
                     .resizable()
@@ -201,16 +208,18 @@ struct ReceiveView: View {
                     .foregroundStyle(themeManager.textSecondary)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Public Address (for reference)")
+                Text("Public Address (U)")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(themeManager.textPrimary)
-                Text(publicAddress)
+                Text(shortPublicAddress)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(themeManager.textSecondary)
             }
             Spacer()
-            Button(action: {}) {
-                Image(systemName: "info.circle")
+            Button(action: {
+                UIPasteboard.general.string = publicAddress
+            }) {
+                Image(systemName: "doc.on.doc")
                     .font(.system(size: 15))
                     .foregroundStyle(themeManager.textSecondary)
             }
@@ -248,7 +257,7 @@ struct ReceiveView: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(themeManager.surface2, lineWidth: 1))
 
                     Button(action: {
-                        let request = "starkveil://receive?ivk=\(ivkHex)&amount=\(requestAmount)"
+                        let request = "starkveil://receive?svk=\(svkAddress)&amount=\(requestAmount)"
                         // L4: Add 2-minute expiry so other apps cannot read the amount indefinitely
                         UIPasteboard.general.setItems(
                             [[UIPasteboard.typeAutomatic: request]],

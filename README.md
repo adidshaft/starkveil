@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 18 Complete — End-to-End Sepolia Execution + All Phase 8 Audit Fixes):** All 8 remaining Phase 8 critical/high audit bugs resolved: RFC-6979 deterministic ECDSA signing (H-2), correct Cairo ABI encoding for shield/transfer/unshield (C-5, C-6), u256 128-bit split (C-4), recipient IVK as ownerPubkey (H-4), no plaintext fallback (M-2), confirmation-before-addNote (M-6), valid mock proof hex (H-7). V3 transactions on Starknet RPC v0.8. Wallet activation live on Sepolia. Build targets physical iOS devices only (Simulator lacks the `xcframework` arm64 simulator slice).
+**Current status (Phase 19 Complete — Zashi-Style Inherently Private UX):** Wallet now uses a clean U (Unshielded) / S (Shielded) model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two addresses: S (`svk:0x…`) and U (`0x…`) with QR codes. 4-tab nav: Wallet | Swap | Activity | Settings.
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.

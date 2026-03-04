@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// Phase 19: Zashi-style dual balance display.
+/// Shows both Unshielded (U) and Shielded (S) STRK balances.
 struct AssetsTabView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
@@ -7,27 +9,33 @@ struct AssetsTabView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            // Unshielded (U) — public STRK on the Starknet account
             AssetRowView(
-                iconSystemName: "diamond.fill",
-                iconBgColor: Color(hex: "#6E00FF").opacity(0.2),
-                iconFgColor: Color(hex: "#B9B4F8"),
-                name: "Starknet (STRK)",
-                subtitle: "Private Token",
-                amount: walletManager.balance,
+                iconSystemName: "globe",
+                iconBgColor: Color(hex: "#FF6B35").opacity(0.2),
+                iconFgColor: Color(hex: "#FF6B35"),
+                name: "STRK",
+                subtitle: "Unshielded",
+                tagText: "U",
+                tagColor: Color(hex: "#FF6B35"),
+                amount: walletManager.publicBalance,
                 amountSuffix: "STRK",
-                fiatAmount: walletManager.balance * 0.63,
+                fiatAmount: walletManager.publicBalance * 0.63,
                 isVisible: isBalanceVisible
             )
 
+            // Shielded (S) — private STRK in the PrivacyPool
             AssetRowView(
-                iconSystemName: "bitcoinsign.circle.fill",
-                iconBgColor: Color(hex: "#F7931A").opacity(0.2),
-                iconFgColor: Color(hex: "#F7931A"),
-                name: "strkBTC",
-                subtitle: "Shielded Pool",
-                amount: 0,
-                amountSuffix: "BTC",
-                fiatAmount: 0,
+                iconSystemName: "shield.lefthalf.filled",
+                iconBgColor: Color(hex: "#6E00FF").opacity(0.2),
+                iconFgColor: Color(hex: "#B9B4F8"),
+                name: "STRK",
+                subtitle: "Shielded",
+                tagText: "S",
+                tagColor: Color(hex: "#9B6DFF"),
+                amount: walletManager.balance,
+                amountSuffix: "STRK",
+                fiatAmount: walletManager.balance * 0.63,
                 isVisible: isBalanceVisible
             )
         }
@@ -42,6 +50,8 @@ private struct AssetRowView: View {
     let iconFgColor: Color
     let name: String
     let subtitle: String
+    let tagText: String
+    let tagColor: Color
     let amount: Double
     let amountSuffix: String
     let fiatAmount: Double
@@ -59,11 +69,20 @@ private struct AssetRowView: View {
                     .foregroundStyle(iconFgColor)
             }
 
-            // Name + subtitle
+            // Name + subtitle + tag
             VStack(alignment: .leading, spacing: 4) {
-                Text(name)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(themeManager.textPrimary)
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(themeManager.textPrimary)
+                    Text(tagText)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(tagColor)
+                        .clipShape(Capsule())
+                }
                 Text(subtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(themeManager.textSecondary)

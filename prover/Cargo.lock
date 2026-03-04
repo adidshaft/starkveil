@@ -461,8 +461,10 @@ name = "starkveil_prover"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rfc6979",
  "serde",
  "serde_json",
+ "sha2",
  "starknet-crypto",
 ]
 
