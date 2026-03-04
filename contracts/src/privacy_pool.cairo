@@ -42,6 +42,7 @@ pub mod PrivacyPool {
     #[derive(Drop, starknet::Event)]
     struct Transfer {
         new_commitments: Array<felt252>,
+        encrypted_memos: Array<felt252>,
         fee: u256,
     }
 
@@ -177,6 +178,7 @@ pub mod PrivacyPool {
             proof: Array<felt252>,
             nullifiers: Array<felt252>,
             new_commitments: Array<felt252>,
+            encrypted_memos: Array<felt252>,
             fee: u256
         ) {
             // 1. Build public inputs for the ZK proof verifier.
@@ -225,6 +227,7 @@ pub mod PrivacyPool {
 
             self.emit(Event::Transfer(Transfer {
                 new_commitments: new_commitments,
+                encrypted_memos: encrypted_memos,
                 fee: fee
             }));
         }

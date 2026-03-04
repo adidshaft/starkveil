@@ -62,7 +62,7 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
             // TODO: replace with mainnet PrivacyPool address after production deployment
             return "0x0000000000000000000000000000000000000000000000000000000000000000"
         case .sepolia:
-            return "0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74"
+            return "0x2429fc1831a6fcf4961b44764d2192c8aead87abe9ac0470339ee6e2954a77e"
         }
     }
 }

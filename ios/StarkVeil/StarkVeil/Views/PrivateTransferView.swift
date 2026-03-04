@@ -27,6 +27,7 @@ struct PrivateTransferView: View {
     @State private var isSubmitting = false
     @State private var successTxHash: String? = nil
     @State private var errorMessage: String? = nil
+    @State private var isShowingScanner = false
 
     private var amountDouble: Double? { Double(transferAmount) }
 
@@ -51,6 +52,21 @@ struct PrivateTransferView: View {
                 }
             }
             .navigationBarHidden(true)
+            .sheet(isPresented: $isShowingScanner) {
+                QRScannerView { result in
+                    switch result {
+                    case .success(let code):
+                        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Allow sweeping up bare hex or "svk:0x..." format
+                        recipientIVK = trimmed
+                        isShowingScanner = false
+                    case .failure(let error):
+                        errorMessage = "QR error: \(error.localizedDescription)"
+                        isShowingScanner = false
+                    }
+                }
+                .edgesIgnoringSafeArea(.all)
+            }
         }
     }
 
@@ -99,13 +115,19 @@ struct PrivateTransferView: View {
                 monospaced: true
             )
 
-            // Recipient IVK field
+            // Recipient IVK field (with QR button)
             inputField(
-                label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
+                label: "RECIPIENT SHIELDED KEY",
                 placeholder: "svk:0x123abc…",
                 text: $recipientIVK,
                 monospaced: true
-            )
+            ) {
+                Button(action: { isShowingScanner = true }) {
+                    Image(systemName: "qrcode.viewfinder")
+                        .font(.system(size: 20))
+                        .foregroundStyle(themeManager.textSecondary)
+                }
+            }
 
             // Amount field
             inputField(
@@ -136,20 +158,31 @@ struct PrivateTransferView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func inputField(label: String, placeholder: String, text: Binding<String>, monospaced: Bool = false) -> some View {
+    private func inputField<Trailing: View>(
+        label: String,
+        placeholder: String,
+        text: Binding<String>,
+        monospaced: Bool = false,
+        @ViewBuilder trailingAccessory: () -> Trailing = { EmptyView() }
+    ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
                 .foregroundStyle(themeManager.textSecondary)
-            TextField(placeholder, text: text)
-                .font(monospaced ? .system(size: 13, design: .monospaced) : .system(size: 13))
-                .foregroundStyle(themeManager.textPrimary)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .padding(10)
-                .background(themeManager.bgColor.opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+            
+            HStack {
+                TextField(placeholder, text: text)
+                    .font(monospaced ? .system(size: 13, design: .monospaced) : .system(size: 13))
+                    .foregroundStyle(themeManager.textPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                
+                trailingAccessory()
+            }
+            .padding(10)
+            .background(themeManager.bgColor.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 

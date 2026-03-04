@@ -184,52 +184,97 @@ class SyncEngine: ObservableObject {
                     }
 
                     var decodedNotes: [(note: Note, commitment: String, blockNumber: Int)] = []
-                    for event in events {
-                        guard event.data.count >= 5 else { continue }
-                        let amountHex  = event.data[1]
-                        let commitment = event.data[3]
-                        let encMemoHex = event.data.count >= 6 ? event.data[5] : nil
+                        // Shielded vs Transfer events
+                        let isShielded = event.keys.contains("0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083")
+                        let isTransfer = event.keys.contains("0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9")
+                        
+                        var singleEventCommitment: String? = nil
+                        var singleEventEncMemo: String? = nil
+                        // Transfer events do not emit amounts or asset_ids. The recipient receives
+                        // full information ENCRYPTED in the memo payload (handled later in UI via query).
+                        // For SyncEngine, we track the note's existence with 0.0 STRK until verified.
+                        var singleEventAmountHex: String = "0x0" 
+                        var singleEventAssetId: String = "0x5354524b" // default to STRK
 
-                        guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
-                        let amountDouble = Double(amountInt) / 1e18
-                        guard amountDouble > 0 else { continue }
+                        if isShielded {
+                            guard event.data.count >= 5 else { continue }
+                            singleEventAmountHex = event.data[1]
+                            singleEventCommitment = event.data[3]
+                            if event.data.count >= 6 {
+                                singleEventEncMemo = event.data[5]
+                            }
+                        } else if isTransfer {
+                            // Transfer event data layout:
+                            // data[0] = new_commitments_len
+                            // data[1..len] = new_commitments elements
+                            // data[...len+1] = encrypted_memos_len
+                            // data[...(len+1)+enc_len] = encrypted_memo elements
+                            // data[...] = fee u256
+                            guard event.data.count >= 4 else { continue }
+                            
+                            guard let commitLenInt = Int(event.data[0].replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
+                            // For MVP we only look at the first commitment (index 1) which goes to recipient
+                            // Index 2 is the change note (returns to sender)
+                            if commitLenInt >= 2 {
+                                // recipient commitment is usually the first element in the array after len
+                                singleEventCommitment = event.data[1]
+                            }
+                            
+                            let encMemoLenIndex = 1 + commitLenInt
+                            if event.data.count > encMemoLenIndex {
+                                guard let encMemoLenInt = Int(event.data[encMemoLenIndex].replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
+                                if encMemoLenInt >= 2 {
+                                    // first encrypted memo matches first commitment
+                                    let firstMemoIndex = encMemoLenIndex + 1
+                                    if event.data.count > firstMemoIndex {
+                                        singleEventEncMemo = event.data[firstMemoIndex]
+                                    }
+                                }
+                            }
+                        }
+                        
+                        guard let commitment = singleEventCommitment else { continue }
 
                         // If there's an encrypted memo field, trial-decrypt it.
                         // nil result means the note is not addressed to us — skip it.
                         var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
-                        if let encHex = encMemoHex, !encHex.isEmpty, encHex != "0x0" {
+                        if let encHex = singleEventEncMemo, !encHex.isEmpty, encHex != "0x0" {
                             if let plain = try? NoteEncryption.decryptMemo(encHex, ivkHex: ivkHex) {
                                 decryptedMemo = plain   // decrypts = note is ours
                             } else {
                                 // Could not decrypt = note is not addressed to us; skip
                                 continue
                             }
+                        } else if isTransfer {
+                            // If it's a transfer but has no memo, we can't be sure it's ours since it's anonymous
+                            continue
                         }
-                        // No encrypted memo = legacy/self-deposit; accept it (self-deposits inherit the commitment)
+                        // No encrypted memo = legacy/self-deposit Shielded event; accept it
 
                         // Use IVK clamped the same way executeShield does,
                         // so commitment reconstruction matches at spend time.
                         let clampedIVK = WalletManager.clampToFelt252(ivkHex)
 
-                        // Store value as raw wei DECIMAL integer string
-                        // e.g. "100000000000000000" for 0.1 STRK.
-                        // Rust felt252 accepts decimal integers and hex, but NOT
-                        // floating-point decimals like "0.100000000". Using amountHex
-                        // directly (which is the on-chain u256.low) is the safest source.
+                        // Store value as raw wei DECIMAL integer string format
                         let rawWei: String
-                        if let weiInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
+                        if let weiInt = Int(singleEventAmountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
                             rawWei = String(weiInt)
                         } else {
-                            // Fallback: hex string itself — still valid for felt252
-                            rawWei = amountHex
+                            rawWei = singleEventAmountHex
+                        }
+                        // Skip zero value notes ONLY if they are Shielded deposits.
+                        // Transfer events intentionally leave amount=0x0 because the real amount
+                        // is hidden inside the encrypted memo itself (future integration).
+                        if isShielded && rawWei == "0" {
+                            continue
                         }
 
                         let note = Note(
                             value: rawWei,
-                            asset_id: "0x5354524b",
+                            asset_id: singleEventAssetId,
                             owner_ivk: ivkHex,
-                            owner_pubkey: clampedIVK,   // matches shield flow's ownerPubkey for commitment
-                            nonce: commitment,           // commitment acts as unique note ID / nonce
+                            owner_pubkey: clampedIVK,
+                            nonce: commitment,           // commitment acts as unique note ID
                             spending_key: nil,
                             memo: decryptedMemo ?? "Shielded deposit"
                         )
