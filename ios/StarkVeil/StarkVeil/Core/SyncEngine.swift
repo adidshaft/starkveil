@@ -184,6 +184,7 @@ class SyncEngine: ObservableObject {
                     }
 
                     var decodedNotes: [(note: Note, commitment: String, blockNumber: Int)] = []
+                    for event in events {
                         // Shielded vs Transfer events
                         let isShielded = event.keys.contains("0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083")
                         let isTransfer = event.keys.contains("0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9")

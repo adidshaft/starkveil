@@ -982,6 +982,16 @@ class WalletManager: ObservableObject {
         didSuccessfullySubmit = true
         removeNote(inputNote)
         recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
+        
+        // 8. Log the transfer event
+        logEvent(
+            kind: .transfer,
+            amount: String(format: "%.6f", amount),
+            assetId: "0x5354524b", // STRK
+            counterparty: recipientIVK.isEmpty ? "Anonymous" : recipientIVK,
+            txHash: broadcastedHash
+        )
+        
         return broadcastedHash
     }
 
