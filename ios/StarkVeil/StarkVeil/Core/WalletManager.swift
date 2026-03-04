@@ -309,7 +309,7 @@ class WalletManager: ObservableObject {
             "0x1",                      // number of calls
             strkContract,               // to
             transferSelector,           // selector
-            String(callPayload.count)   // calldata_len
+            String(format: "0x%x", callPayload.count)   // calldata_len
         ]
         calldata.append(contentsOf: callPayload)
 
@@ -496,7 +496,7 @@ class WalletManager: ObservableObject {
         // Build the complete flat payload first, then derive calldata_len from it.
         // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id]
         // NOTE: asset here must be the STRK ERC-20 ContractAddress (safeAssetId), NOT the short string.
-        var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
+        var callPayload: [String] = [String(format: "0x%x", proofCalldata.count)] + proofCalldata
         callPayload += [nullifier, recipient, amountU256Low, amountU256High, safeAssetId]
 
         print("[Unshield] nullifier=\(nullifier)")
@@ -510,7 +510,7 @@ class WalletManager: ObservableObject {
             "0x1",                          // number of calls
             contractAddress,                // to (PrivacyPool)
             unshieldSelector,               // selector
-            String(callPayload.count)       // calldata_len = total flat arg count
+            String(format: "0x%x", callPayload.count) // calldata_len = total flat arg count
         ]
         calldata.append(contentsOf: callPayload)
 
@@ -941,9 +941,9 @@ class WalletManager: ObservableObject {
 
         // fee: u256 = (low=0x0, high=0x0) — mock verifier doesn't enforce fees
         var callPayload: [String] = []
-        callPayload += [String(proofPayload.proof.count)] + proofPayload.proof  // proof array
-        callPayload += ["1", nullifier]                                        // nullifiers array
-        callPayload += ["1", outputCommitment]                                 // new_commitments array
+        callPayload += [String(format: "0x%x", proofPayload.proof.count)] + proofPayload.proof  // proof array
+        callPayload += ["0x1", nullifier]                                        // nullifiers array
+        callPayload += ["0x1", outputCommitment]                                 // new_commitments array
         callPayload += ["0x0", "0x0"]                                          // fee: u256
 
         print("[PrivateTransfer] nullifier=\(nullifier)")
@@ -955,7 +955,7 @@ class WalletManager: ObservableObject {
             "0x1",                      // number of calls
             contractAddress,            // to
             transferSelector,           // selector
-            String(callPayload.count)   // calldata_len
+            String(format: "0x%x", callPayload.count)   // calldata_len
         ] + callPayload
 
         // 6. Sign and submit (V3)
