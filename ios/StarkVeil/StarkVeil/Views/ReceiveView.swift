@@ -20,8 +20,12 @@ struct ReceiveView: View {
     @State private var showRequestSheet = false
 
     private var ivkHex: String {
-        guard let data = KeychainManager.ownerIVK() else { return "unavailable" }
-        return "0x" + data.map { String(format: "%02x", $0) }.joined()
+        if let seed = KeychainManager.masterSeed(),
+           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed),
+           let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString) {
+            return derivedIVK
+        }
+        return "unavailable"
     }
     /// Phase 19: S address with svk: prefix for auto-detection by senders
     private var svkAddress: String {
