@@ -36,8 +36,11 @@ async function main() {
     // Step 3: Read the Sierra contract class
     console.log("\nStep 2: Reading PrivacyPool Sierra artifact...");
     const sierraPath = path.join(process.cwd(), "contracts/target/dev/contracts_PrivacyPool.contract_class.json");
+    const casmPath = path.join(process.cwd(), "contracts/target/dev/contracts_PrivacyPool.compiled_contract_class.json");
     const sierraJSON = JSON.parse(fs.readFileSync(sierraPath, 'utf-8'));
+    const casmJSON = JSON.parse(fs.readFileSync(casmPath, 'utf-8'));
     console.log(`  Sierra read: ${sierraJSON.entry_points_by_type ? 'OK' : 'MISSING entry_points'}`);
+    console.log(`  CASM read: ${casmJSON.entry_points_by_type ? 'OK' : 'MISSING'}`);
 
     // Step 4: Declare the contract class
     console.log("\nStep 3: Declaring PrivacyPool class...");
@@ -45,6 +48,7 @@ async function main() {
     try {
         const declareResult = await account.declare({
             contract: sierraJSON,
+            casm: casmJSON,
         });
         console.log(`  Declare tx: ${declareResult.transaction_hash}`);
         console.log(`  Class hash: ${declareResult.class_hash}`);

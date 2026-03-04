@@ -362,11 +362,6 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
-        guard publicBalance >= 0.005 else {
-            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
-                NSLocalizedDescriptionKey: "Insufficient public STRK balance for network fees. You need at least ~0.005 STRK to execute an unshield."
-            ])
-        }
 
         // note.value is raw wei (e.g. "100000000000000000" for 0.1 STRK).
         // amount is in STRK (e.g. 0.1). Convert wei -> STRK before comparing.
@@ -604,11 +599,6 @@ class WalletManager: ObservableObject {
         network: NetworkEnvironment   // M-CHAIN-ID-HARDCODED fix
     ) async throws -> String {
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
-        guard amount <= max(0, publicBalance - 0.005) else {
-            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
-                NSLocalizedDescriptionKey: "Insufficient public STRK balance for shielding. Ensure you have at least ~0.005 STRK left to cover gas fees."
-            ])
-        }
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         // GUARD: Account must be deployed on-chain. If not deployed, shielding will fail
         // with RPC Error 41 (Requested contract address is not deployed).
@@ -628,22 +618,20 @@ class WalletManager: ObservableObject {
             isShielding = false
         }
 
-        // Derive IVK for the note commitment
-        guard let ivkData = KeychainManager.ownerIVK() else {
-            throw NSError(domain: "StarkVeil", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Wallet not initialised — no IVK found."])
-        }
-        let ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
-
-        // C-COMMITMENT-MISMATCH fix: derive STARK keypair to get owner_pubkey,
-        // then use the 4-field Poseidon commitment that matches what execute
-        // PrivateTransfer / executeUnshield reconstructs when spending the note.
-        // The nonce is persisted in StoredNote so we never need to re-derive it.
+        // Derive IVK for the note commitment — use the POSEIDON-derived IVK
+        // (same key SyncEngine uses for trial-decryption), NOT the raw HKDF bytes.
         guard let seed = KeychainManager.masterSeed() else {
             throw NSError(domain: "StarkVeil", code: 11,
                           userInfo: [NSLocalizedDescriptionKey: "Master seed not found in Keychain."])
         }
         let keys = try StarknetAccount.deriveAccountKeys(fromSeed: seed)
+        let spendingKeyHexShield = WalletManager.clampToFelt252(keys.privateKey.hexString)
+        let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHexShield)
+
+        // C-COMMITMENT-MISMATCH fix: derive STARK keypair to get owner_pubkey,
+        // then use the 4-field Poseidon commitment that matches what execute
+        // PrivateTransfer / executeUnshield reconstructs when spending the note.
+        // The nonce is persisted in StoredNote so we never need to re-derive it.
         let ownerPubkeyHex = keys.publicKey.hexString
 
         // Use a cryptographically random nonce and persist it
@@ -829,11 +817,6 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
-        guard publicBalance >= 0.005 else {
-            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
-                NSLocalizedDescriptionKey: "Insufficient public STRK balance for network fees. You need at least ~0.005 STRK to execute a private transfer."
-            ])
-        }
         // note.value is raw wei; amount is STRK — convert before matching
         guard let inputNote = notes.first(where: {
             guard let weiDouble = Double($0.value) else { return false }
@@ -931,10 +914,12 @@ class WalletManager: ObservableObject {
         )
 
         // M-2 fix: make encryption throwing — abort if memo can't be encrypted.
-        let encryptedMemo = try NoteEncryption.encryptMemo(
+        let encryptedMemoRaw = try NoteEncryption.encryptMemo(
             memo.isEmpty ? "private transfer" : memo,
             ivkHex: recipientIVKClamped
         )
+        // C-FELT-OVERFLOW: felt252 max = 31 bytes (62 hex chars). Truncate to fit.
+        let encryptedMemo = "0x" + String(encryptedMemoRaw.prefix(62))
 
         // C-6 fix: Cairo private_transfer() expects:
         //   proof: Array<felt252>, nullifiers: Array<felt252>,
@@ -960,6 +945,7 @@ class WalletManager: ObservableObject {
         callPayload += ["0x1", nullifier]                                        // nullifiers array
         callPayload += ["0x1", outputCommitment]                                 // new_commitments array
         callPayload += ["0x0", "0x0"]                                          // fee: u256
+        callPayload += [encryptedMemo]                                           // encrypted_memo: felt252
 
         print("[PrivateTransfer] nullifier=\(nullifier)")
         print("[PrivateTransfer] outputCommitment=\(outputCommitment)")
@@ -997,16 +983,6 @@ class WalletManager: ObservableObject {
         didSuccessfullySubmit = true
         removeNote(inputNote)
         recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
-        
-        // 8. Log the transfer event
-        logEvent(
-            kind: .transfer,
-            amount: String(format: "%.6f", amount),
-            assetId: "0x5354524b", // STRK
-            counterparty: recipientIVK.isEmpty ? "Anonymous" : recipientIVK,
-            txHash: broadcastedHash
-        )
-        
         return broadcastedHash
     }
 

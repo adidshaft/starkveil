@@ -9,8 +9,8 @@ pub trait IPrivacyPool<TContractState> {
         proof: Array<felt252>, 
         nullifiers: Array<felt252>,
         new_commitments: Array<felt252>,
-        encrypted_memos: Array<felt252>,
-        fee: u256
+        fee: u256,
+        encrypted_memo: felt252
     );
 
     fn unshield(

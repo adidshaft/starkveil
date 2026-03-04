@@ -184,17 +184,11 @@ class RPCClient {
                 let chunk_size: Int
                 let continuation_token: String?
             }
-            // Selector hashes for the events we want to track
-            // Shielded: starknet_keccak("Shielded")
-            let shieldedKey = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"
-            // Transfer: starknet_keccak("Transfer")
-            let transferKey = "0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9"
-            
             let filter = EventFilterWithToken(
                 from_block: .number(fromBlock),
                 to_block: .number(toBlock),
                 address: contractAddress,
-                keys: [[shieldedKey, transferKey]], // Match EITHER Shielded OR Transfer events
+                keys: [],
                 chunk_size: 100,
                 continuation_token: continuationToken
             )

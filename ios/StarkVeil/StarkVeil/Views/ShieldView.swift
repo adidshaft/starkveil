@@ -24,19 +24,10 @@ struct ShieldView: View {
         guard let v = Double(amountText), v > 0, v.isFinite else { return nil }
         return v
     }
-    private var canExecute: Bool { 
-        guard let a = parsedAmount else { return false }
-        return !isProcessing && a <= availableBalance 
-    }
+    private var canExecute: Bool { parsedAmount != nil && !isProcessing }
 
     private var availableBalance: Double {
-        if mode == .shield {
-            // Reserve ~0.005 STRK for the approve+shield L1/L2 gas execution fee.
-            // If the user taps MAX, this prevents an RPC 41 (Insufficient Funds) revert.
-            return max(0, walletManager.publicBalance - 0.005)
-        } else {
-            return walletManager.balance
-        }
+        mode == .shield ? walletManager.publicBalance : walletManager.balance
     }
 
     var body: some View {

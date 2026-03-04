@@ -183,103 +183,105 @@ class SyncEngine: ObservableObject {
                         return
                     }
 
+                    // ── Event selector hashes (sn_keccak of event name) ──────────
+                    // Used to differentiate Shielded vs Transfer vs Unshielded events.
+                    let shieldedSelector  = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"
+                    let transferSelector  = "0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9"
+
                     var decodedNotes: [(note: Note, commitment: String, blockNumber: Int)] = []
                     for event in events {
-                        // Shielded vs Transfer events
-                        let isShielded = event.keys.contains("0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083")
-                        let isTransfer = event.keys.contains("0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9")
-                        
-                        var singleEventCommitment: String? = nil
-                        var singleEventEncMemo: String? = nil
-                        // Transfer events do not emit amounts or asset_ids. The recipient receives
-                        // full information ENCRYPTED in the memo payload (handled later in UI via query).
-                        // For SyncEngine, we track the note's existence with 0.0 STRK until verified.
-                        var singleEventAmountHex: String = "0x0" 
-                        var singleEventAssetId: String = "0x5354524b" // default to STRK
+                        let eventSelector = event.keys.first ?? ""
 
-                        if isShielded {
+                        if eventSelector == shieldedSelector {
+                            // ── Shielded event ──────────────────────────────────────
+                            // data[0] = asset (ContractAddress)
+                            // data[1] = amount.low  (u256)
+                            // data[2] = amount.high (u256)
+                            // data[3] = commitment  (felt252)
+                            // data[4] = leaf_index  (u32)
+                            // data[5] = encrypted_memo (felt252, optional)
                             guard event.data.count >= 5 else { continue }
-                            singleEventAmountHex = event.data[1]
-                            singleEventCommitment = event.data[3]
-                            if event.data.count >= 6 {
-                                singleEventEncMemo = event.data[5]
-                            }
-                        } else if isTransfer {
-                            // Transfer event data layout:
-                            // data[0] = new_commitments_len
-                            // data[1..len] = new_commitments elements
-                            // data[...len+1] = encrypted_memos_len
-                            // data[...(len+1)+enc_len] = encrypted_memo elements
-                            // data[...] = fee u256
-                            guard event.data.count >= 4 else { continue }
-                            
-                            guard let commitLenInt = Int(event.data[0].replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
-                            // For MVP we only look at the first commitment (index 1) which goes to recipient
-                            // Index 2 is the change note (returns to sender)
-                            if commitLenInt >= 2 {
-                                // recipient commitment is usually the first element in the array after len
-                                singleEventCommitment = event.data[1]
-                            }
-                            
-                            let encMemoLenIndex = 1 + commitLenInt
-                            if event.data.count > encMemoLenIndex {
-                                guard let encMemoLenInt = Int(event.data[encMemoLenIndex].replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
-                                if encMemoLenInt >= 2 {
-                                    // first encrypted memo matches first commitment
-                                    let firstMemoIndex = encMemoLenIndex + 1
-                                    if event.data.count > firstMemoIndex {
-                                        singleEventEncMemo = event.data[firstMemoIndex]
-                                    }
+                            let amountHex  = event.data[1]
+                            let commitment = event.data[3]
+                            let encMemoHex = event.data.count >= 6 ? event.data[5] : nil
+
+                            guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
+                            let amountDouble = Double(amountInt) / 1e18
+                            guard amountDouble > 0 else { continue }
+
+                            var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
+                            if let encHex = encMemoHex, !encHex.isEmpty, encHex != "0x0" {
+                                if let plain = try? NoteEncryption.decryptMemo(encHex, ivkHex: ivkHex) {
+                                    decryptedMemo = plain
+                                } else {
+                                    continue   // not addressed to us
                                 }
                             }
-                        }
-                        
-                        guard let commitment = singleEventCommitment else { continue }
 
-                        // If there's an encrypted memo field, trial-decrypt it.
-                        // nil result means the note is not addressed to us — skip it.
-                        var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
-                        if let encHex = singleEventEncMemo, !encHex.isEmpty, encHex != "0x0" {
-                            if let plain = try? NoteEncryption.decryptMemo(encHex, ivkHex: ivkHex) {
-                                decryptedMemo = plain   // decrypts = note is ours
+                            let clampedIVK = WalletManager.clampToFelt252(ivkHex)
+                            let rawWei: String
+                            if let weiInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
+                                rawWei = String(weiInt)
                             } else {
-                                // Could not decrypt = note is not addressed to us; skip
-                                continue
+                                rawWei = amountHex
                             }
-                        } else if isTransfer {
-                            // If it's a transfer but has no memo, we can't be sure it's ours since it's anonymous
-                            continue
-                        }
-                        // No encrypted memo = legacy/self-deposit Shielded event; accept it
 
-                        // Use IVK clamped the same way executeShield does,
-                        // so commitment reconstruction matches at spend time.
-                        let clampedIVK = WalletManager.clampToFelt252(ivkHex)
+                            let note = Note(
+                                value: rawWei,
+                                asset_id: "0x5354524b",
+                                owner_ivk: ivkHex,
+                                owner_pubkey: clampedIVK,
+                                nonce: commitment,
+                                spending_key: nil,
+                                memo: decryptedMemo ?? "Shielded deposit"
+                            )
+                            decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
 
-                        // Store value as raw wei DECIMAL integer string format
-                        let rawWei: String
-                        if let weiInt = Int(singleEventAmountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
-                            rawWei = String(weiInt)
-                        } else {
-                            rawWei = singleEventAmountHex
-                        }
-                        // Skip zero value notes ONLY if they are Shielded deposits.
-                        // Transfer events intentionally leave amount=0x0 because the real amount
-                        // is hidden inside the encrypted memo itself (future integration).
-                        if isShielded && rawWei == "0" {
-                            continue
-                        }
+                        } else if eventSelector == transferSelector {
+                            // ── Transfer event (private-to-private) ─────────────────
+                            // Cairo serialization of Transfer { new_commitments: Array<felt252>, fee: u256, encrypted_memo: felt252 }
+                            // data[0] = commitments_len
+                            // data[1..N] = commitments
+                            // data[N+1] = fee.low
+                            // data[N+2] = fee.high
+                            // data[N+3] = encrypted_memo
+                            guard event.data.count >= 4 else { continue }
+                            guard let commitmentsLen = Int(event.data[0].replacingOccurrences(of: "0x", with: ""), radix: 16),
+                                  commitmentsLen > 0,
+                                  event.data.count >= 1 + commitmentsLen + 3 else { continue }
 
-                        let note = Note(
-                            value: rawWei,
-                            asset_id: singleEventAssetId,
-                            owner_ivk: ivkHex,
-                            owner_pubkey: clampedIVK,
-                            nonce: commitment,           // commitment acts as unique note ID
-                            spending_key: nil,
-                            memo: decryptedMemo ?? "Shielded deposit"
-                        )
-                        decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
+                            let encMemoIdx = 1 + commitmentsLen + 2  // skip commitments + fee u256
+                            let encMemoHex = event.data[encMemoIdx]
+
+                            // Trial-decrypt the memo — if it fails, the note isn't for us
+                            guard !encMemoHex.isEmpty, encMemoHex != "0x0" else { continue }
+                            guard let decryptedMemo = try? NoteEncryption.decryptMemo(encMemoHex, ivkHex: ivkHex) else {
+                                continue   // not addressed to us
+                            }
+
+                            // Process each commitment in the array
+                            for i in 0..<commitmentsLen {
+                                let commitment = event.data[1 + i]
+                                let clampedIVK = WalletManager.clampToFelt252(ivkHex)
+
+                                // For private transfers, the amount is NOT included in the event.
+                                // The receiver must reconstruct the value from the decrypted memo
+                                // or trust the sender. For now, we store "0" and rely on memo.
+                                // The actual value will be updated when the note is spent.
+                                // However, the memo typically contains the amount info.
+                                let note = Note(
+                                    value: "0",    // unknown from event data alone
+                                    asset_id: "0x5354524b",
+                                    owner_ivk: ivkHex,
+                                    owner_pubkey: clampedIVK,
+                                    nonce: commitment,
+                                    spending_key: nil,
+                                    memo: "Private: \(decryptedMemo)"
+                                )
+                                decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
+                            }
+                        }
+                        // Unshielded events are not notes — they are withdrawals. Ignore.
                     }
 
                     // Single MainActor hop for the entire batch.

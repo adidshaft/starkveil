@@ -18,6 +18,7 @@ struct PrivateTransferView: View {
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
     @EnvironmentObject private var themeManager: AppThemeManager
+    @State private var showQRScanner = false
     @Environment(\.dismiss) private var dismiss
 
     @State private var recipientAddress: String = ""
@@ -27,7 +28,6 @@ struct PrivateTransferView: View {
     @State private var isSubmitting = false
     @State private var successTxHash: String? = nil
     @State private var errorMessage: String? = nil
-    @State private var isShowingScanner = false
 
     private var amountDouble: Double? { Double(transferAmount) }
 
@@ -52,21 +52,6 @@ struct PrivateTransferView: View {
                 }
             }
             .navigationBarHidden(true)
-            .sheet(isPresented: $isShowingScanner) {
-                QRScannerView { result in
-                    switch result {
-                    case .success(let code):
-                        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-                        // Allow sweeping up bare hex or "svk:0x..." format
-                        recipientIVK = trimmed
-                        isShowingScanner = false
-                    case .failure(let error):
-                        errorMessage = "QR error: \(error.localizedDescription)"
-                        isShowingScanner = false
-                    }
-                }
-                .edgesIgnoringSafeArea(.all)
-            }
         }
     }
 
@@ -115,17 +100,27 @@ struct PrivateTransferView: View {
                 monospaced: true
             )
 
-            // Recipient IVK field (with QR button)
-            inputField(
-                label: "RECIPIENT SHIELDED KEY",
-                placeholder: "svk:0x123abc…",
-                text: $recipientIVK,
-                monospaced: true
-            ) {
-                Button(action: { isShowingScanner = true }) {
+            // Recipient IVK field + QR scan button
+            HStack(spacing: 8) {
+                inputField(
+                    label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
+                    placeholder: "svk:0x123abc…",
+                    text: $recipientIVK,
+                    monospaced: true
+                )
+                Button(action: { showQRScanner = true }) {
                     Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 20))
-                        .foregroundStyle(themeManager.textSecondary)
+                        .font(.system(size: 22))
+                        .foregroundStyle(themeManager.textPrimary)
+                        .padding(10)
+                        .background(themeManager.textSecondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(.top, 16)  // align with field
+            }
+            .sheet(isPresented: $showQRScanner) {
+                QRScannerView { scanned in
+                    recipientIVK = scanned
                 }
             }
 
@@ -158,31 +153,20 @@ struct PrivateTransferView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func inputField<Trailing: View>(
-        label: String,
-        placeholder: String,
-        text: Binding<String>,
-        monospaced: Bool = false,
-        @ViewBuilder trailingAccessory: () -> Trailing = { EmptyView() }
-    ) -> some View {
+    private func inputField(label: String, placeholder: String, text: Binding<String>, monospaced: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
                 .foregroundStyle(themeManager.textSecondary)
-            
-            HStack {
-                TextField(placeholder, text: text)
-                    .font(monospaced ? .system(size: 13, design: .monospaced) : .system(size: 13))
-                    .foregroundStyle(themeManager.textPrimary)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                
-                trailingAccessory()
-            }
-            .padding(10)
-            .background(themeManager.bgColor.opacity(0.6))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            TextField(placeholder, text: text)
+                .font(monospaced ? .system(size: 13, design: .monospaced) : .system(size: 13))
+                .foregroundStyle(themeManager.textPrimary)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(10)
+                .background(themeManager.bgColor.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 
