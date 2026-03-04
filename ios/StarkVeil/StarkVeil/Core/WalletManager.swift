@@ -362,6 +362,11 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
+        guard publicBalance >= 0.005 else {
+            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
+                NSLocalizedDescriptionKey: "Insufficient public STRK balance for network fees. You need at least ~0.005 STRK to execute an unshield."
+            ])
+        }
 
         // note.value is raw wei (e.g. "100000000000000000" for 0.1 STRK).
         // amount is in STRK (e.g. 0.1). Convert wei -> STRK before comparing.
@@ -599,6 +604,11 @@ class WalletManager: ObservableObject {
         network: NetworkEnvironment   // M-CHAIN-ID-HARDCODED fix
     ) async throws -> String {
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
+        guard amount <= max(0, publicBalance - 0.005) else {
+            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
+                NSLocalizedDescriptionKey: "Insufficient public STRK balance for shielding. Ensure you have at least ~0.005 STRK left to cover gas fees."
+            ])
+        }
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         // GUARD: Account must be deployed on-chain. If not deployed, shielding will fail
         // with RPC Error 41 (Requested contract address is not deployed).
@@ -819,6 +829,11 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
+        guard publicBalance >= 0.005 else {
+            throw NSError(domain: "StarkVeil", code: 41, userInfo: [
+                NSLocalizedDescriptionKey: "Insufficient public STRK balance for network fees. You need at least ~0.005 STRK to execute a private transfer."
+            ])
+        }
         // note.value is raw wei; amount is STRK — convert before matching
         guard let inputNote = notes.first(where: {
             guard let weiDouble = Double($0.value) else { return false }
