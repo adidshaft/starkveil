@@ -914,8 +914,12 @@ class WalletManager: ObservableObject {
         )
 
         // M-2 fix: make encryption throwing — abort if memo can't be encrypted.
+        // Encode the transfer value inside the memo so the receiver can reconstruct balance.
+        // Format: "v:<wei_integer>|<user_memo>"  — SyncEngine parses this on receive.
+        let userMemo = memo.isEmpty ? "private transfer" : memo
+        let structuredMemo = "v:\(inputNote.value)|\(userMemo)"
         let encryptedMemoRaw = try NoteEncryption.encryptMemo(
-            memo.isEmpty ? "private transfer" : memo,
+            structuredMemo,
             ivkHex: recipientIVKClamped
         )
         // C-FELT-OVERFLOW: felt252 max = 31 bytes (62 hex chars). Truncate to fit.

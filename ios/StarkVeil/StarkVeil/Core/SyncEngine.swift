@@ -264,19 +264,26 @@ class SyncEngine: ObservableObject {
                                 let commitment = event.data[1 + i]
                                 let clampedIVK = WalletManager.clampToFelt252(ivkHex)
 
-                                // For private transfers, the amount is NOT included in the event.
-                                // The receiver must reconstruct the value from the decrypted memo
-                                // or trust the sender. For now, we store "0" and rely on memo.
-                                // The actual value will be updated when the note is spent.
-                                // However, the memo typically contains the amount info.
+                                // Parse structured memo: "v:<wei_integer>|<user_memo>"
+                                // This carries the actual transfer value so the receiver's
+                                // balance is accurate even though the event doesn't include amount.
+                                var noteValue = "0"
+                                var displayMemo = decryptedMemo
+                                if decryptedMemo.hasPrefix("v:"),
+                                   let pipeIdx = decryptedMemo.firstIndex(of: "|") {
+                                    let weiStr = String(decryptedMemo[decryptedMemo.index(decryptedMemo.startIndex, offsetBy: 2)..<pipeIdx])
+                                    noteValue = weiStr   // raw wei integer string
+                                    displayMemo = String(decryptedMemo[decryptedMemo.index(after: pipeIdx)...])
+                                }
+
                                 let note = Note(
-                                    value: "0",    // unknown from event data alone
+                                    value: noteValue,
                                     asset_id: "0x5354524b",
                                     owner_ivk: ivkHex,
                                     owner_pubkey: clampedIVK,
                                     nonce: commitment,
                                     spending_key: nil,
-                                    memo: "Private: \(decryptedMemo)"
+                                    memo: "Private: \(displayMemo)"
                                 )
                                 decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
                             }
