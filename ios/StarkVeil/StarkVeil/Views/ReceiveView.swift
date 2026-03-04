@@ -173,7 +173,13 @@ struct ReceiveView: View {
 
     // MARK: - QR Card
     private var qrCard: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
+            // Label above QR
+            Label("Shielded Address — for private receives", systemImage: "shield.lefthalf.filled")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(hex: "#9B6DFF"))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             if let qr = generateQR(from: svkAddress) {
                 Image(uiImage: qr)
                     .interpolation(.none)
@@ -184,44 +190,56 @@ struct ReceiveView: View {
                     .background(Color.white)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
             }
-            Text("Scan with any StarkVeil-compatible wallet")
+            Text("Share this with anyone who wants to send you STRK privately.")
                 .font(.system(size: 12))
                 .foregroundStyle(themeManager.textSecondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(20)
         .background(themeManager.surface1)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .stroke(themeManager.surface2, lineWidth: 1))
+            .stroke(Color(hex: "#6B3DE8").opacity(0.3), lineWidth: 1))
     }
 
     // MARK: - Public address card
+    @State private var copiedPublic = false
     private var publicAddressCard: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(themeManager.surface2)
-                    .frame(width: 44, height: 44)
-                Image(systemName: "shield")
-                    .font(.system(size: 18))
-                    .foregroundStyle(themeManager.textSecondary)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Public Address (U)")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(themeManager.textPrimary)
-                Text(shortPublicAddress)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(themeManager.textSecondary)
-            }
-            Spacer()
-            Button(action: {
-                UIPasteboard.general.string = publicAddress
-            }) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 15))
-                    .foregroundStyle(themeManager.textSecondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Public Address (U) — for exchanges & public sends", systemImage: "globe")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(themeManager.textSecondary)
+
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(themeManager.surface2)
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(themeManager.textSecondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(shortPublicAddress)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(themeManager.textPrimary)
+                    Text("On-chain visible — use for deposits from exchanges")
+                        .font(.system(size: 11))
+                        .foregroundStyle(themeManager.textSecondary)
+                }
+                Spacer()
+                Button(action: {
+                    UIPasteboard.general.string = publicAddress
+                    withAnimation { copiedPublic = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        withAnimation { copiedPublic = false }
+                    }
+                }) {
+                    Image(systemName: copiedPublic ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 15))
+                        .foregroundStyle(copiedPublic ? .green : themeManager.textSecondary)
+                }
             }
         }
         .padding(16)

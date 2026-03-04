@@ -24,9 +24,8 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
             ]
         case .sepolia:
             return [
-                URL(string: "https://rpc.starknet-testnet.lava.build")!,    // Primary (Lava)
-                URL(string: "https://starknet-sepolia.public.blastapi.io")!, // Fallback 1
-                URL(string: "https://free-rpc.nethermind.io/sepolia-juno")!  // Fallback 2
+                URL(string: "https://api.cartridge.gg/x/starknet/sepolia")!, // Primary (Cartridge, v0.9.0)
+                URL(string: "https://rpc.starknet-testnet.lava.build")!      // Fallback (Lava, v0.8.1)
             ]
         }
     }
@@ -63,7 +62,7 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
             // TODO: replace with mainnet PrivacyPool address after production deployment
             return "0x0000000000000000000000000000000000000000000000000000000000000000"
         case .sepolia:
-            return "0x74b2fe0e8674fb9f5ee5417e435492e88dd8dac2c68f67f328d8970883fa931"
+            return "0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74"
         }
     }
 }

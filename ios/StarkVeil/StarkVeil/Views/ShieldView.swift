@@ -141,16 +141,25 @@ struct ShieldView: View {
 
                         // ── Success ──────────────────────────────────────
                         if let hash = txHash {
+                            let explorerUrl = URL(string: "https://sepolia.voyager.online/tx/\(hash)")
                             HStack(spacing: 8) {
                                 Image(systemName: "checkmark.shield.fill")
                                     .foregroundStyle(mode == .shield ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: 4) {
                                     Text(mode == .shield ? "Shielded successfully!" : "Unshielded successfully!")
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(themeManager.textPrimary)
-                                    Text("Tx: \(hash.prefix(16))…")
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(themeManager.textSecondary)
+                                    if let url = explorerUrl {
+                                        Link(destination: url) {
+                                            HStack(spacing: 4) {
+                                                Text("Tx: \(hash.prefix(14))…")
+                                                    .font(.system(size: 11, design: .monospaced))
+                                                Image(systemName: "arrow.up.right.square")
+                                                    .font(.system(size: 10))
+                                            }
+                                            .foregroundStyle(mode == .shield ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
+                                        }
+                                    }
                                 }
                             }
                             .padding(14)
@@ -236,6 +245,10 @@ struct ShieldView: View {
                 }
 
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
+                // Refresh public balance so the vault shows updated amounts immediately
+                Task {
+                    await walletManager.refreshPublicBalance(rpcUrl: networkManager.activeNetwork.rpcUrl)
+                }
                 withAnimation {
                     txHash = hash
                     isProcessing = false

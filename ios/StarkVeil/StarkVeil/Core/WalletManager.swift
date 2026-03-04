@@ -150,8 +150,15 @@ class WalletManager: ObservableObject {
         } catch {
             print("[WalletManager] CRITICAL: SwiftData save failed in addNote: \(error)")
         }
-        // Log a deposit event so it appears in the Activity tab
-        logEvent(kind: .deposit, amount: note.value, assetId: note.asset_id, counterparty: "Shielded Deposit")
+        // Log a deposit event so it appears in the Activity tab.
+        // Convert raw wei string → STRK for human-readable display.
+        let strkDisplay: String = {
+            if let wei = Double(note.value) {
+                return String(format: "%.6f", wei / 1e18)
+            }
+            return note.value
+        }()
+        logEvent(kind: .deposit, amount: strkDisplay, assetId: note.asset_id, counterparty: "Shielded Deposit")
     }
 
     func clearStore() {
@@ -211,7 +218,9 @@ class WalletManager: ObservableObject {
     }
 
     private func recomputeBalance() {
-        balance = notes.compactMap { Double($0.value) }.reduce(0, +)
+        // Note values are stored as raw wei strings (e.g. "100000000000000000" = 0.1 STRK).
+        // Divide by 1e18 so `balance` is always expressed in STRK.
+        balance = notes.compactMap { Double($0.value) }.reduce(0, +) / 1e18
     }
 
     /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
@@ -290,20 +299,18 @@ class WalletManager: ObservableObject {
         let amountLow = "0x" + hex
         let amountHigh = "0x0"
 
-        // Build calldata for __execute__ multicall: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data]
+        // Build calldata for __execute__ multicall (Cairo 1 format: Array<Call>)
         let callPayload = [recipient, amountLow, amountHigh]
         var calldata: [String] = [
-            "0x1",              // call_array_len
-            strkContract,       // to (STRK ERC-20)
-            transferSelector,   // selector (transfer)
-            "0x0",              // data_offset
-            String(callPayload.count), // data_len
-            String(callPayload.count)  // calldata_len
+            "0x1",                      // number of calls
+            strkContract,               // to
+            transferSelector,           // selector
+            String(callPayload.count)   // calldata_len
         ]
         calldata.append(contentsOf: callPayload)
 
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
-        let resourceBounds = await RPCClient().estimateInvokeFee(
+        let resourceBounds = try await RPCClient().estimateInvokeFee(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
@@ -312,19 +319,19 @@ class WalletManager: ObservableObject {
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
-            nonce: chainNonce,
             resourceBounds: resourceBounds,
-            privateKeyHex: keys.privateKey.hexString,
-            network: network
+            nonce: chainNonce,
+            chainID: network.chainIdFelt252,
+            privateKey: keys.privateKey.hexString
         )
 
-        try await RPCClient().submitInvokeV3(
+        let broadcastedHash = try await RPCClient().addInvokeTransaction(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
-            nonce: chainNonce,
             resourceBounds: resourceBounds,
-            signature: signature
+            signature: signature,
+            nonce: chainNonce
         )
 
         // Refresh public balance after send
@@ -402,13 +409,12 @@ class WalletManager: ObservableObject {
             throw NSError(domain: "StarkVeil", code: 11, userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
         }
         let spendingKeyHex = keys.privateKey.hexString
-        let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
-        let nonceFelt = try StarkVeilProver.poseidonHash(elements: [ivkHex, inputNote.value, inputNote.asset_id])
+        let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
-            assetId: inputNote.asset_id,
-            ownerPubkey: keys.publicKey.hexString,
-            nonce: nonceFelt
+            assetId: safeAssetId,
+            ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
+            nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
         )
         let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
 
@@ -423,33 +429,56 @@ class WalletManager: ObservableObject {
             throw ProverError.noteAlreadySpent
         }
 
+        let proofInputNote = Note(
+            value: inputNote.value,
+            asset_id: safeAssetId,
+            owner_ivk: inputNote.owner_ivk,
+            owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
+            nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce,
+            spending_key: spendingKeyHex,
+            memo: inputNote.memo
+        )
         // Generate proof off the main actor (Rust FFI blocks the thread)
-        let result = try await StarkVeilProver.generateTransferProof(notes: [inputNote])
+        let result = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
 
         // Back on main actor — build and submit RPC before local deletion (Audit Bug 1)
         // Format for V1 Invoke __execute__: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data] (Audit Bug 5)
-        // C-4 fix: u256 split at 2^128 (not 2^64). Use Decimal for lossless wei conversion.
-        let amountDecimal = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
-        let amountWeiStr = (amountDecimal as NSDecimalNumber).stringValue
-        let amountU256Low = "0x" + String(UInt64(amountWeiStr) ?? UInt64(amount * 1e18), radix: 16)
+        let amountWeiHex: String = {
+            var hex = ""
+            var remaining = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
+            if remaining == 0 { return "0x0" }
+            while remaining > 0 {
+                let (q, r) = { (val: Decimal) -> (Decimal, Int) in
+                    let divisor = Decimal(16)
+                    let q = NSDecimalNumber(decimal: val).dividing(by: NSDecimalNumber(decimal: divisor))
+                    let qFloor = q.int64Value
+                    let rVal = NSDecimalNumber(decimal: val).subtracting(NSDecimalNumber(value: qFloor).multiplying(by: NSDecimalNumber(decimal: divisor))).intValue
+                    return (Decimal(qFloor), rVal)
+                }(remaining)
+                hex = String(r, radix: 16) + hex
+                remaining = q
+            }
+            return "0x" + hex
+        }()
+        let amountU256Low = amountWeiHex
         let amountU256High = "0x0"
 
         let proofCalldata = result.proof.flatMap { [$0] }
 
         // Starknet Keccak-250 selector for PrivacyPool.unshield()
-        // Computed: keccak("unshield") & ((1<<250)-1)
-        let unshieldSelector = "0x21eefa4f46062f7986b501187c7684110faa0fa374c2819584d21a92ace0fac"
+        // Computed: starknet_keccak("unshield")
+        let unshieldSelector = "0x3079978d9c0e08ca0a86356d70a7eea2408b5d3882425b2f30a60818eac5b1b"
 
+        // Build the complete flat payload first, then derive calldata_len from it.
+        // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id]
         var callPayload: [String] = [String(proofCalldata.count)] + proofCalldata
-        callPayload += [nullifier, recipient, amountU256Low, amountU256High, inputNote.asset_id]
-        
+        callPayload += [nullifier, recipient, amountU256Low, amountU256High, safeAssetId]
+
         var calldata: [String] = [
-            "0x1",              // call_array_len
-            contractAddress,    // to
-            unshieldSelector,   // selector
-            "0x0",              // data_offset
-            String(callPayload.count), // data_len
-            String(callPayload.count)  // calldata_len
+            "0x1",                          // number of calls
+            contractAddress,                // to (PrivacyPool)
+            unshieldSelector,               // selector
+            String(callPayload.count)       // calldata_len = total flat arg count
         ]
         calldata.append(contentsOf: callPayload)
 
@@ -465,7 +494,7 @@ class WalletManager: ObservableObject {
         }
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
         // V3: estimate fee returns resource bounds (STRK gas pricing)
-        let resourceBounds = await RPCClient().estimateInvokeFee(
+        let resourceBounds = try await RPCClient().estimateInvokeFee(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
@@ -539,6 +568,13 @@ class WalletManager: ObservableObject {
     ) async throws -> String {
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
+        // GUARD: Account must be deployed on-chain. If not deployed, shielding will fail
+        // with RPC Error 41 (Requested contract address is not deployed).
+        guard KeychainManager.isAccountDeployed else {
+            throw NSError(domain: "StarkVeil", code: 99, userInfo: [
+                NSLocalizedDescriptionKey: "Your wallet has not been activated yet. Please go to Activate Wallet and deploy your account first. (Settings → your wallet display)"
+            ])
+        }
 
         isTransferInFlight = true
         isShielding = true
@@ -578,28 +614,13 @@ class WalletManager: ObservableObject {
         randomBytes[0] &= 0x07  // clamp to STARK prime range
         let noteNonce = "0x" + randomBytes.map { String(format: "%02x", $0) }.joined()
 
-        // Convert amount to wei hex for felt252 compatibility
-        let amountDecimal = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
-        let amountWeiStr = (amountDecimal as NSDecimalNumber).stringValue
-        // Convert decimal wei string to hex safely (no UInt64 overflow)
         let amountWeiHex: String = {
-            // Parse the decimal string digit by digit into hex
-            var value = Decimal(0)
-            for ch in amountWeiStr {
-                if let d = Int(String(ch)) {
-                    value = value * 10 + Decimal(d)
-                }
-            }
-            // Convert Decimal to hex string
             var hex = ""
-            var remaining = value
+            var remaining = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
             if remaining == 0 { return "0x0" }
             while remaining > 0 {
                 let (q, r) = { (val: Decimal) -> (Decimal, Int) in
                     let divisor = Decimal(16)
-                    let quotient = (val / divisor)
-                    let truncated = Decimal(sign: quotient.sign, exponent: 0, significand: quotient.significand)
-                    // Use NSDecimalNumber for floor
                     let q = NSDecimalNumber(decimal: val).dividing(by: NSDecimalNumber(decimal: divisor))
                     let qFloor = q.int64Value
                     let rVal = NSDecimalNumber(decimal: val).subtracting(NSDecimalNumber(value: qFloor).multiplying(by: NSDecimalNumber(decimal: divisor))).intValue
@@ -614,14 +635,14 @@ class WalletManager: ObservableObject {
         // 4-field Poseidon(value, asset_id, owner_pubkey, nonce) — matches contract spec
         let commitmentKey = try StarkVeilProver.noteCommitment(
             value: amountWeiHex,
-            assetId: "STRK",
+            assetId: "0x5354524b",
             ownerPubkey: ownerPubkeyHex,
             nonce: noteNonce
         )
 
         let note = Note(
             value: amountWeiHex,
-            asset_id: "STRK",
+            asset_id: "0x5354524b",
             owner_ivk: ivkHex,
             owner_pubkey: ownerPubkeyHex,
             nonce: noteNonce,
@@ -639,18 +660,22 @@ class WalletManager: ObservableObject {
         // during SyncEngine polling. Falls back to plaintext hex if encryption fails.
         let encryptedMemo: String
         do {
-            encryptedMemo = try NoteEncryption.encryptMemo(
+            let encRaw = try NoteEncryption.encryptMemo(
                 memo.isEmpty ? "shielded deposit" : memo,
                 ivkHex: ivkHex
             )
+            // C-FELT-OVERFLOW fix: felt252 max length is 31 bytes (62 hex chars).
+            // Truncate the encrypted memo to fit within a single felt argument.
+            encryptedMemo = "0x" + String(encRaw.prefix(62))
         } catch {
             // Encrypt failure is non-fatal — include plaintext hex so at least
             // the self-owned SyncEngine can still see the memo.
-            encryptedMemo = Data(memo.utf8).hexString
+            let textHex = Data((memo.isEmpty ? "shield" : memo).utf8).hexString
+            encryptedMemo = "0x" + String(textHex.prefix(62))
         }
 
         // Starknet Keccak-250 selector for PrivacyPool.shield()
-        let shieldSelector = "0x224a8f74e6fd7a11ab9e36f7742dd64470a7b2e3541b802eb7ed24087db909"
+        let shieldSelector = "0x1d142bf165333b22247aed261a8174bd8ba65a3f9b25570d99a8b8f2c32e3ba"
 
         // STRK token contract address on Sepolia
         let strkContractAddress = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
@@ -662,12 +687,36 @@ class WalletManager: ObservableObject {
 
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
 
-        // C-5 fix: Cairo shield() expects 5 args: (asset, amount_low, amount_high, note_commitment, encrypted_memo)
-        let calldata = ["0x1", contractAddress, shieldSelector, "0x0", "0x5", "0x5",
-                        strkContractAddress, amountLow, amountHigh, commitmentKey, encryptedMemo]
+        // Cairo 1 Multicall (Array<Call>):
+        // We must first approve the PrivacyPool to spend STRK, then call shield.
+        // approve(spender: ContractAddress, amount: u256)
+        let approveSelector = "0x219209e083275171774dab1df80982e9df2096516f06319c5c6d71ae0a8480c"
+        
+        // 1. Approve Call
+        let approvePayload = [contractAddress, amountLow, amountHigh]
+        
+        // 2. Shield Call
+        let shieldPayload = [strkContractAddress, amountLow, amountHigh, commitmentKey, encryptedMemo]
+        
+        var calldata: [String] = [
+            "0x2",                      // number of calls (= 2)
+            // Call 1: approve
+            strkContractAddress,        // to (STRK token)
+            approveSelector,            // selector
+            "0x3"                       // calldata_len (amount is u256 = 2 felts + spender = 1 felt)
+        ]
+        calldata.append(contentsOf: approvePayload)
+        
+        calldata.append(contentsOf: [
+            // Call 2: shield
+            contractAddress,            // to (PrivacyPool)
+            shieldSelector,             // selector
+            "0x5"                       // calldata_len
+        ])
+        calldata.append(contentsOf: shieldPayload)
 
         // V3: estimate fee returns resource bounds (STRK gas pricing)
-        let resourceBounds = await RPCClient().estimateInvokeFee(
+        let resourceBounds = try await RPCClient().estimateInvokeFee(
             rpcUrl: rpcUrl,
             senderAddress: senderAddress,
             calldata: calldata,
@@ -776,15 +825,16 @@ class WalletManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Account not activated."])
         }
 
-        let spendingKeyHex = keys.privateKey.hexString
+        let spendingKeyHex = WalletManager.clampToFelt252(keys.privateKey.hexString)
         let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
 
         // C-COMMITMENT-MISMATCH fix: use the PERSISTED nonce from StoredNote.
         // The shield step stored the exact random nonce used in Poseidon(value,asset,pubkey,nonce).
         // Re-deriving it (Poseidon(ivk,value,asset)) produces a different value → wrong commitment.
+        let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
         let commitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
-            assetId: inputNote.asset_id,
+            assetId: safeAssetId,
             ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
         )
@@ -809,7 +859,7 @@ class WalletManager: ObservableObject {
         // IVK is shared specifically for this purpose.
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: inputNote.value,
-            assetId: inputNote.asset_id,
+            assetId: safeAssetId,
             ownerPubkey: recipientIVK,
             nonce: outputNonce
         )
@@ -825,12 +875,12 @@ class WalletManager: ObservableObject {
         //   proof: Array<felt252>, nullifiers: Array<felt252>,
         //   new_commitments: Array<felt252>, fee: u256
         // Array<felt252> ABI encoding = [len, ...elements]
-        let transferSelector = "0x344ccfa6fcaef996304897401d531feee7a039a8feeff02fcfa1fc08923d1d7"
+        let transferSelector = "0x2605e7681cf37ab3a81d1732a9c8a75f2544c5967628a4d6999f276c6ba513c"
 
         // Generate the proof payload (mock proof + real nullifiers/commitments)
         let proofInputNote = Note(
             value: inputNote.value,
-            asset_id: inputNote.asset_id,
+            asset_id: safeAssetId,
             owner_ivk: ivkHex,
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce,
@@ -847,17 +897,15 @@ class WalletManager: ObservableObject {
         callPayload += ["0x0", "0x0"]                                          // fee: u256
 
         let calldata: [String] = [
-            "0x1",              // call_array_len
-            contractAddress,
-            transferSelector,
-            "0x0",              // data_offset
-            String(callPayload.count),  // data_len
+            "0x1",                      // number of calls
+            contractAddress,            // to
+            transferSelector,           // selector
             String(callPayload.count)   // calldata_len
         ] + callPayload
 
         // 6. Sign and submit (V3)
         let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
-        let resourceBounds = await RPCClient().estimateInvokeFee(rpcUrl: rpcUrl, senderAddress: senderAddress, calldata: calldata, nonce: chainNonce)
+        let resourceBounds = try await RPCClient().estimateInvokeFee(rpcUrl: rpcUrl, senderAddress: senderAddress, calldata: calldata, nonce: chainNonce)
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
@@ -925,5 +973,24 @@ class WalletManager: ObservableObject {
             if accumulated >= amount { break }
         }
         return selected
+    }
+
+    /// Clamps an arbitrary 32-byte hex private key to a valid felt252 value.
+    /// The STARK field prime is slightly less than 2^252, so we clear the top
+    /// 3 bits of the most-significant byte to guarantee the result is in-range.
+    /// This matches the clamping that Cairo / starknet-rs apply internally.
+    /// Privacy: the mathematical operation does not weaken the key — it only
+    /// ensures the value can be encoded as a Cairo felt252 field element.
+    static func clampToFelt252(_ hex: String) -> String {
+        let stripped = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+        // Pad to 64 hex chars (32 bytes) if short
+        let padded = String(repeating: "0", count: max(0, 64 - stripped.count)) + stripped
+        var bytes = stride(from: 0, to: padded.count, by: 2).compactMap {
+            UInt8(padded[padded.index(padded.startIndex, offsetBy: $0) ..< padded.index(padded.startIndex, offsetBy: $0 + 2)], radix: 16)
+        }
+        if bytes.count == 32 {
+            bytes[0] &= 0x07  // clear top 3 bits → value < 2^253, safely < STARK prime
+        }
+        return "0x" + bytes.map { String(format: "%02x", $0) }.joined()
     }
 }
