@@ -825,26 +825,18 @@ class WalletManager: ObservableObject {
             .filter { $0.isPendingSpend }
             .map { $0.commitment } ?? [])
 
-        // Exact-match only: the ZK circuit is single-input / single-output.
-        // There is no change output — spending a 0.2 note for 0.1 sends 0.2 to recipient.
-        guard let inputNote = notes.first(where: {
-            guard let weiDouble = Double($0.value) else { return false }
-            guard !pendingCommitments.contains($0.nonce) else { return false }
-            let strk = weiDouble / 1e18
-            return abs(strk - amount) < 1e-9
-        }) else {
-            let hasLarger = notes.contains {
+        // Pick the SMALLEST available note that covers the requested amount.
+        // We create a change note for any excess, so partial amounts are fully supported.
+        let amountWeiTarget = amount * 1e18
+        guard let inputNote = notes
+            .filter({
                 guard let w = Double($0.value) else { return false }
-                return (w / 1e18) > amount
-            }
-            if hasLarger {
-                throw NSError(domain: "StarkVeil", code: 50,
-                    userInfo: [NSLocalizedDescriptionKey:
-                        "No note matches \(amount) STRK exactly. " +
-                        "Shield exactly \(amount) STRK first, then transfer that note."])
-            }
-            throw ProverError.noMatchingNote
-        }
+                guard !pendingCommitments.contains($0.nonce) else { return false }
+                return w >= amountWeiTarget - 1.0   // small rounding epsilon
+            })
+            .sorted(by: { (Double($0.value) ?? 0) < (Double($1.value) ?? 0) })
+            .first
+        else { throw ProverError.insufficientBalance }
 
         isTransferInFlight = true
         defer { isTransferInFlight = false }
@@ -923,24 +915,67 @@ class WalletManager: ObservableObject {
         }
         outputRandomBytes[0] &= 0x07  // clamp to STARK prime range
         let outputNonce = "0x" + outputRandomBytes.map { String(format: "%02x", $0) }.joined()
-        // Clamp the recipient IVK to felt252 range before ANY Rust FFI call.
-        // SVK is 32 bytes (256 bits); felt252 max is ~252 bits. Passing a raw
-        // 256-bit value to Rust throws "Invalid felt252 hex: number out of range".
-        let recipientIVKClamped = WalletManager.clampToFelt252(recipientIVK)
 
+        // ── Amount maths ────────────────────────────────────────────────────────
+        // Convert requested amount to raw wei. Use UInt64 arithmetic to avoid
+        // floating-point rounding when computing change.
+        let amountWeiVal  = UInt64(amountWeiTarget)   // recipient gets this
+        let inputWeiVal   = UInt64(Double(inputNote.value) ?? 0)
+        let changeWeiVal  = inputWeiVal > amountWeiVal ? inputWeiVal - amountWeiVal : 0
+        let amountWeiStr  = String(amountWeiVal)
+        let changeWeiStr  = String(changeWeiVal)
+        let hasChange     = changeWeiVal > 0
+
+        // Clamp the recipient IVK to felt252 range before ANY Rust FFI call.
+        let recipientIVKClamped = WalletManager.clampToFelt252(recipientIVK)
+        // Sender's own IVK (for change note)
+        let senderIVKClamped = WalletManager.clampToFelt252(ivkHex)
+
+        // ── Recipient output commitment ──────────────────────────────────────────
+        // IMPORTANT: use amountWeiStr, NOT inputNote.value — the recipient's note
+        // value equals the amount sent, not the full input note value.
         let outputCommitment = try StarkVeilProver.noteCommitment(
-            value: inputNote.value,
+            value: amountWeiStr,
             assetId: safeAssetId,
             ownerPubkey: recipientIVKClamped,
             nonce: outputNonce
         )
 
-        // Compact felt252 memo: encryptCompact produces exactly 31 bytes,
-        // safely fits in a single felt252. Uses XOR-keystream + 4-byte HMAC
-        // (no nonce needed — commitment is unique per note).
+        // ── Change note commitment (returned to sender) ─────────────────────────
+        var changeCommitment: String? = nil
+        var changePlainNote: Note? = nil
+        var changeNonceStr = ""
+        if hasChange {
+            var changeBytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, changeBytes.count, &changeBytes) == errSecSuccess else {
+                throw NSError(domain: "StarkVeil", code: 21,
+                              userInfo: [NSLocalizedDescriptionKey: "RNG failed for change nonce"])
+            }
+            changeBytes[0] &= 0x07
+            changeNonceStr = "0x" + changeBytes.map { String(format: "%02x", $0) }.joined()
+            let cc = try StarkVeilProver.noteCommitment(
+                value: changeWeiStr,
+                assetId: safeAssetId,
+                ownerPubkey: senderIVKClamped,
+                nonce: changeNonceStr
+            )
+            changeCommitment = cc
+            changePlainNote = Note(
+                value: changeWeiStr,
+                asset_id: "0x5354524b",
+                owner_ivk: ivkHex,
+                owner_pubkey: senderIVKClamped,
+                nonce: changeNonceStr,
+                spending_key: nil,
+                memo: "Change"
+            )
+            print("[PrivateTransfer] changeCommitment=\(cc) changeWei=\(changeWeiStr)")
+        }
+
+        // ── Encrypt memo for recipient (compact 31-byte felt252 scheme) ──────────
         let userMemo = memo.isEmpty ? "" : memo
         let encryptedMemo = try NoteEncryption.encryptCompact(
-            valueWei: inputNote.value,
+            valueWei: amountWeiStr,          // recipient gets amountWei, not inputNote.value
             memo: userMemo,
             ivkHex: recipientIVKClamped,
             commitment: outputCommitment
@@ -968,9 +1003,12 @@ class WalletManager: ObservableObject {
         var callPayload: [String] = []
         callPayload += [String(format: "0x%x", proofPayload.proof.count)] + proofPayload.proof  // proof array
         callPayload += ["0x1", nullifier]                                        // nullifiers array
-        callPayload += ["0x1", outputCommitment]                                 // new_commitments array
-        callPayload += ["0x0", "0x0"]                                          // fee: u256
-        callPayload += [encryptedMemo]                                           // encrypted_memo: felt252
+        // new_commitments: recipient note + optional change note back to sender
+        var newCommits = [outputCommitment]
+        if let cc = changeCommitment { newCommits.append(cc) }
+        callPayload += [String(format: "0x%x", newCommits.count)] + newCommits
+        callPayload += ["0x0", "0x0"]                                            // fee: u256
+        callPayload += [encryptedMemo]                                            // encrypted_memo: felt252
 
         print("[PrivateTransfer] nullifier=\(nullifier)")
         print("[PrivateTransfer] outputCommitment=\(outputCommitment)")
@@ -1004,9 +1042,18 @@ class WalletManager: ObservableObject {
             nonce: chainNonce
         )
 
-        // 7. Optimistically remove spent note and recompute balance
+        // 7. Optimistically update local state
         didSuccessfullySubmit = true
         removeNote(inputNote)
+
+        // If there's a change note, add it back to the sender's wallet immediately.
+        // The change note is our own note — we generated its nonce and commitment —
+        // so we don't need to wait for SyncEngine to detect it on-chain.
+        if hasChange, let cn = changePlainNote, let cc = changeCommitment {
+            addNote(cn, commitment: cc)
+            print("[PrivateTransfer] change note added locally: \(changeWeiStr) wei commitment=\(cc.prefix(10))…")
+        }
+
         recomputeBalance()   // uses /1e18 division — keeps balance display in STRK not wei
 
         // 8. Log to activity feed

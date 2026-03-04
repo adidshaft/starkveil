@@ -134,7 +134,11 @@ struct NoteEncryption {
         let payload: [UInt8] = valueBytes + memoBytes
 
         // Derive keystream from EK + commitment (unique per note → no replay)
-        guard let commitData = Data(hexString: commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment) else {
+        // Normalize to even-length hex: felt252 values from Poseidon Rust FFI may
+        // omit the leading zero, giving an odd number of hex digits (e.g. 63 chars).
+        let commitRaw = commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment
+        let commitEven = commitRaw.count % 2 == 1 ? "0" + commitRaw : commitRaw
+        guard let commitData = Data(hexString: commitEven) else {
             throw NoteEncryptionError.invalidCiphertext
         }
         let keystreamKey = HKDF<SHA256>.deriveKey(
@@ -179,7 +183,10 @@ struct NoteEncryption {
 
         // Derive keystream
         let aesKey = try encryptionKey(from: ivkHex)
-        guard let commitData = Data(hexString: commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment) else {
+        // Normalize commitment to even-length hex (same reason as encryptCompact)
+        let commitRaw2 = commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment
+        let commitEven2 = commitRaw2.count % 2 == 1 ? "0" + commitRaw2 : commitRaw2
+        guard let commitData = Data(hexString: commitEven2) else {
             throw NoteEncryptionError.invalidCiphertext
         }
         let keystreamKey = HKDF<SHA256>.deriveKey(
