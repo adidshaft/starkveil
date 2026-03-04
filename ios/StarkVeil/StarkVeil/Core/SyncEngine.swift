@@ -7,9 +7,9 @@ class SyncEngine: ObservableObject {
     @Published var isSyncing = false
     @Published var currentBlockNumber: Int = 0
 
-    /// Emits a Note each time the light client detects a new shielded deposit.
-    /// AppCoordinator subscribes and forwards these into WalletManager.addNote(_:).
-    let noteDetected = PassthroughSubject<Note, Never>()
+    /// Emits a (Note, onChainCommitment) pair each time the light client detects a new shielded deposit.
+    /// AppCoordinator subscribes and forwards these into WalletManager.addNote(_:commitment:).
+    let noteDetected = PassthroughSubject<(note: Note, commitment: String), Never>()
     let networkChanged = PassthroughSubject<Void, Never>()
 
     private var timer: Timer?
@@ -183,7 +183,7 @@ class SyncEngine: ObservableObject {
                         return
                     }
 
-                    var decodedNotes: [(note: Note, blockNumber: Int)] = []
+                    var decodedNotes: [(note: Note, commitment: String, blockNumber: Int)] = []
                     for event in events {
                         guard event.data.count >= 5 else { continue }
                         let amountHex  = event.data[1]
@@ -233,7 +233,7 @@ class SyncEngine: ObservableObject {
                             spending_key: nil,
                             memo: decryptedMemo ?? "Shielded deposit"
                         )
-                        decodedNotes.append((note: note, blockNumber: event.block_number))
+                        decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
                     }
 
                     // Single MainActor hop for the entire batch.
@@ -243,11 +243,11 @@ class SyncEngine: ObservableObject {
                     await MainActor.run {
                         guard self.syncEpoch == capturedEpoch else { return }
                         for entry in decodedNotes {
-                            self.noteDetected.send(entry.note)
+                            self.noteDetected.send((note: entry.note, commitment: entry.commitment))
                             // Display in STRK for log readability; value is stored as raw wei
                             let weiDouble = Double(entry.note.value) ?? 0
                             let strkDisplay = String(format: "%.6f", weiDouble / 1e18)
-                            print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(strkDisplay) STRK, raw wei: \(entry.note.value))")
+                            print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(strkDisplay) STRK, commitment: \(entry.commitment.prefix(12))…)")
                         }
                         self.currentBlockNumber = latestBlock
                         // Persist the checkpoint so the next cold start resumes from here

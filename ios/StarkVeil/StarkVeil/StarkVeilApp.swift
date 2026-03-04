@@ -36,10 +36,10 @@ class AppCoordinator: ObservableObject {
         // into walletManager.addNote which is isolated to @MainActor.
         notePipeline = syncEngine.noteDetected
             .receive(on: RunLoop.main)
-            .sink { [weak self] (note: Note) in
+            .sink { [weak self] pair in
                 guard let self else { return }
                 Task { @MainActor in
-                    self.walletManager.addNote(note)
+                    self.walletManager.addNote(pair.note, commitment: pair.commitment)
                 }
             }
             

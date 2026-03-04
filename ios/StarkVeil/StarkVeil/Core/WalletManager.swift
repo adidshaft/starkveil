@@ -130,7 +130,7 @@ class WalletManager: ObservableObject {
 
     // MARK: - Note Management (called by AppCoordinator's SyncEngine pipeline)
 
-    func addNote(_ note: Note) {
+    func addNote(_ note: Note, commitment: String = "") {
         // C-NEW-2: deduplication guard — prevents phantom UTXOs from SyncEngine
         // re-scanning already-credited blocks after a cold restart.
         let isDuplicate = notes.contains {
@@ -146,7 +146,9 @@ class WalletManager: ObservableObject {
         notes.append(note)
         recomputeBalance()
         let ctx = persistence.context
-        ctx.insert(StoredNote(from: note, networkId: activeNetworkId))
+        // Persist the ACTUAL on-chain commitment so executeUnshield/executePrivateTransfer
+        // can use it directly for nullifier derivation without reconstruction.
+        ctx.insert(StoredNote(from: note, networkId: activeNetworkId, commitment: commitment))
         do {
             try ctx.save()
         } catch {
@@ -426,15 +428,28 @@ class WalletManager: ObservableObject {
             if raw == "STRK" || raw == "0xSTRK" || raw == "0x5354524b" { return strkTokenAddress }
             return raw
         }()
-        // For commitment reconstruction, use the canonical short asset id that was used at shield time
-        let commitmentAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
-        let commitment = try StarkVeilProver.noteCommitment(
-            value: inputNote.value,
-            assetId: commitmentAssetId,
-            ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
-            nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
-        )
+        // NULLIFIER DERIVATION — use the stored on-chain commitment DIRECTLY.
+        // storedNote.commitment is set by:
+        //   - executeShield: = StarkVeilProver.noteCommitment(value,asset,pubkey,nonce)
+        //   - SyncEngine:     = event.data[3]  (the actual Merkle leaf on-chain)
+        // Both are the canonical commitment. NO reconstruction is needed or done here.
+        let commitment: String
+        if !storedNote.commitment.isEmpty {
+            commitment = storedNote.commitment
+        } else {
+            // Fallback for old notes missing the commitment field: reconstruct.
+            // This will only be correct for locally-shielded notes where nonce is the original random nonce.
+            let commitmentAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
+            commitment = try StarkVeilProver.noteCommitment(
+                value: inputNote.value,
+                assetId: commitmentAssetId,
+                ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
+                nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
+            )
+            print("[Unshield] ⚠️ no stored commitment — reconstructed (old note format)")
+        }
         let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
+        print("[Unshield] commitment=\(commitment)")
 
         let alreadySpent = await RPCClient().isNullifierSpent(
             rpcUrl: rpcUrl,
@@ -761,7 +776,9 @@ class WalletManager: ObservableObject {
         let finality = await RPCClient().pollUntilAccepted(rpcUrl: rpcUrl, txHash: broadcastedHash)
         switch finality {
         case .accepted:
-            addNote(note)
+            // Pass the COMPUTED commitment so the StoredNote.commitment field is set correctly.
+            // executeUnshield/executePrivateTransfer will use this directly for nullifier derivation.
+            addNote(note, commitment: commitmentKey)
             if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
                 last.txHash = broadcastedHash
                 let ctx = persistence.context
@@ -776,7 +793,7 @@ class WalletManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Shield transaction was rejected by the network."])
         case .timeout:
             // Optimistically add — SyncEngine will reconcile later
-            addNote(note)
+            addNote(note, commitment: commitmentKey)
         }
 
         lastShieldTxHash = broadcastedHash
@@ -856,13 +873,21 @@ class WalletManager: ObservableObject {
         // Re-deriving it (Poseidon(ivk,value,asset)) produces a different value → wrong commitment.
         // Always use shortstring "0x5354524b" for the commitment (matches what shield() stored).
         let safeAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK" || inputNote.asset_id == "0x5354524b") ? "0x5354524b" : inputNote.asset_id
-        let commitment = try StarkVeilProver.noteCommitment(
-            value: inputNote.value,
-            assetId: safeAssetId,
-            ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
-            nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
-        )
+        // NULLIFIER DERIVATION — use stored commitment directly (same logic as executeUnshield)
+        let commitment: String
+        if !storedNote.commitment.isEmpty {
+            commitment = storedNote.commitment
+        } else {
+            commitment = try StarkVeilProver.noteCommitment(
+                value: inputNote.value,
+                assetId: safeAssetId,
+                ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
+                nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
+            )
+            print("[PrivateTransfer] ⚠️ no stored commitment — reconstructed (old note format)")
+        }
         let nullifier = try StarkVeilProver.noteNullifier(commitment: commitment, spendingKey: spendingKeyHex)
+        print("[PrivateTransfer] commitment=\(commitment)")
 
         // 2. Check nullifier isn't already spent
         let alreadySpent = await RPCClient().isNullifierSpent(rpcUrl: rpcUrl, contractAddress: contractAddress, nullifier: nullifier)
