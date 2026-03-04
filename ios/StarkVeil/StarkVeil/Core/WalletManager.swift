@@ -131,38 +131,45 @@ class WalletManager: ObservableObject {
     // MARK: - Note Management (called by AppCoordinator's SyncEngine pipeline)
 
     func addNote(_ note: Note, commitment: String = "") {
-        // C-NEW-2: deduplication guard — prevents phantom UTXOs from SyncEngine
-        // re-scanning already-credited blocks after a cold restart.
+        // Dedup by commitment (nonce field) — each note has a unique on-chain commitment.
+        // The old check used memo which caused false positives when two transfers of the
+        // same amount and memo arrived (receiver rejected the second one as "duplicate").
+        let commitKey = commitment.isEmpty ? note.nonce : commitment
         let isDuplicate = notes.contains {
+            $0.nonce == commitKey && !commitKey.isEmpty
+        }
+        // Fallback: if commitment is empty (legacy note), dedup by value+asset+ivk
+        let isLegacyDup = commitKey.isEmpty && notes.contains {
             $0.value == note.value &&
             $0.asset_id == note.asset_id &&
             $0.owner_ivk == note.owner_ivk &&
             $0.memo == note.memo
         }
-        guard !isDuplicate else {
-            print("[WalletManager] Duplicate note ignored (memo: \(note.memo.prefix(20)))")
+        guard !isDuplicate && !isLegacyDup else {
+            print("[WalletManager] Duplicate note ignored (commitment: \(commitKey.prefix(16)))")
             return
         }
         notes.append(note)
         recomputeBalance()
         let ctx = persistence.context
-        // Persist the ACTUAL on-chain commitment so executeUnshield/executePrivateTransfer
-        // can use it directly for nullifier derivation without reconstruction.
         ctx.insert(StoredNote(from: note, networkId: activeNetworkId, commitment: commitment))
         do {
             try ctx.save()
         } catch {
             print("[WalletManager] CRITICAL: SwiftData save failed in addNote: \(error)")
         }
-        // Log a deposit event so it appears in the Activity tab.
-        // Convert raw wei string → STRK for human-readable display.
-        let strkDisplay: String = {
-            if let wei = Double(note.value) {
-                return String(format: "%.6f", wei / 1e18)
-            }
-            return note.value
-        }()
-        logEvent(kind: .deposit, amount: strkDisplay, assetId: note.asset_id, counterparty: "Shielded Deposit")
+        // Log to Activity — skip for change notes (they're not deposits)
+        if note.memo != "Change" {
+            let strkDisplay: String = {
+                if let wei = Double(note.value) {
+                    return String(format: "%.6f", wei / 1e18)
+                }
+                return note.value
+            }()
+            let kind: ActivityKind = note.memo.hasPrefix("Private") ? .transfer : .deposit
+            let counterparty = note.memo.hasPrefix("Private") ? "Incoming private transfer" : "Shielded Deposit"
+            logEvent(kind: kind, amount: strkDisplay, assetId: note.asset_id, counterparty: counterparty)
+        }
     }
 
     func clearStore() {
