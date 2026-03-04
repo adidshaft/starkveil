@@ -52,12 +52,18 @@ struct NoteEncryption {
     /// Using HKDF instead of using the IVK directly ensures the key is properly
     /// domain-separated and uniform even if the IVK has low-entropy bit patterns.
     static func encryptionKey(from ivkHex: String) throws -> SymmetricKey {
-        guard let ikm = Data(hexString: ivkHex.hasPrefix("0x") ? String(ivkHex.dropFirst(2)) : ivkHex) else {
+        let raw = ivkHex.hasPrefix("0x") ? String(ivkHex.dropFirst(2)) : ivkHex
+        // !! CANONICAL ENCODING: always produce exactly 32 bytes (64 hex chars),
+        // left-padding with zeros. Without this, '0x1234' (2 bytes) and '0x001234'
+        // (3 bytes) produce DIFFERENT HKDF keys even though they are the same number.
+        // clampToFelt252 zero-pads to 64 chars; deriveIVK may return shorter hex —
+        // normalising here makes both produce identical key material.
+        let normalized = String(repeating: "0", count: max(0, 64 - raw.count)) + raw
+        guard let ikm = Data(hexString: normalized), ikm.count == 32 else {
             throw NoteEncryptionError.invalidKey
         }
         let info = Data("note-enc-v1".utf8)
         // HKDF-SHA256: extract + expand into 32 bytes (256-bit AES key)
-        // Salt is omitted — IVK is already high-entropy key material (RFC 5869 §2.2)
         let prk  = HKDF<SHA256>.extract(inputKeyMaterial: SymmetricKey(data: ikm), salt: Data())
         let okm  = HKDF<SHA256>.expand(pseudoRandomKey: prk, info: info, outputByteCount: 32)
         return okm

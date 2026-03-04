@@ -175,10 +175,17 @@ class SyncEngine: ObservableObject {
                     // Derive IVK strictly ONCE outside the loop to avoid O(N) expensive operations.
                     // Fallback to keychain if derivation fails to prevent empty string breaking decryption.
                     let ivkHex: String
-                    if let seed = KeychainManager.masterSeed(),
-                       let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed),
-                       let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: keys.privateKey.hexString) {
-                        ivkHex = derivedIVK
+                     if let seed = KeychainManager.masterSeed(),
+                        let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
+                        // MUST use clamped key — same as executePrivateTransfer.
+                        // Raw unclamped private key may exceed felt252 range and
+                        // produce a different IVK than the sender used for encryption.
+                        let clampedPrivKey = WalletManager.clampToFelt252(keys.privateKey.hexString)
+                        if let derivedIVK = try? StarkVeilProver.deriveIVK(spendingKeyHex: clampedPrivKey) {
+                            ivkHex = derivedIVK
+                        } else if let ivkData = KeychainManager.ownerIVK() {
+                            ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
+                        } else { return }
                     } else if let ivkData = KeychainManager.ownerIVK() {
                         ivkHex = "0x" + ivkData.map { String(format: "%02x", $0) }.joined()
                     } else {
