@@ -137,7 +137,11 @@ struct NoteEncryption {
             return UInt8((valueInt >> shift) & 0xFF)
         }
         let memoBytes = Array(memo.utf8.prefix(compactPayloadSize - compactValueSize))
-        let payload: [UInt8] = valueBytes + memoBytes
+        // !! CRITICAL: pad to FULL compactPayloadSize (27) bytes BEFORE XOR and HMAC.
+        // Without this, payload is only 8 bytes (no memo), HMAC is over 8 bytes,
+        // but decryption XOR-decrypts all 27 bytes and HMACs over 27 → never matches.
+        var payload: [UInt8] = valueBytes + memoBytes
+        while payload.count < compactPayloadSize { payload.append(0) }
 
         // Derive keystream from EK + commitment (unique per note → no replay)
         // Normalize to even-length hex: felt252 values from Poseidon Rust FFI may
@@ -154,17 +158,15 @@ struct NoteEncryption {
         )
         let keystreamBytes = keystreamKey.withUnsafeBytes { Array($0) }
 
-        // XOR encrypt
-        let cipherPayload = zip(payload, keystreamBytes.prefix(payload.count)).map { $0 ^ $1 }
+        // XOR encrypt the full 27-byte padded payload
+        let cipherPayload = zip(payload, keystreamBytes).map { $0 ^ $1 }
 
-        // 4-byte auth tag: HMAC-SHA256(aesKey, payload)[0..<4]
-        var hmacKey = aesKey
-        let authFull = HMAC<SHA256>.authenticationCode(for: Data(payload), using: hmacKey)
+        // 4-byte auth tag: HMAC-SHA256(aesKey, full_padded_payload)[0..<4]
+        let authFull = HMAC<SHA256>.authenticationCode(for: Data(payload), using: aesKey)
         let auth = Array(authFull.prefix(4))
 
-        // Concatenate: auth(4) || cipherPayload(≤27), pad to 31 bytes with zeros
-        var result = auth + cipherPayload
-        while result.count < 31 { result.append(0) }
+        // Concatenate: auth(4) || cipherPayload(27) = exactly 31 bytes
+        let result = auth + cipherPayload
         let hex = result.map { String(format: "%02x", $0) }.joined()
         return "0x" + hex
     }
