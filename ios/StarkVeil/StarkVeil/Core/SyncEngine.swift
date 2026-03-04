@@ -207,12 +207,29 @@ class SyncEngine: ObservableObject {
                         }
                         // No encrypted memo = legacy/self-deposit; accept it (self-deposits inherit the commitment)
 
+                        // Use IVK clamped the same way executeShield does,
+                        // so commitment reconstruction matches at spend time.
+                        let clampedIVK = WalletManager.clampToFelt252(ivkHex)
+
+                        // Store value as raw wei DECIMAL integer string
+                        // e.g. "100000000000000000" for 0.1 STRK.
+                        // Rust felt252 accepts decimal integers and hex, but NOT
+                        // floating-point decimals like "0.100000000". Using amountHex
+                        // directly (which is the on-chain u256.low) is the safest source.
+                        let rawWei: String
+                        if let weiInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
+                            rawWei = String(weiInt)
+                        } else {
+                            // Fallback: hex string itself — still valid for felt252
+                            rawWei = amountHex
+                        }
+
                         let note = Note(
-                            value: String(format: "%.9f", amountDouble),
+                            value: rawWei,
                             asset_id: "0x5354524b",
                             owner_ivk: ivkHex,
-                            owner_pubkey: ivkHex,      // SyncEngine uses IVK as pubkey for incoming
-                            nonce: commitment,          // commitment acts as unique note ID
+                            owner_pubkey: clampedIVK,   // matches shield flow's ownerPubkey for commitment
+                            nonce: commitment,           // commitment acts as unique note ID / nonce
                             spending_key: nil,
                             memo: decryptedMemo ?? "Shielded deposit"
                         )
@@ -227,7 +244,10 @@ class SyncEngine: ObservableObject {
                         guard self.syncEpoch == capturedEpoch else { return }
                         for entry in decodedNotes {
                             self.noteDetected.send(entry.note)
-                            print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(entry.note.value) STRK)")
+                            // Display in STRK for log readability; value is stored as raw wei
+                            let weiDouble = Double(entry.note.value) ?? 0
+                            let strkDisplay = String(format: "%.6f", weiDouble / 1e18)
+                            print("[SyncEngine] Block \(entry.blockNumber) [\(networkName)]: Decoded Note (\(strkDisplay) STRK, raw wei: \(entry.note.value))")
                         }
                         self.currentBlockNumber = latestBlock
                         // Persist the checkpoint so the next cold start resumes from here

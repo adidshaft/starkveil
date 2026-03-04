@@ -361,10 +361,13 @@ class WalletManager: ObservableObject {
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
 
-        // For unshield we require _exactly_ one matching note so the proof circuit
-        // has a single clean input. Greedy multi-note unshield is a future improvement.
-        guard let inputNote = notes.first(where: { Double($0.value).map { abs($0 - amount) < 1e-9 } ?? false })
-            ?? selectNotes(for: amount).first
+        // note.value is raw wei (e.g. "100000000000000000" for 0.1 STRK).
+        // amount is in STRK (e.g. 0.1). Convert wei -> STRK before comparing.
+        guard let inputNote = notes.first(where: {
+            guard let weiDouble = Double($0.value) else { return false }
+            let strk = weiDouble / 1e18
+            return abs(strk - amount) < 1e-9
+        }) ?? selectNotes(for: amount).first
         else { throw ProverError.noMatchingNote }
 
         isTransferInFlight = true
@@ -456,26 +459,17 @@ class WalletManager: ObservableObject {
         // Generate proof off the main actor (Rust FFI blocks the thread)
         let result = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
 
-        // Back on main actor — build and submit RPC before local deletion (Audit Bug 1)
-        // Format for V1 Invoke __execute__: [call_array_len, to, selector, data_offset, data_len, calldata_len, ...data] (Audit Bug 5)
-        let amountWeiHex: String = {
-            var hex = ""
-            var remaining = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
-            if remaining == 0 { return "0x0" }
-            while remaining > 0 {
-                let (q, r) = { (val: Decimal) -> (Decimal, Int) in
-                    let divisor = Decimal(16)
-                    let q = NSDecimalNumber(decimal: val).dividing(by: NSDecimalNumber(decimal: divisor))
-                    let qFloor = q.int64Value
-                    let rVal = NSDecimalNumber(decimal: val).subtracting(NSDecimalNumber(value: qFloor).multiplying(by: NSDecimalNumber(decimal: divisor))).intValue
-                    return (Decimal(qFloor), rVal)
-                }(remaining)
-                hex = String(r, radix: 16) + hex
-                remaining = q
-            }
-            return "0x" + hex
-        }()
-        let amountU256Low = amountWeiHex
+        // Use the note's stored raw wei value directly as the calldata amount.
+        // inputNote.value is already the canonical wei integer (e.g. "100000000000000000"),
+        // re-deriving from the Double `amount` causes floating-point precision loss.
+        let amountU256Low: String
+        if let weiInt = Int(inputNote.value) {
+            amountU256Low = "0x" + String(weiInt, radix: 16)
+        } else if inputNote.value.hasPrefix("0x") {
+            amountU256Low = inputNote.value  // already hex
+        } else {
+            amountU256Low = "0x0"
+        }
         let amountU256High = "0x0"
 
         let proofCalldata = result.proof.flatMap { [$0] }
@@ -808,8 +802,12 @@ class WalletManager: ObservableObject {
         guard !isTransferInFlight else { throw ProverError.transferInProgress }
         guard amount > 0, amount.isFinite else { throw ProverError.invalidAmount }
         guard amount <= balance else { throw ProverError.insufficientBalance }
-        guard let inputNote = notes.first(where: { Double($0.value).map { abs($0 - amount) < 1e-9 } ?? false })
-            ?? selectNotes(for: amount).first
+        // note.value is raw wei; amount is STRK — convert before matching
+        guard let inputNote = notes.first(where: {
+            guard let weiDouble = Double($0.value) else { return false }
+            let strk = weiDouble / 1e18
+            return abs(strk - amount) < 1e-9
+        }) ?? selectNotes(for: amount).first
         else { throw ProverError.noMatchingNote }
 
         isTransferInFlight = true
@@ -995,12 +993,14 @@ class WalletManager: ObservableObject {
     /// privacy-optimal selection (fewest notes, smallest change).
 
     private func selectNotes(for amount: Double) -> [Note] {
+        // amount is in STRK; note.value is raw wei — convert before accumulating
         var selected: [Note] = []
         var accumulated = 0.0
         for note in notes {
-            guard let v = Double(note.value) else { continue }
+            guard let weiVal = Double(note.value) else { continue }
+            let strkVal = weiVal / 1e18
             selected.append(note)
-            accumulated += v
+            accumulated += strkVal
             if accumulated >= amount { break }
         }
         return selected

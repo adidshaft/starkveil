@@ -18,8 +18,7 @@ struct SwapView: View {
     @State private var fromToken = "STRK"
     @State private var toToken   = "ETH"
     @State private var fromAmount = ""
-    @State private var errorMessage: String? = nil
-    @State private var showSuccessBanner = false
+    @State private var showComingSoon = false
 
     private var rate: Double { stubRates[fromToken]?[toToken] ?? 0 }
     private var parsedAmount: Double? {
@@ -88,7 +87,7 @@ struct SwapView: View {
                     )
 
                     // ── Swap direction button ───────────────────────────
-                    Button(action: swapDirection) {
+                    Button(action: { showComingSoon = true }) {
                         ZStack {
                             Circle()
                                 .fill(themeManager.surface2)
@@ -119,58 +118,22 @@ struct SwapView: View {
                         .padding(.horizontal, 4)
                     }
 
-                    // ── Error ─────────────────────────────────────────────
-                    if let err = errorMessage {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    // ── Success banner ────────────────────────────────────
-                    if showSuccessBanner {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.shield.fill")
-                            Text("Swap submitted via shielded proof!")
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.green)
-                        .padding(12)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.green.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
 
                     // ── Execute button ────────────────────────────────────
-                    Button(action: executeSwap) {
-                        if walletManager.isProving {
-                            HStack(spacing: 10) {
-                                ProgressView().tint(themeManager.bgColor)
-                                Text("Proving…")
-                            }
-                            .font(.headline)
-                            .foregroundStyle(themeManager.bgColor)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(themeManager.textPrimary.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        } else {
-                            HStack(spacing: 10) {
-                                Image(systemName: "arrow.left.arrow.right.circle.fill")
-                                Text("Execute Private Swap")
-                            }
-                            .font(.headline.weight(.heavy))
-                            .tracking(0.5)
-                            .foregroundStyle(themeManager.bgColor)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(canSwap ? themeManager.textPrimary : themeManager.surface2)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    Button(action: { showComingSoon = true }) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "arrow.left.arrow.right.circle.fill")
+                            Text("Execute Private Swap")
                         }
+                        .font(.headline.weight(.heavy))
+                        .tracking(0.5)
+                        .foregroundStyle(themeManager.bgColor)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(themeManager.textPrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .disabled(!canSwap)
-                    .animation(.easeInOut(duration: 0.25), value: walletManager.isProving)
+                    .animation(.easeInOut(duration: 0.25), value: showComingSoon)
 
                     Spacer(minLength: 40)
                 }
@@ -184,6 +147,11 @@ struct SwapView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                     .zIndex(10)
             }
+        }
+        .alert("Coming Soon", isPresented: $showComingSoon) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Swap feature is yet to be enabled.")
         }
     }
 
@@ -205,7 +173,7 @@ struct SwapView: View {
                 // Token picker
                 Menu {
                     ForEach(tokens, id: \.self) { token in
-                        Button(token) { selectedToken.wrappedValue = token }
+                        Button(token) { showComingSoon = true }
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -253,7 +221,7 @@ struct SwapView: View {
                         .foregroundStyle(themeManager.textSecondary)
                     Spacer()
                     Button("MAX") {
-                        amount.wrappedValue = String(format: "%.6f", balance)
+                        showComingSoon = true
                     }
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(themeManager.textPrimary)
@@ -276,7 +244,7 @@ struct SwapView: View {
             HStack(spacing: 12) {
                 Menu {
                     ForEach(tokens.filter { $0 != fromToken }, id: \.self) { token in
-                        Button(token) { toToken = token }
+                        Button(token) { showComingSoon = true }
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -313,51 +281,8 @@ struct SwapView: View {
             .stroke(themeManager.surface2, lineWidth: 1))
     }
 
-    // MARK: - Actions
     private func swapDirection() {
-        let tmp = fromToken
-        fromToken = toToken
-        toToken = tmp
-        fromAmount = ""
-    }
-
-    private func executeSwap() {
-        errorMessage = nil
-        guard let amount = parsedAmount else {
-            errorMessage = "Enter a valid amount."
-            return
-        }
-        guard amount <= walletManager.balance else {
-            errorMessage = "Insufficient shielded balance."
-            return
-        }
-        let feedback = UIImpactFeedbackGenerator(style: .medium)
-        feedback.prepare(); feedback.impactOccurred()
-        Task {
-            do {
-                // Swap is a private transfer to self — the change note re-enters the pool
-                // in the target token denomination (full implementation needs AMM routing).
-                let network = networkManager.activeNetwork
-                try await walletManager.executePrivateTransfer(
-                    recipientAddress: "0xSHIELDED_POOL_ROUTER",
-                    recipientIVK: "0xSHIELDED_POOL_ROUTER",
-                    amount: amount,
-                    memo: "",
-                    rpcUrl: network.rpcUrl,
-                    contractAddress: network.contractAddress,
-                    network: network
-                )
-                withAnimation {
-                    showSuccessBanner = true
-                    fromAmount = ""
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                    withAnimation { showSuccessBanner = false }
-                }
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
+        showComingSoon = true
     }
 
     private func tokenColor(_ token: String) -> Color {
