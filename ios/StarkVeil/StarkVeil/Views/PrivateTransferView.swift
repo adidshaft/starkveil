@@ -101,8 +101,8 @@ struct PrivateTransferView: View {
 
             // Recipient IVK field
             inputField(
-                label: "RECIPIENT VIEWING KEY (IVK)",
-                placeholder: "0x123abc...",
+                label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
+                placeholder: "svk:0x123abc…",
                 text: $recipientIVK,
                 monospaced: true
             )
@@ -231,9 +231,20 @@ struct PrivateTransferView: View {
             do {
                 let rpcUrl = networkManager.activeNetwork.rpcUrl
                 let contract = networkManager.activeNetwork.contractAddress
+
+                // Strip the "svk:" prefix if the user pasted the full SVK string.
+                // Both "svk:0x..." and bare "0x..." are valid inputs.
+                let rawIVK = recipientIVK.trimmingCharacters(in: .whitespaces)
+                let cleanIVK: String
+                if rawIVK.lowercased().hasPrefix("svk:") {
+                    cleanIVK = String(rawIVK.dropFirst(4))
+                } else {
+                    cleanIVK = rawIVK
+                }
+
                 let txHash = try await walletManager.executePrivateTransfer(
-                    recipientAddress: recipientAddress,
-                    recipientIVK: recipientIVK,
+                    recipientAddress: cleanIVK,   // for private transfer, IVK doubles as the identifier
+                    recipientIVK: cleanIVK,
                     amount: amount,
                     memo: memo,
                     rpcUrl: rpcUrl,
