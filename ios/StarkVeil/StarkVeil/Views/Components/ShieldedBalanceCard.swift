@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Phase 19: Zashi-style balance card with total balance and 3 clean actions.
+/// Phase 21: Glassmorphic balance card with total balance and 3 clean actions.
 /// Shows total = U + S, with a breakdown visible in AssetsTabView below.
 struct ShieldedBalanceCard: View {
     @EnvironmentObject private var themeManager: AppThemeManager
@@ -23,7 +23,7 @@ struct ShieldedBalanceCard: View {
             // ── Balance header ────────────────────────────────────────
             HStack {
                 Text("TOTAL BALANCE")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .tracking(2)
                     .foregroundStyle(themeManager.textSecondary)
                 Spacer()
@@ -34,7 +34,7 @@ struct ShieldedBalanceCard: View {
                     Image(systemName: isBalanceVisible ? "eye" : "eye.slash")
                         .font(.system(size: 13))
                         .frame(width: 32, height: 32)
-                        .background(themeManager.surface2)
+                        .background(themeManager.surface2.opacity(0.6))
                         .foregroundStyle(themeManager.textPrimary)
                         .clipShape(Circle())
                 }
@@ -91,46 +91,58 @@ struct ShieldedBalanceCard: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(Color(hex: "#9B6DFF"))
+                            .background(AppTheme.accentPurple)
                             .clipShape(Capsule())
                         Text(String(format: "%.4f", walletManager.balance))
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(themeManager.textSecondary)
                     }
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, 20)
                 .transition(.opacity)
             } else {
-                Spacer().frame(height: 16)
+                Spacer().frame(height: 20)
             }
 
             // ── 3 Action Buttons ─────────────────────────────────────
-            HStack(spacing: 12) {
-                actionButton(icon: "arrow.up.circle.fill", label: "Send") {
+            HStack(spacing: 10) {
+                actionButton(icon: "arrow.up.circle.fill", label: "Send", accent: Color(hex: "#FF6B35")) {
                     showSendSheet = true
                 }
-                actionButton(icon: "arrow.down.circle.fill", label: "Receive") {
+                actionButton(icon: "arrow.down.circle.fill", label: "Receive", accent: AppTheme.accentGreen) {
                     showReceiveSheet = true
                 }
-                actionButton(icon: "shield.lefthalf.filled", label: "Shield") {
+                actionButton(icon: "shield.lefthalf.filled", label: "Shield", accent: AppTheme.accentPurple) {
                     showShieldSheet = true
                 }
             }
         }
         .padding(24)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(themeManager.surface1.opacity(0.85))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(themeManager.surface2, lineWidth: 1)
+            ZStack {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(themeManager.surface1.opacity(0.85))
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(AppTheme.glassFill)
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [AppTheme.accentPurple.opacity(0.35), themeManager.surface2.opacity(0.4)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
                 )
         )
+        .shadow(color: AppTheme.accentPurple.opacity(0.10), radius: 20, x: 0, y: 8)
         .padding(.horizontal, 20)
         .onAppear { impact.prepare() }
     }
 
-    private func actionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+    private func actionButton(icon: String, label: String, accent: Color, action: @escaping () -> Void) -> some View {
         Button(action: {
             impact.impactOccurred()
             action()
@@ -138,11 +150,11 @@ struct ShieldedBalanceCard: View {
             VStack(spacing: 8) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(themeManager.surface2)
+                        .fill(accent.opacity(0.12))
                         .frame(width: 52, height: 52)
                     Image(systemName: icon)
-                        .font(.system(size: 20))
-                        .foregroundStyle(themeManager.textPrimary)
+                        .font(.system(size: 22))
+                        .foregroundStyle(accent)
                 }
                 Text(label)
                     .font(.system(size: 11, weight: .medium))

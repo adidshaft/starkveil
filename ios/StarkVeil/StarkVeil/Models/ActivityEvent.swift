@@ -4,9 +4,11 @@ import SwiftData
 // MARK: - ActivityEvent Kind
 
 enum ActivityKind: String, Codable {
-    case deposit   = "deposit"   // Shielded: incoming from chain
-    case transfer  = "transfer"  // Private transfer to another shielded address
+    case deposit   = "deposit"   // Shielded: incoming from chain (shield op)
+    case transfer  = "transfer"  // Private transfer — outgoing (sent)
+    case received  = "received"  // Private transfer — incoming (received)
     case unshield  = "unshield"  // Unshield to a public recipient
+    case publicSend = "publicSend" // Public ERC-20 send
 }
 
 // MARK: - ActivityEvent Model
@@ -46,4 +48,12 @@ final class ActivityEvent {
     }
 
     var kind: ActivityKind { ActivityKind(rawValue: kindRaw) ?? .deposit }
+
+    /// True if this event represents funds arriving into the shielded pool for this user.
+    var isIncoming: Bool {
+        switch kind {
+        case .deposit, .received: return true
+        case .transfer, .unshield, .publicSend: return false
+        }
+    }
 }

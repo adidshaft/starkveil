@@ -199,30 +199,38 @@ struct ZKProofsView: View {
     // MARK: - Helpers
     private func proofIcon(_ kind: ActivityKind) -> String {
         switch kind {
-        case .deposit:  return "arrow.down.shield.fill"
-        case .transfer: return "arrow.left.arrow.right"
-        case .unshield: return "lock.open.fill"
+        case .deposit:    return "shield.lefthalf.filled"
+        case .transfer:   return "arrow.up.circle.fill"
+        case .received:   return "arrow.down.circle.fill"
+        case .unshield:   return "lock.open.fill"
+        case .publicSend: return "arrow.up.right.circle.fill"
         }
     }
     private func proofLabel(_ kind: ActivityKind) -> String {
         switch kind {
-        case .deposit:  return "Shield Deposit"
-        case .transfer: return "Private Transfer"
-        case .unshield: return "Unshield"
+        case .deposit:    return "Shield Deposit"
+        case .transfer:   return "Private Send"
+        case .received:   return "Private Receive"
+        case .unshield:   return "Unshield"
+        case .publicSend: return "Public Send"
         }
     }
     private func proofIconBackground(_ kind: ActivityKind) -> Color {
         switch kind {
-        case .deposit:  return Color(hex: "#4CAF50").opacity(0.15)
-        case .transfer: return themeManager.textPrimary.opacity(0.08)
-        case .unshield: return Color(hex: "#FF9800").opacity(0.15)
+        case .deposit:    return AppTheme.accentGreen.opacity(0.15)
+        case .received:   return AppTheme.accentGreen.opacity(0.15)
+        case .transfer:   return AppTheme.accentRed.opacity(0.12)
+        case .unshield:   return Color(hex: "#FF9800").opacity(0.15)
+        case .publicSend: return Color(hex: "#FF9800").opacity(0.15)
         }
     }
     private func proofIconForeground(_ kind: ActivityKind) -> Color {
         switch kind {
-        case .deposit:  return Color(hex: "#4CAF50")
-        case .transfer: return themeManager.textPrimary
-        case .unshield: return Color(hex: "#FF9800")
+        case .deposit:    return AppTheme.accentGreen
+        case .received:   return AppTheme.accentGreen
+        case .transfer:   return AppTheme.accentRed
+        case .unshield:   return Color(hex: "#FF9800")
+        case .publicSend: return Color(hex: "#FF9800")
         }
     }
 

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Phase 19: Unified Shield/Unshield view with a toggle.
+/// Phase 21: Glassmorphic Shield/Unshield view with a toggle.
 /// Shield (U→S): Moves public STRK into the privacy pool.
 /// Unshield (S→U): Withdraws shielded STRK back to public balance.
 struct ShieldView: View {
@@ -114,10 +114,17 @@ struct ShieldView: View {
                                     .foregroundStyle(themeManager.textSecondary)
                             }
                             .padding(16)
-                            .background(themeManager.surface1)
+                            .background(
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(themeManager.surface1)
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(AppTheme.glassFill)
+                                }
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(themeManager.surface2, lineWidth: 1))
+                                .stroke(AppTheme.glassStroke, lineWidth: 1))
 
                             // Available balance
                             HStack {

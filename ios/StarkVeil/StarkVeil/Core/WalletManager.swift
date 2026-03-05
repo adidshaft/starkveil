@@ -145,7 +145,19 @@ class WalletManager: ObservableObject {
             $0.owner_ivk == note.owner_ivk &&
             $0.memo == note.memo
         }
-        guard !isDuplicate && !isLegacyDup else {
+        // Phase 21 fix: Double-shield dedup. When executeShield() adds a note optimistically
+        // (nonce = random), the incoming SyncEngine note has nonce = on-chain commitment.
+        // These are different strings, so the nonce check misses it.
+        // Solution: also check StoredNote.commitment in SwiftData against the incoming commitment.
+        let isStoredCommitmentDup: Bool = {
+            guard !commitKey.isEmpty else { return false }
+            let ctx = persistence.context
+            let netId = activeNetworkId
+            let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+            guard let stored = try? ctx.fetch(descriptor) else { return false }
+            return stored.contains { $0.commitment == commitKey && !$0.commitment.isEmpty }
+        }()
+        guard !isDuplicate && !isLegacyDup && !isStoredCommitmentDup else {
             print("[WalletManager] Duplicate note ignored (commitment: \(commitKey.prefix(16)))")
             return
         }
@@ -166,8 +178,11 @@ class WalletManager: ObservableObject {
                 }
                 return note.value
             }()
-            let kind: ActivityKind = note.memo.hasPrefix("Private") ? .transfer : .deposit
-            let counterparty = note.memo.hasPrefix("Private") ? "Incoming private transfer" : "Shielded Deposit"
+            // Memos beginning with "Private" indicate an incoming private transfer received
+            // from another StarkVeil user (trial-decrypted by SyncEngine).
+            // Shield deposits use any other memo — displayed as a shielded deposit.
+            let kind: ActivityKind = note.memo.hasPrefix("Private") ? .received : .deposit
+            let counterparty = note.memo.hasPrefix("Private") ? "Incoming shielded transfer" : "Shielded Deposit"
             logEvent(kind: kind, amount: strkDisplay, assetId: note.asset_id, counterparty: counterparty)
         }
     }
@@ -1068,13 +1083,13 @@ class WalletManager: ObservableObject {
         recomputeBalance()
         print("[PrivateTransfer] FINAL: notes.count=\(notes.count) balance=\(balance)")
 
-        // 8. Log to activity feed
+        // 8. Log to activity feed — use .transfer for outgoing sends
         let strkAmount = String(format: "%.6f", amount)
         logEvent(
-            kind: .transfer,
+            kind: .transfer,   // outgoing: shown with − prefix, neutral/red colour
             amount: strkAmount,
             assetId: "STRK",
-            counterparty: recipientAddress,
+            counterparty: String(recipientAddress.prefix(16)) + "…",
             txHash: broadcastedHash
         )
 

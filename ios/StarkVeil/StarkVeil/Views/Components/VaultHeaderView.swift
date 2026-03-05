@@ -15,16 +15,16 @@ struct VaultHeaderView: View {
                     Circle()
                         .fill(
                             LinearGradient(
-                                colors: [themeManager.surface2, themeManager.surface1],
+                                colors: [AppTheme.accentPurple.opacity(0.25), themeManager.surface2],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
                         .frame(width: 44, height: 44)
-                        .overlay(Circle().stroke(themeManager.surface2, lineWidth: 1))
+                        .overlay(Circle().stroke(AppTheme.accentPurple.opacity(0.3), lineWidth: 1))
                     Image(systemName: "person.fill.viewfinder")
                         .font(.system(size: 18))
-                        .foregroundStyle(themeManager.textSecondary)
+                        .foregroundStyle(AppTheme.accentPurple)
                 }
             }
             .sheet(isPresented: $showWalletInfo) {

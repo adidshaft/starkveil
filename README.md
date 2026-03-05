@@ -2,7 +2,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 20 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings.
+**Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. **Phase 21:** Activity feed now correctly shows `+`/`−` prefixes and green/red/amber colours for all 5 event kinds (deposit, receive, private send, unshield, public send). Activity tab is fully scrollable from the bottom nav. All views use a consistent glassmorphic design (frosted cards, purple glow borders, green/red accent icons). **QR Scanner:** No reinstall required — grant camera permission once in iOS Settings → Privacy → Camera.
 
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
@@ -163,6 +163,49 @@ Update `NetworkEnvironment.swift` local case with your new contract address.
 | Delete the app | All notes removed from device |
 | Reinstall app → Import Wallet with same 12 words | Same Starknet address derived |
 | Activate → VaultView | SyncEngine re-scans from block 0, trial-decrypts all shielded events, restores UTXO balance |
+
+---
+
+## 🕵️‍♂️ Under the Hood: The Cypherpunk's Guide to Verification
+
+For the discerning privacy maximalist who trusts math, not marketing. Here is exactly how StarkVeil achieves U → S → S → U privacy, the cryptographic suite we use, and how you can verify it yourself on-chain.
+
+### Cryptographic Suite
+*   **Hash Function**: **Poseidon** (Cairo & Rust implementations match byte-for-byte). *Why?* STARK-friendly; highly efficient inside algebraic circuits compared to SHA-256.
+*   **Signature Scheme**: **STARK ECDSA**. *Why?* Native Starknet signature curve; guarantees you own the keys making the transaction.
+*   **Encryption**: **AES-256-GCM** (HKDF-SHA256 derived keys from IVK). *Why?* Industry standard symmetric encryption for the memo field; off-chain trial decryption prevents on-chain metadata leakage.
+*   **Zero-Knowledge Proofs**: **STARKs** (via Rust `starkveil_prover` library). *Why?* Post-quantum secure, transparent setup, and native to the Starknet ecosystem.
+
+### The Complete Lifecycle (U → S → S → U)
+StarkVeil operates on an Unshielded (U) and Shielded (S) dual-balance model.
+
+#### 1. Shield (U → S)
+You deposit public ERC-20 STRK into the `PrivacyPool` contract.
+*   **Action**: Approve `PrivacyPool` to spend STRK, then call `shield()`.
+*   **Under the hood**: The app generates a cryptographically random nonce and computes the note commitment locally: `c = Poseidon(value, asset_id, owner_pubkey, nonce)`. It also encrypts the memo using AES-256-GCM.
+*   **On-chain**: The contract locks the funds and inserts `c` as a new leaf into the depth-20 Poseidon Merkle Tree. It emits a `Shielded` event containing only the asset, amount, opaque commitment `c`, and encrypted memo.
+*   **Verify**: Check Voyager for the `Shielded` event. You will see the amount, but the commitment reveals nothing about the owner or nonce.
+
+#### 2. Private Transfer (S → S)
+You send shielded STRK to another user without revealing the sender, recipient, or amount.
+*   **Action**: Select the recipient's Stealth Address (`svk:...`), amount, and tap Send.
+*   **Under the hood**: The app selects your unspent notes (UTXOs) to cover the amount. For each input note, it derives a `nullifier = Poseidon(spending_key, leaf_index)`. For the output notes (recipient's note and your change note), it computes new commitments `c_out`. It then generates a STARK proof locally on your iPhone demonstrating that the sum of inputs equals the sum of outputs, and that you own the keys for the nullifiers.
+*   **On-chain**: The contract calls `private_transfer(proof, nullifiers, new_commitments, fee)`. It verifies the proof, asserts the nullifiers haven't been seen before, records the nullifiers to prevent double-spending, and inserts the new commitments into the tree.
+*   **Verify**: Query `starknet_getEvents` for the `Transfer` event. You will see *only* an array of new opaque commitments, an array of nullifiers, and a fee. No amounts. No sender. No recipient.
+
+#### 3. Unshield (S → U)
+You move shielded STRK back to the public domain.
+*   **Action**: Enter a public Starknet address (`0x...`) and tap Unshield.
+*   **Under the hood**: You select a single shielded note. The app derives its `nullifier` and generates a STARK proof where the `recipient`, `amount`, and `asset_id` are *public inputs*. This binds the proof exactly to this withdrawal.
+*   **On-chain**: The contract calls `unshield(proof, nullifier, recipient, amount, asset_id)`. It verifies the proof, records the nullifier, and transfers the public ERC-20 STRK to the recipient.
+*   **Verify**: Check Voyager for the `Unshielded` event. The nullifier is permanent; if you try to unshield the same note again, the contract will panic with `Note already spent`. You can verify this manually:
+```bash
+sncast --profile katana_test call \
+  --contract-address 0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74 \
+  --function is_nullifier_spent \
+  --calldata <NULLIFIER_HEX>
+# Returns 1 (true)
+```
 
 ---
 

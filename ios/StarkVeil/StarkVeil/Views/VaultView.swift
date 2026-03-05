@@ -61,8 +61,11 @@ struct VaultView: View {
                     SwapView()
                         .padding(.bottom, 60)
                 case .activity:
-                    ActivityTabView(isBalanceVisible: isBalanceVisible)
-                        .padding(.bottom, 60)
+                    ScrollView(showsIndicators: false) {
+                        ActivityTabView(isBalanceVisible: isBalanceVisible)
+                            .padding(.top, 4)
+                    }
+                    .padding(.bottom, 60)
                 case .settings:
                     SettingsView(onWalletDeleted: onWalletDeleted)
                         .padding(.bottom, 60)

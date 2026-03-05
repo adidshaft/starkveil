@@ -12,6 +12,15 @@ enum AppTheme {
     static let darkSurface2 = Color(hex: "#242424")
     static let darkTextPrimary = Color(hex: "#F1EFED")
     static let darkTextSecondary = Color(hex: "#A3A19E")
+
+    // MARK: - Phase 21: Glass & accent tokens
+    static let accentPurple = Color(hex: "#9B6DFF")
+    static let accentGreen  = Color(hex: "#4CAF50")
+    static let accentRed    = Color(hex: "#F44336")
+    /// Subtle border for glassmorphic cards
+    static let glassStroke  = Color(hex: "#9B6DFF").opacity(0.12)
+    /// Frosted fill tint — overlay on top of .ultraThinMaterial
+    static let glassFill    = Color(hex: "#6B3DE8").opacity(0.06)
 }
 
 extension Color {

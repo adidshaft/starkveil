@@ -27,7 +27,7 @@ struct ActivityTabView: View {
                 ForEach(walletManager.activityEvents) { event in
                     ActivityRowView(event: event, isBalanceVisible: isBalanceVisible)
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 24)
+                        .padding(.bottom, 14)
                 }
             }
         }
@@ -46,22 +46,38 @@ struct ActivityRowView: View {
     // MARK: Kind helpers
     var iconName: String {
         switch event.kind {
-        case .deposit:   return "arrow.down.shield.fill"
-        case .transfer:  return "arrow.left.arrow.right"
-        case .unshield:  return "lock.open.fill"
+        case .deposit:    return "shield.lefthalf.filled"
+        case .transfer:   return "arrow.up.circle.fill"
+        case .received:   return "arrow.down.circle.fill"
+        case .unshield:   return "lock.open.fill"
+        case .publicSend: return "arrow.up.right.circle.fill"
         }
     }
 
     var label: String {
         switch event.kind {
-        case .deposit:   return "Shielded Deposit"
-        case .transfer:  return "Private Transfer"
-        case .unshield:  return "Unshield"
+        case .deposit:    return "Shielded Deposit"
+        case .transfer:   return "Private Send"
+        case .received:   return "Private Receive"
+        case .unshield:   return "Unshield"
+        case .publicSend: return "Public Send"
         }
     }
 
-    var amountPrefix: String { event.kind == .deposit ? "+" : "−" }
-    var amountColor: Color { event.kind == .deposit ? Color(hex: "#4CAF50") : themeManager.textPrimary }
+    // + for incoming funds, − for outgoing
+    var amountPrefix: String {
+        event.isIncoming ? "+" : "−"
+    }
+
+    var amountColor: Color {
+        if event.isIncoming {
+            return AppTheme.accentGreen
+        } else if event.kind == .unshield || event.kind == .publicSend {
+            return Color(hex: "#FF9800")
+        } else {
+            return AppTheme.accentRed
+        }
+    }
 
     // MARK: Body
     var body: some View {
@@ -69,11 +85,11 @@ struct ActivityRowView: View {
             HStack(alignment: .center, spacing: 14) {
                 // ── Icon badge ───────────────────────────────────────
                 ZStack {
-                    Circle()
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(iconBackground)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                     Image(systemName: iconName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(iconForeground)
                 }
 
@@ -121,6 +137,16 @@ struct ActivityRowView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(themeManager.textSecondary.opacity(0.4))
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(themeManager.surface1.opacity(0.85))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(AppTheme.glassStroke, lineWidth: 1)
+                    )
+            )
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showDetail) {
@@ -132,17 +158,21 @@ struct ActivityRowView: View {
     // MARK: Icon colours
     private var iconBackground: Color {
         switch event.kind {
-        case .deposit:  return Color(hex: "#4CAF50").opacity(0.15)
-        case .transfer: return themeManager.textPrimary.opacity(0.08)
-        case .unshield: return Color(hex: "#FF9800").opacity(0.15)
+        case .deposit:    return AppTheme.accentGreen.opacity(0.15)
+        case .received:   return AppTheme.accentGreen.opacity(0.15)
+        case .transfer:   return AppTheme.accentRed.opacity(0.12)
+        case .unshield:   return Color(hex: "#FF9800").opacity(0.15)
+        case .publicSend: return Color(hex: "#FF9800").opacity(0.15)
         }
     }
 
     private var iconForeground: Color {
         switch event.kind {
-        case .deposit:  return Color(hex: "#4CAF50")
-        case .transfer: return themeManager.textPrimary
-        case .unshield: return Color(hex: "#FF9800")
+        case .deposit:    return AppTheme.accentGreen
+        case .received:   return AppTheme.accentGreen
+        case .transfer:   return AppTheme.accentRed
+        case .unshield:   return Color(hex: "#FF9800")
+        case .publicSend: return Color(hex: "#FF9800")
         }
     }
 }
@@ -167,6 +197,48 @@ struct ActivityDetailSheet: View {
         return f.string(from: event.timestamp)
     }
 
+    private var kindLabel: String {
+        switch event.kind {
+        case .deposit:    return "Shielded Deposit"
+        case .transfer:   return "Private Send"
+        case .received:   return "Private Receive"
+        case .unshield:   return "Unshield"
+        case .publicSend: return "Public Send"
+        }
+    }
+
+    private var kindIconName: String {
+        switch event.kind {
+        case .deposit:    return "shield.lefthalf.filled"
+        case .transfer:   return "arrow.up.circle.fill"
+        case .received:   return "arrow.down.circle.fill"
+        case .unshield:   return "lock.open.fill"
+        case .publicSend: return "arrow.up.right.circle.fill"
+        }
+    }
+
+    private var amountSign: String { event.isIncoming ? "+" : "−" }
+    private var amountColor: Color {
+        if event.isIncoming { return AppTheme.accentGreen }
+        if event.kind == .unshield || event.kind == .publicSend { return Color(hex: "#FF9800") }
+        return AppTheme.accentRed
+    }
+
+    private var privacyNote: String {
+        switch event.kind {
+        case .deposit:
+            return "Deposit visible on-chain. All subsequent operations are private."
+        case .transfer:
+            return "All amounts, sender and recipient are hidden on-chain."
+        case .received:
+            return "All amounts, sender and recipient are hidden on-chain."
+        case .unshield:
+            return "Amount and recipient visible on-chain. Source note is hidden."
+        case .publicSend:
+            return "Amount and recipient visible on-chain."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -177,28 +249,26 @@ struct ActivityDetailSheet: View {
 
                         // ── Amount hero ──────────────────────────────
                         VStack(spacing: 6) {
-                            Image(systemName: event.kind == .deposit ? "arrow.down.shield.fill"
-                                  : event.kind == .transfer ? "arrow.left.arrow.right" : "lock.open.fill")
+                            Image(systemName: kindIconName)
                                 .font(.system(size: 32))
                                 .foregroundStyle(kindColor)
 
-                            Text(event.kind == .deposit ? "Shielded Deposit"
-                                 : event.kind == .transfer ? "Private Transfer" : "Unshield")
+                            Text(kindLabel)
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(themeManager.textSecondary)
 
                             Text(isBalanceVisible
-                                 ? "\(event.kind == .deposit ? "+" : "−")\(event.amount) STRK"
+                                 ? "\(amountSign)\(event.amount) STRK"
                                  : "•••••• STRK")
                                 .font(.system(size: 30, weight: .bold, design: .monospaced))
-                                .foregroundStyle(event.kind == .deposit ? Color(hex: "#4CAF50") : themeManager.textPrimary)
+                                .foregroundStyle(amountColor)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
 
                         // ── Details card ─────────────────────────────
                         VStack(spacing: 0) {
-                            detailRow(label: "Status", value: "Confirmed", valueColor: Color(hex: "#4CAF50"))
+                            detailRow(label: "Status", value: "Confirmed", valueColor: AppTheme.accentGreen)
                             Divider().background(themeManager.surface2)
                             detailRow(label: "Date", value: fullTimestamp)
                             Divider().background(themeManager.surface2)
@@ -221,18 +291,14 @@ struct ActivityDetailSheet: View {
                         .background(themeManager.surface1)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(themeManager.surface2, lineWidth: 1))
+                            .stroke(AppTheme.glassStroke, lineWidth: 1))
 
                         // ── Privacy note ─────────────────────────────
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark.shield.fill")
                                 .font(.system(size: 13))
                                 .foregroundStyle(themeManager.textSecondary)
-                            Text(event.kind == .deposit
-                                 ? "Deposit visible on-chain. All subsequent operations are private."
-                                 : event.kind == .transfer
-                                 ? "All amounts, sender and recipient are hidden on-chain."
-                                 : "Amount and recipient visible on-chain. Source note is hidden.")
+                            Text(privacyNote)
                                 .font(.system(size: 12))
                                 .foregroundStyle(themeManager.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -276,9 +342,11 @@ struct ActivityDetailSheet: View {
 
     private var kindColor: Color {
         switch event.kind {
-        case .deposit:  return Color(hex: "#4CAF50")
-        case .transfer: return themeManager.textPrimary
-        case .unshield: return Color(hex: "#FF9800")
+        case .deposit:    return AppTheme.accentGreen
+        case .received:   return AppTheme.accentGreen
+        case .transfer:   return AppTheme.accentRed
+        case .unshield:   return Color(hex: "#FF9800")
+        case .publicSend: return Color(hex: "#FF9800")
         }
     }
 

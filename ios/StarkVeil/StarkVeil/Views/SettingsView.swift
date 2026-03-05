@@ -225,10 +225,17 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             content()
         }
-        .background(themeManager.surface1)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(themeManager.surface1.opacity(0.9))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(AppTheme.glassFill)
+            }
+        )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(themeManager.surface2, lineWidth: 1))
+            .stroke(AppTheme.glassStroke, lineWidth: 1))
     }
 
     private func settingsRowContent(

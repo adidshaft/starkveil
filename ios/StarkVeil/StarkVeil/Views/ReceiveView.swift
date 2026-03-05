@@ -204,10 +204,18 @@ struct ReceiveView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(20)
-        .background(themeManager.surface1)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(themeManager.surface1.opacity(0.9))
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(AppTheme.glassFill)
+            }
+        )
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .stroke(Color(hex: "#6B3DE8").opacity(0.3), lineWidth: 1))
+            .stroke(AppTheme.accentPurple.opacity(0.35), lineWidth: 1))
+        .shadow(color: AppTheme.accentPurple.opacity(0.08), radius: 14, x: 0, y: 6)
     }
 
     // MARK: - Public address card
@@ -250,10 +258,10 @@ struct ReceiveView: View {
             }
         }
         .padding(16)
-        .background(themeManager.surface1)
+        .background(themeManager.surface1.opacity(0.85))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .stroke(themeManager.surface2, lineWidth: 1))
+            .stroke(AppTheme.glassStroke, lineWidth: 1))
     }
 
     // MARK: - Request sheet
