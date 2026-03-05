@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="logos/starkveil_logo_white.png" alt="StarkVeil Logo" width="150" height="auto" style="border-radius: 22%;">
+</div>
+
 # StarkVeil: Native iOS Shielded Pool
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
@@ -6,11 +10,9 @@ StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial
 
 ---
 
-## 🏆 Quick Start for Hackathon Judges
+## 🏆 How to reproduce it on your own Mac, iPhone and Simulators
 
-Welcome! StarkVeil is built to be evaluated quickly without complex backend or prover setups. **The PrivacyPool smart contract is already deployed on Sepolia**, and the **Rust zero-knowledge prover is pre-compiled** in the repository.
-
-You do **not** need to install Cairo, Scarb, run a local node, or compile Rust code to test the application. 
+> **Note:** Since this is a native iOS app, you'll have to follow the steps below to reproduce it on your end. No worries, it's just a one-time thing and you do **not** have to deploy the pool contract or compile the Rust Prover!
 
 ### How to test right now:
 
@@ -28,11 +30,6 @@ You do **not** need to install Cairo, Scarb, run a local node, or compile Rust c
 3. **Run the App:**
    - **Easiest Method (No Apple Developer Account needed):** Select any iOS Simulator (e.g., *iPhone 15 Pro*) at the top of Xcode and press **⌘R** (Run). 
    - **On a Physical iPhone (Requires free Apple ID):** Click on the `StarkVeil` project in the left sidebar → **Signing & Capabilities** → Check *Automatically manage signing* → Select your Personal Team → Choose your plugged-in iPhone at the top → Press **⌘R**.
-
-4. **Fund & Test:**
-   - Open the app, create a wallet, tap your avatar, and click **Activate Wallet** to deploy your account on-chain.
-   - Fund your address with Sepolia STRK from the [Starknet Faucet](https://starknet-faucet.vercel.app/).
-   - Tap **Activate**, and you are ready to Shield and send Private Transfers!
 
 *(See [Comprehensive Technical Verification](#-comprehensive-technical-verification) below to see exactly how to verify the cryptographic proofs on-chain).*
 
