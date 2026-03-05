@@ -16,6 +16,9 @@ struct Note: Codable {
     // Optional so existing Note construction sites (addNote, SyncEngine) don't break.
     let spending_key: String?
     let memo: String
+    // Phase 20 (Stwo integration): Merkle witness fields for real STARK proof generation
+    let leaf_position: UInt32?
+    let merkle_path: [String]?
 }
 
 struct Nullifier: Codable {
@@ -27,6 +30,54 @@ struct TransferPayload: Codable {
     let nullifiers: [String]
     let new_commitments: [String]
     let fee: String
+    // Phase 20: Merkle root the proof was generated against
+    let historic_root: String
+}
+
+// Phase 20: Unshield proof types matching Rust FFI
+struct UnshieldInput: Codable {
+    let note: Note
+    let amount_low: String
+    let amount_high: String
+    let recipient: String
+    let asset: String
+    let historic_root: String
+}
+
+struct UnshieldPayload: Codable {
+    let proof: [String]
+    let nullifier: String
+    let historic_root: String
+}
+
+enum UnshieldFFIResult: Decodable, Sendable {
+    case success(UnshieldPayload)
+    case error(String)
+
+    enum CodingKeys: String, CodingKey {
+        case Success
+        case Error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.Success) {
+            let payload = try container.decode(UnshieldPayload.self, forKey: .Success)
+            self = .success(payload)
+            return
+        }
+        if container.contains(.Error) {
+            let message = try container.decode(String.self, forKey: .Error)
+            self = .error(message)
+            return
+        }
+        throw DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "UnshieldFFIResult must contain either a 'Success' or 'Error' key"
+            )
+        )
+    }
 }
 
 enum FFIResult: Decodable, Sendable {
@@ -349,5 +400,94 @@ class StarkVeilProver {
         let errMsg = dict["Error"] as? String ?? dict["Err"] as? String ?? result
         throw NSError(domain: "CryptoFFI", code: 4,
                       userInfo: [NSLocalizedDescriptionKey: "Sign error: \(errMsg)"])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 20: Unshield STARK Proof Generation
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Generates a Stwo STARK proof for an unshield operation.
+    /// - Parameters:
+    ///   - note: The input note being unshielded (must include Merkle witness data)
+    ///   - amountLow: u256 low part of the withdrawal amount (hex)
+    ///   - amountHigh: u256 high part of the withdrawal amount (hex)
+    ///   - recipient: Recipient ContractAddress (hex)
+    ///   - asset: Asset ContractAddress (hex)
+    ///   - historicRoot: Merkle root to verify against (hex)
+    /// - Returns: UnshieldPayload with proof, nullifier, and historic_root
+    static func generateUnshieldProof(
+        note: Note,
+        amountLow: String,
+        amountHigh: String,
+        recipient: String,
+        asset: String,
+        historicRoot: String
+    ) async throws -> UnshieldPayload {
+        let input = UnshieldInput(
+            note: note,
+            amount_low: amountLow,
+            amount_high: amountHigh,
+            recipient: recipient,
+            asset: asset,
+            historic_root: historicRoot
+        )
+
+        let inputData = try JSONEncoder().encode(input)
+        guard let inputString = String(data: inputData, encoding: .utf8) else {
+            throw NSError(domain: "StarkVeilProver", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Unshield input could not be UTF-8 encoded"])
+        }
+
+        let cStringBuffer = inputString.utf8CString
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cStringBuffer.withUnsafeBufferPointer { buffer in
+                    guard let baseAddress = buffer.baseAddress else {
+                        continuation.resume(throwing: NSError(
+                            domain: "FFIError", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "C string buffer has no base address"]))
+                        return
+                    }
+
+                    let resultPtr = generate_unshield_proof(baseAddress)
+                    guard let resultPtr = resultPtr else {
+                        continuation.resume(throwing: NSError(
+                            domain: "FFIError", code: 2,
+                            userInfo: [NSLocalizedDescriptionKey: "Rust returned null for unshield proof"]))
+                        return
+                    }
+
+                    let resultString = String(cString: resultPtr)
+                    free_rust_string(UnsafeMutablePointer(mutating: resultPtr))
+
+                    guard let resultData = resultString.data(using: .utf8) else {
+                        continuation.resume(throwing: NSError(
+                            domain: "FFIError", code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "FFI response is not valid UTF-8"]))
+                        return
+                    }
+
+                    do {
+                        let ffiResult = try JSONDecoder().decode(UnshieldFFIResult.self, from: resultData)
+                        switch ffiResult {
+                        case .success(let payload):
+                            continuation.resume(returning: payload)
+                        case .error(let message):
+                            continuation.resume(throwing: NSError(
+                                domain: "ProverError", code: 4,
+                                userInfo: [NSLocalizedDescriptionKey: message]))
+                        }
+                    } catch {
+                        continuation.resume(throwing: NSError(
+                            domain: "FFIError", code: 5,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "UnshieldFFIResult decode failed: \(error.localizedDescription)",
+                                NSUnderlyingErrorKey: error
+                            ]))
+                    }
+                }
+            }
+        }
     }
 }

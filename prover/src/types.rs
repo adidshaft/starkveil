@@ -9,6 +9,9 @@ pub struct Note {
     pub nonce: Option<String>,      // felt252 hex — random nonce (prevents commitment reuse)
     pub spending_key: Option<String>, // felt252 hex — spending key (for nullifier derivation)
     pub memo: Option<String>,       // plaintext or AES-256-GCM ciphertext (hex)
+    // Phase 20 (Stwo integration): Merkle witness fields for real proof generation
+    pub leaf_position: Option<u32>,         // Position of this note's commitment in the Merkle tree
+    pub merkle_path: Option<Vec<String>>,   // 20 sibling hashes (hex felt252), root→leaf order
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -18,10 +21,13 @@ pub struct Nullifier {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransferPayload {
-    pub proof: Vec<String>, // Mock felt252 array
+    pub proof: Vec<String>, // Stwo STARK proof serialized as felt252 array
     pub nullifiers: Vec<String>,
     pub new_commitments: Vec<String>,
     pub fee: String,
+    // Phase 20: The Merkle root this proof was generated against.
+    // The contract validates this against its historic_roots map.
+    pub historic_root: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -30,6 +36,32 @@ pub enum FFIResult {
     // parse twice. Now embeds the typed payload directly so the Swift caller
     // only decodes one JSON layer.
     Success(TransferPayload),
+    Error(String),
+}
+
+/// Input for the unshield proof FFI function.
+/// Contains the note being unshielded plus the public unshield parameters.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UnshieldInput {
+    pub note: Note,
+    pub amount_low: String,     // u256 low part (hex)
+    pub amount_high: String,    // u256 high part (hex)
+    pub recipient: String,      // recipient ContractAddress (hex)
+    pub asset: String,          // asset ContractAddress (hex)
+    pub historic_root: String,  // Merkle root to verify against (hex)
+}
+
+/// Result of unshield proof generation
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UnshieldPayload {
+    pub proof: Vec<String>,     // Stwo STARK proof serialized as felt252 array
+    pub nullifier: String,      // The nullifier for the spent note
+    pub historic_root: String,  // The Merkle root used in the proof
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum UnshieldFFIResult {
+    Success(UnshieldPayload),
     Error(String),
 }
 

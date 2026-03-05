@@ -1,9 +1,11 @@
 pub mod types;
+pub mod circuit;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use types::{Note, TransferPayload, FFIResult};
+use types::{Note, TransferPayload, FFIResult, UnshieldInput, UnshieldPayload, UnshieldFFIResult};
+use circuit::{NoteWitness, OutputNote, parse_merkle_path};
 
 // Phase 12: Real Starknet cryptography via starknet-crypto crate
 // Phase 18: RFC-6979 deterministic ECDSA nonce (H-2 audit fix)
@@ -42,6 +44,14 @@ fn ffi_error(msg: &str) -> *mut c_char {
 
 fn ffi_ok(payload: TransferPayload) -> *mut c_char {
     let result = FFIResult::Success(payload);
+    match serde_json::to_string(&result) {
+        Ok(json) => CString::new(json).unwrap_or_else(|_| CString::new("{\"Error\":\"CString\"}").unwrap()).into_raw(),
+        Err(_) => CString::new("{\"Error\":\"Serialization failed\"}").unwrap().into_raw(),
+    }
+}
+
+fn ffi_ok_unshield(payload: UnshieldPayload) -> *mut c_char {
+    let result = UnshieldFFIResult::Success(payload);
     match serde_json::to_string(&result) {
         Ok(json) => CString::new(json).unwrap_or_else(|_| CString::new("{\"Error\":\"CString\"}").unwrap()).into_raw(),
         Err(_) => CString::new("{\"Error\":\"Serialization failed\"}").unwrap().into_raw(),
@@ -317,15 +327,21 @@ pub unsafe extern "C" fn stark_derive_ivk(
     CString::new(result).unwrap_or_else(|_| CString::new("{\"Error\":\"CString\"}").unwrap()).into_raw()
 }
 
-/// Generates a transfer proof with REAL cryptographic commitments and nullifiers.
-/// The proof bytes are still mock (pending Cairo prover integration), but:
-///   - new_commitments are real:  Poseidon(value, asset_id, owner_pubkey, nonce)
-///   - nullifiers are real:       Poseidon(input_commitment, spending_key)
+/// Phase 20: Generates a real Stwo STARK transfer proof with cryptographic verification.
 ///
-/// This means the contract can verify commitment uniqueness and nullifier correctness.
-/// Replacing mock_proof_bytes with a Cairo proof is the only remaining step for full ZK.
+/// The proof constrains:
+///   - Merkle membership: each input note exists in the tree at its claimed position
+///   - Balance conservation: Σ(input values) = Σ(output values) + fee
+///   - Nullifier correctness: each nullifier = Poseidon(commitment, spending_key)
+///   - Commitment wellformedness: Poseidon(value, asset_id, owner_pubkey, nonce)
 ///
-/// Input JSON: [{value, asset_id, owner_pubkey, nonce, spending_key}]
+/// Required fields per input note: value, asset_id, owner_pubkey, nonce,
+///   spending_key, leaf_position, merkle_path (20 sibling hashes).
+///
+/// The output note is derived deterministically from the first input note.
+/// In a full implementation, the caller would supply explicit output notes.
+///
+/// Input JSON: [{value, asset_id, owner_pubkey, nonce, spending_key, leaf_position, merkle_path}]
 /// Output: FFIResult::Success(TransferPayload) or FFIResult::Error
 #[no_mangle]
 pub unsafe extern "C" fn generate_transfer_proof(
@@ -344,60 +360,226 @@ pub unsafe extern "C" fn generate_transfer_proof(
         Err(e) => return ffi_error(&format!("Failed to parse notes: {}", e)),
     };
 
-    // ── Real nullifiers: Poseidon(commitment, spending_key) ──────────────────
-    let mut nullifiers: Vec<String> = Vec::new();
-    for note in &notes {
-        let value_str  = note.value.as_deref().unwrap_or("0x0");
-        let asset_str  = note.asset_id.as_deref().unwrap_or("0x0");
-        let owner_str  = note.owner_pubkey.as_deref().unwrap_or("0x0");
-        let nonce_str  = note.nonce.as_deref().unwrap_or("0x0");
-        let sk_str     = note.spending_key.as_deref().unwrap_or("0x0");
-
-        let value  = felt_from_hex(value_str).unwrap_or(FieldElement::ZERO);
-        let asset  = felt_from_hex(asset_str).unwrap_or(FieldElement::ZERO);
-        let owner  = felt_from_hex(owner_str).unwrap_or(FieldElement::ZERO);
-        let nonce  = felt_from_hex(nonce_str).unwrap_or(FieldElement::ZERO);
-        let sk     = felt_from_hex(sk_str).unwrap_or(FieldElement::ZERO);
-
-        let commitment = poseidon_hash_many(&[value, asset, owner, nonce]);
-        let nullifier  = poseidon_hash_many(&[commitment, sk]);
-        nullifiers.push(felt_to_hex(&nullifier));
+    if notes.is_empty() {
+        return ffi_error("At least one input note is required");
     }
 
-    // ── Real output commitment (change note) ─────────────────────────────────
-    // In a real circuit the output note values would be constrained by the proof.
-    // Here we use a deterministic commitment from the first note's parameters
-    // so the shape is correct even without a real prover.
-    let new_commitment = if let Some(first) = notes.first() {
-        let value = felt_from_hex(first.value.as_deref().unwrap_or("0x0")).unwrap_or(FieldElement::ZERO);
-        let asset  = felt_from_hex(first.asset_id.as_deref().unwrap_or("0x0")).unwrap_or(FieldElement::ZERO);
-        let owner  = felt_from_hex(first.owner_pubkey.as_deref().unwrap_or("0x0")).unwrap_or(FieldElement::ZERO);
-        // Increment nonce for the output note so it differs from input
-        let out_nonce = poseidon_hash_many(&[value, asset, owner]);
-        let commitment = poseidon_hash_many(&[value, asset, owner, out_nonce]);
-        felt_to_hex(&commitment)
-    } else {
-        "0x0".to_string()
+    // ── Parse input notes into NoteWitness structs ───────────────────────────
+    let mut input_witnesses: Vec<NoteWitness> = Vec::new();
+    for (i, note) in notes.iter().enumerate() {
+        let value_str = match note.value.as_deref() {
+            Some(s) => s,
+            None => return ffi_error(&format!("Input note {} missing required field: value", i)),
+        };
+        let asset_str = match note.asset_id.as_deref() {
+            Some(s) => s,
+            None => return ffi_error(&format!("Input note {} missing required field: asset_id", i)),
+        };
+        let owner_str = match note.owner_pubkey.as_deref() {
+            Some(s) => s,
+            None => return ffi_error(&format!("Input note {} missing required field: owner_pubkey", i)),
+        };
+        let nonce_str = match note.nonce.as_deref() {
+            Some(s) => s,
+            None => return ffi_error(&format!("Input note {} missing required field: nonce", i)),
+        };
+        let sk_str = match note.spending_key.as_deref() {
+            Some(s) => s,
+            None => return ffi_error(&format!("Input note {} missing required field: spending_key", i)),
+        };
+        let leaf_pos = match note.leaf_position {
+            Some(p) => p,
+            None => return ffi_error(&format!("Input note {} missing required field: leaf_position", i)),
+        };
+        let path_hex = match note.merkle_path.as_ref() {
+            Some(p) => p,
+            None => return ffi_error(&format!("Input note {} missing required field: merkle_path", i)),
+        };
+
+        let value = match felt_from_hex(value_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+        let asset = match felt_from_hex(asset_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+        let owner = match felt_from_hex(owner_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+        let nonce = match felt_from_hex(nonce_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+        let sk    = match felt_from_hex(sk_str)    { Ok(f) => f, Err(e) => return ffi_error(&e) };
+
+        let merkle_path = match parse_merkle_path(path_hex) {
+            Ok(p) => p,
+            Err(e) => return ffi_error(&format!("Input note {} merkle_path error: {}", i, e)),
+        };
+
+        input_witnesses.push(NoteWitness {
+            value, asset_id: asset, owner_pubkey: owner, nonce,
+            spending_key: sk, leaf_position: leaf_pos, merkle_path,
+        });
+    }
+
+    // ── Derive historic root from the first note's Merkle path ──────────────
+    let first_commitment = circuit::compute_commitment(
+        &input_witnesses[0].value,
+        &input_witnesses[0].asset_id,
+        &input_witnesses[0].owner_pubkey,
+        &input_witnesses[0].nonce,
+    );
+    let historic_root = circuit::verify_merkle_path(
+        &first_commitment,
+        input_witnesses[0].leaf_position,
+        &input_witnesses[0].merkle_path,
+    );
+
+    // ── Build output note (change note) ─────────────────────────────────────
+    // Deterministic output commitment from the first note's parameters.
+    // In a full implementation, the caller would supply explicit output notes.
+    let first = &notes[0];
+    let out_value = match felt_from_hex(first.value.as_deref().unwrap_or("0x0")) {
+        Ok(f) => f, Err(e) => return ffi_error(&e),
+    };
+    let out_asset = match felt_from_hex(first.asset_id.as_deref().unwrap_or("0x0")) {
+        Ok(f) => f, Err(e) => return ffi_error(&e),
+    };
+    let out_owner = match felt_from_hex(first.owner_pubkey.as_deref().unwrap_or("0x0")) {
+        Ok(f) => f, Err(e) => return ffi_error(&e),
+    };
+    let out_nonce = poseidon_hash_many(&[out_value, out_asset, out_owner]);
+
+    let fee = FieldElement::from(100000000000000u64); // 0.0001 STRK
+
+    // Compute actual output value: total_input - fee
+    let mut total_input = FieldElement::ZERO;
+    for w in &input_witnesses {
+        total_input = total_input + w.value;
+    }
+    let output_value = total_input - fee;
+
+    let output_note = OutputNote {
+        value: output_value,
+        asset_id: out_asset,
+        owner_pubkey: out_owner,
+        nonce: out_nonce,
     };
 
-    // ── Mock proof bytes (replace with Cairo STARK proof when prover is integrated) ──
-    // Format: [proof_length, ...proof_felts]
-    // The proof shape is correct for the Cairo verifier ABI; content is not verified.
-    // H-7 fix: removed underscore from hex literal (invalid felt252 character)
-    let mock_proof = vec![
-        "0x0000000000000002".to_string(),  // proof_length = 2 (minimal)
-        "0x504c414345484f4c444552".to_string(),  // "PLACEHOLDER" — valid hex
-        "0x0000000000000001".to_string(),
-    ];
+    // ── Generate the real STARK proof ────────────────────────────────────────
+    let proof_result = circuit::generate_transfer_stark_proof(
+        &input_witnesses,
+        &[output_note],
+        &fee,
+        &historic_root,
+    );
 
-    let payload = TransferPayload {
-        proof: mock_proof,
-        nullifiers,
-        new_commitments: vec![new_commitment],
-        fee: "100000000000000".to_string(),
+    match proof_result {
+        Ok((proof, public_inputs)) => {
+            let nullifiers: Vec<String> = public_inputs.nullifiers.iter()
+                .map(|n| felt_to_hex(n))
+                .collect();
+            let new_commitments: Vec<String> = public_inputs.new_commitments.iter()
+                .map(|c| felt_to_hex(c))
+                .collect();
+
+            let payload = TransferPayload {
+                proof: proof.proof_elements,
+                nullifiers,
+                new_commitments,
+                fee: "100000000000000".to_string(),
+                historic_root: felt_to_hex(&public_inputs.historic_root),
+            };
+
+            ffi_ok(payload)
+        }
+        Err(e) => ffi_error(&format!("Proof generation failed: {}", e)),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Phase 20: Unshield Proof Generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Generates a real Stwo STARK proof for an unshield operation.
+///
+/// The proof constrains:
+///   - Merkle membership: the input note exists in the tree
+///   - Ownership: spending_key → owner_pubkey
+///   - Nullifier derivation: Poseidon(commitment, spending_key)
+///   - Public input binding: (amount, asset, recipient) are committed
+///
+/// Input JSON: {note: {...}, amount_low, amount_high, recipient, asset, historic_root}
+/// Output: UnshieldFFIResult::Success(UnshieldPayload) or ::Error
+#[no_mangle]
+pub unsafe extern "C" fn generate_unshield_proof(
+    input_json: *const c_char,
+) -> *mut c_char {
+    if input_json.is_null() { return ffi_error("Received null pointer"); }
+
+    let c_str = CStr::from_ptr(input_json);
+    let str_slice = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ffi_error("Invalid UTF-8 sequence"),
     };
 
-    ffi_ok(payload)
+    let input: UnshieldInput = match serde_json::from_str(str_slice) {
+        Ok(i) => i,
+        Err(e) => return ffi_error(&format!("Failed to parse unshield input: {}", e)),
+    };
+
+    // Parse required fields
+    let note = &input.note;
+    let value_str = match note.value.as_deref() {
+        Some(s) => s, None => return ffi_error("Missing required field: value"),
+    };
+    let asset_str = match note.asset_id.as_deref() {
+        Some(s) => s, None => return ffi_error("Missing required field: asset_id"),
+    };
+    let owner_str = match note.owner_pubkey.as_deref() {
+        Some(s) => s, None => return ffi_error("Missing required field: owner_pubkey"),
+    };
+    let nonce_str = match note.nonce.as_deref() {
+        Some(s) => s, None => return ffi_error("Missing required field: nonce"),
+    };
+    let sk_str = match note.spending_key.as_deref() {
+        Some(s) => s, None => return ffi_error("Missing required field: spending_key"),
+    };
+    let leaf_pos = match note.leaf_position {
+        Some(p) => p, None => return ffi_error("Missing required field: leaf_position"),
+    };
+    let path_hex = match note.merkle_path.as_ref() {
+        Some(p) => p, None => return ffi_error("Missing required field: merkle_path"),
+    };
+
+    let value = match felt_from_hex(value_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let asset = match felt_from_hex(asset_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let owner = match felt_from_hex(owner_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let nonce = match felt_from_hex(nonce_str) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let sk    = match felt_from_hex(sk_str)    { Ok(f) => f, Err(e) => return ffi_error(&e) };
+
+    let amount_low  = match felt_from_hex(&input.amount_low)  { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let amount_high = match felt_from_hex(&input.amount_high) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let recipient   = match felt_from_hex(&input.recipient)   { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let asset_addr  = match felt_from_hex(&input.asset)       { Ok(f) => f, Err(e) => return ffi_error(&e) };
+    let root        = match felt_from_hex(&input.historic_root) { Ok(f) => f, Err(e) => return ffi_error(&e) };
+
+    let merkle_path = match parse_merkle_path(path_hex) {
+        Ok(p) => p,
+        Err(e) => return ffi_error(&format!("merkle_path error: {}", e)),
+    };
+
+    let witness = NoteWitness {
+        value, asset_id: asset, owner_pubkey: owner, nonce,
+        spending_key: sk, leaf_position: leaf_pos, merkle_path,
+    };
+
+    let proof_result = circuit::generate_unshield_stark_proof(
+        &witness, &amount_low, &amount_high, &recipient, &asset_addr, &root,
+    );
+
+    match proof_result {
+        Ok((proof, nullifier)) => {
+            let payload = UnshieldPayload {
+                proof: proof.proof_elements,
+                nullifier: felt_to_hex(&nullifier),
+                historic_root: felt_to_hex(&root),
+            };
+            ffi_ok_unshield(payload)
+        }
+        Err(e) => ffi_error(&format!("Unshield proof generation failed: {}", e)),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
