@@ -262,15 +262,12 @@ This section details how to verify the cryptographic proofs, on-chain state tran
 
 ---
 
-## 🔮 What's Pending (Post-Hackathon)
+## 📚 Deep Dive & Security
 
-| Item | Priority | Notes |
-|---|---|---|
-| Stwo client-side ZK prover circuit | Critical | Replace mock verifier in `privacy_pool.cairo` with real on-chain Stwo verifier |
-| RFC 6979 nonce for ECDSA signing | High | Replace SHA-256 deterministic k with proper RFC 6979 |
-| Mainnet contract deployment | Medium | Upgrade from Sepolia |
-| Starknet ID integration | Low | Replace `anon.stark` placeholder |
-| Mainnet STRK faucet / deposit flow | Low | UX for onboarding new users |
+For an extensive deep-dive into the StarkVeil architecture, the underlying cryptographic mechanics (Merkle Trees, ZK Proof binding, FFI integration), and the local UTXO model, please refer to the core mechanics document:
 
----
-- **Poseidon Zero Hashes**: For the STARK proof to cryptographically verify on iOS, the Merkle tree `get_zero_hash()` constants in `.cairo` and the Rust STARK circuits must match exactly.
+👉 **[Read CORE_MECHANICS.md](./CORE_MECHANICS.md)**
+
+StarkVeil was continuously audited throughout development. For full security assessments (including vulnerability patches like RFC-6979 deterministic nonces), threat modeling, and formal cryptographic analysis, check the audits directory:
+
+👉 **[View Security Audits](./audits/)**
