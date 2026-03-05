@@ -166,46 +166,62 @@ Update `NetworkEnvironment.swift` local case with your new contract address.
 
 ---
 
-## 🕵️‍♂️ Under the Hood: The Cypherpunk's Guide to Verification
+## 🔍 Comprehensive Technical Verification
 
-For the discerning privacy maximalist who trusts math, not marketing. Here is exactly how StarkVeil achieves U → S → S → U privacy, the cryptographic suite we use, and how you can verify it yourself on-chain.
+For developers, auditors, and privacy enthusiasts, here is the exact lifecycle of a StarkVeil transaction, from public STRK (U) to the shielded pool (S), through a private transfer, and back to public STRK (U).
 
-### Cryptographic Suite
-*   **Hash Function**: **Poseidon** (Cairo & Rust implementations match byte-for-byte). *Why?* STARK-friendly; highly efficient inside algebraic circuits compared to SHA-256.
-*   **Signature Scheme**: **STARK ECDSA**. *Why?* Native Starknet signature curve; guarantees you own the keys making the transaction.
-*   **Encryption**: **AES-256-GCM** (HKDF-SHA256 derived keys from IVK). *Why?* Industry standard symmetric encryption for the memo field; off-chain trial decryption prevents on-chain metadata leakage.
-*   **Zero-Knowledge Proofs**: **STARKs** (via Rust `starkveil_prover` library). *Why?* Post-quantum secure, transparent setup, and native to the Starknet ecosystem.
+This section details how to verify the cryptographic proofs, on-chain state transitions, and the specific algorithms used at each step to guarantee absolute financial privacy.
 
-### The Complete Lifecycle (U → S → S → U)
-StarkVeil operates on an Unshielded (U) and Shielded (S) dual-balance model.
+### The Flow: U → S → Private Transfer → U
 
-#### 1. Shield (U → S)
-You deposit public ERC-20 STRK into the `PrivacyPool` contract.
-*   **Action**: Approve `PrivacyPool` to spend STRK, then call `shield()`.
-*   **Under the hood**: The app generates a cryptographically random nonce and computes the note commitment locally: `c = Poseidon(value, asset_id, owner_pubkey, nonce)`. It also encrypts the memo using AES-256-GCM.
-*   **On-chain**: The contract locks the funds and inserts `c` as a new leaf into the depth-20 Poseidon Merkle Tree. It emits a `Shielded` event containing only the asset, amount, opaque commitment `c`, and encrypted memo.
-*   **Verify**: Check Voyager for the `Shielded` event. You will see the amount, but the commitment reveals nothing about the owner or nonce.
+#### Stage 1: Shield (U → S)
+**What happens:** A public Starknet account deposits STRK into the `PrivacyPool` contract.
+*   **Action:** User inputs an amount (e.g. `0.1 STRK`) and taps **Shield**.
+*   **Algorithms:**
+    *   **Note Commitment:** `c = Poseidon(value, asset_id, owner_pubkey, nonce)`
+        *   *Why Poseidon?* It is a ZK-friendly hash function, making it orders of magnitude cheaper to compute inside a STARK circuit later.
+    *   **Memo Encryption:** `AES-256-GCM(key = HKDF(IVK), plaintext = memo)`
+        *   *Why AES-256-GCM?* Standard symmetric encryption to allow the owner's `SyncEngine` to recover the memo string. The key is derived purely from the incoming viewing key (IVK).
+*   **On-Chain Verification:**
+    *   Query the `PrivacyPool` contract on Voyager or via `sncast`.
+    *   Find the `Shielded` event. You will see the deposited `amount`, the `asset` contract address, and the opaque `commitment`.
+    *   **Privacy check:** Notice that the `commitment` reveals nothing about the user's IVK or the memo. The wallet's public address is visible as the *sender* of the transaction, which is expected for a public-to-private deposit.
 
-#### 2. Private Transfer (S → S)
-You send shielded STRK to another user without revealing the sender, recipient, or amount.
-*   **Action**: Select the recipient's Stealth Address (`svk:...`), amount, and tap Send.
-*   **Under the hood**: The app selects your unspent notes (UTXOs) to cover the amount. For each input note, it derives a `nullifier = Poseidon(spending_key, leaf_index)`. For the output notes (recipient's note and your change note), it computes new commitments `c_out`. It then generates a STARK proof locally on your iPhone demonstrating that the sum of inputs equals the sum of outputs, and that you own the keys for the nullifiers.
-*   **On-chain**: The contract calls `private_transfer(proof, nullifiers, new_commitments, fee)`. It verifies the proof, asserts the nullifiers haven't been seen before, records the nullifiers to prevent double-spending, and inserts the new commitments into the tree.
-*   **Verify**: Query `starknet_getEvents` for the `Transfer` event. You will see *only* an array of new opaque commitments, an array of nullifiers, and a fee. No amounts. No sender. No recipient.
+#### Stage 2: Private Transfer (S → S)
+**What happens:** Moving shielded STRK to another user inside the privacy pool without revealing sender, receiver, or amount.
+*   **Action:** User inputs the recipient's Shielded Address (`svk:0x...`) and an amount, then taps **Send**.
+*   **Algorithms:**
+    *   **Nullifier Generation:** `nf = Poseidon(commitment, spending_key)`
+        *   *Why Nullifier?* It proves the note is spent without revealing *which* note was spent. The contract enforces `!nullifiers[nf]` to stop double-spends.
+    *   **Output Commitments:** New `Poseidon` hashes are generated for the recipient's note and the sender's change note.
+    *   **STARK Proof:** The `libstarkveil_prover` Rust core generates a Cairo-compatible STARK proof asserting: `Σ Input = Σ Output + Fee`, and that all inputs exist in the Merkle Tree.
+        *   *Why STARKs?* Quantum-resistant, highly scalable, and require no trusted setup (unlike SNARKs).
+*   **On-Chain Verification:**
+    *   Find the `Transfer` event on-chain.
+    *   **Privacy check:** You will only see the `proof` blob, a list of `nullifiers` (spent signals), and a list of `new_commitments`.
+    *   Notice that the transaction **does not contain any amounts, asset IDs, or recipient addresses**. To an outside observer, this transaction is completely opaque.
 
-#### 3. Unshield (S → U)
-You move shielded STRK back to the public domain.
-*   **Action**: Enter a public Starknet address (`0x...`) and tap Unshield.
-*   **Under the hood**: You select a single shielded note. The app derives its `nullifier` and generates a STARK proof where the `recipient`, `amount`, and `asset_id` are *public inputs*. This binds the proof exactly to this withdrawal.
-*   **On-chain**: The contract calls `unshield(proof, nullifier, recipient, amount, asset_id)`. It verifies the proof, records the nullifier, and transfers the public ERC-20 STRK to the recipient.
-*   **Verify**: Check Voyager for the `Unshielded` event. The nullifier is permanent; if you try to unshield the same note again, the contract will panic with `Note already spent`. You can verify this manually:
-```bash
-sncast --profile katana_test call \
-  --contract-address 0x20768453fb80c8958fdf9ceefa7f5af63db232fe2b8e9e36ead825301c4de74 \
-  --function is_nullifier_spent \
-  --calldata <NULLIFIER_HEX>
-# Returns 1 (true)
-```
+#### Stage 3: Sync & Discovery
+**What happens:** The recipient's wallet detects the incoming private transfer.
+*   **Action:** The wallet's `SyncEngine` polls the RPC every 5 seconds for new `Transfer` events.
+*   **Algorithms:**
+    *   **Trial Decryption:** The wallet attempts to decrypt the `encrypted_memo` field of every new commitment using its own `IVK`.
+        *   `if decrypt(ciphertext, IVK) == success: add_to_wallet_balance()`
+        *   *Why Trial Decryption?* Since the destination address is not on-chain, the wallet must attempt to unlock every new note. If it succeeds, the note belongs to the user.
+*   **Verification:**
+    *   The recipient's wallet balance updates automatically. Without the `IVK`, no one else can decrypt the memo or know who received the transfer.
+
+#### Stage 4: Unshield (S → U)
+**What happens:** Withdrawing shielded STRK back to a public Starknet account.
+*   **Action:** User inputs a public Starknet address (`0x...`) and an amount matching a single note, then taps **Unshield**.
+*   **Algorithms:**
+    *   **Nullifier Generation:** Same as private transfer, a nullifier is generated to destroy the shielded note.
+    *   **STARK Proof:** The proof asserts the note's validity and, crucially, binds the `recipient_address` and `amount` as **public inputs**.
+        *   *Why Public Inputs?* This cryptographically forces the smart contract to transfer the exact `amount` to the exact `recipient_address`. A malicious front-runner cannot alter the destination without invalidating the cryptographic proof.
+*   **On-Chain Verification:**
+    *   Find the `Unshielded` event on-chain.
+    *   **Privacy check:** You will see the `recipient` address, the `amount`, and the `nullifier`. However, you **cannot cryptographically link** this `nullifier` back to the original `commitment` from Stage 1. The identity of the depositor is completely severed from the identity of the withdrawer.
+    *   Call `is_nullifier_spent(nf)` on the contract; it will return `1` (true).
 
 ---
 
