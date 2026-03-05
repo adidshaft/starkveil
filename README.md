@@ -4,6 +4,40 @@ StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial
 
 **Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. **Phase 21:** Activity feed now correctly shows `+`/`−` prefixes and green/red/amber colours for all 5 event kinds (deposit, receive, private send, unshield, public send). Activity tab is fully scrollable from the bottom nav. All views use a consistent glassmorphic design (frosted cards, purple glow borders, green/red accent icons). **QR Scanner:** No reinstall required — grant camera permission once in iOS Settings → Privacy → Camera.
 
+---
+
+## 🏆 Quick Start for Hackathon Judges
+
+Welcome! StarkVeil is built to be evaluated quickly without complex backend or prover setups. **The PrivacyPool smart contract is already deployed on Sepolia**, and the **Rust zero-knowledge prover is pre-compiled** in the repository.
+
+You do **not** need to install Cairo, Scarb, run a local node, or compile Rust code to test the application. 
+
+### How to test right now:
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/adidshaft/starkveil.git
+   cd starkveil
+   ```
+
+2. **Open the project in Xcode:**
+   ```bash
+   open ios/StarkVeil/StarkVeil.xcodeproj
+   ```
+
+3. **Run the App:**
+   - **Easiest Method (No Apple Developer Account needed):** Select any iOS Simulator (e.g., *iPhone 15 Pro*) at the top of Xcode and press **⌘R** (Run). 
+   - **On a Physical iPhone (Requires free Apple ID):** Click on the `StarkVeil` project in the left sidebar → **Signing & Capabilities** → Check *Automatically manage signing* → Select your Personal Team → Choose your plugged-in iPhone at the top → Press **⌘R**.
+
+4. **Fund & Test:**
+   - Open the app, create a wallet, tap your avatar, and click **Activate Wallet** to deploy your account on-chain.
+   - Fund your address with Sepolia STRK from the [Starknet Faucet](https://starknet-faucet.vercel.app/).
+   - Tap **Activate**, and you are ready to Shield and send Private Transfers!
+
+*(See [Comprehensive Technical Verification](#-comprehensive-technical-verification) below to see exactly how to verify the cryptographic proofs on-chain).*
+
+---
+
 ## Project Structure
 - **`contracts/`**: The Cairo smart contract that handles the appending of the UTXO Poseidon hashes and validates STARK nullifier proofs to prevent double-spending.
 - **`prover/`**: A standard Rust Cargo library that compiles to static binaries (`libstarkveil_prover.a`) leveraging FFI `C` strings to pass Proofs to Swift.
