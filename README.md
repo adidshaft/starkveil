@@ -5,8 +5,6 @@
 <p align="center">
   <code>Cairo</code> &nbsp;&middot;&nbsp; <code>STARKs</code> &nbsp;&middot;&nbsp; <code>Shielded Privacy</code> &nbsp;&middot;&nbsp; <code>iOS Wallet</code>
 </p>
-  <img src="logos/starkveil_logo_white.png" alt="StarkVeil Logo" width="150" height="auto" style="border-radius: 22%;">
-</div>
 
 # StarkVeil: Native iOS Shielded Pool
 
