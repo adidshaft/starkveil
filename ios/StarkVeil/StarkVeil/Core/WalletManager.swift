@@ -279,10 +279,29 @@ class WalletManager: ObservableObject {
         activityEvents.removeAll()
     }
 
+    /// Parses a note value that may be decimal ("1000000000000000000") or hex ("0xde0b6b3a7640000").
+    /// Returns the raw wei value as a Double, or nil if unparseable.
+    /// executeShield stores values as hex; SyncEngine stores them as decimal.
+    static func weiDouble(from valueStr: String) -> Double? {
+        if valueStr.hasPrefix("0x") || valueStr.hasPrefix("0X") {
+            let hex = String(valueStr.dropFirst(2))
+            guard let n = UInt64(hex, radix: 16) else { return nil }
+            return Double(n)
+        }
+        return Double(valueStr)
+    }
+
+    /// Normalises a note value to a 0x-prefixed hex felt252 string for felt_from_hex() in Rust.
+    /// SyncEngine stores values as decimal ("1000000000000000000"); the Rust prover needs hex.
+    static func valueToHex(_ v: String) -> String {
+        if v.hasPrefix("0x") || v.hasPrefix("0X") { return v }
+        if let n = UInt64(v) { return "0x" + String(n, radix: 16) }
+        return v  // best-effort fallback for astronomically large values
+    }
+
     private func recomputeBalance() {
-        // Note values are stored as raw wei strings (e.g. "100000000000000000" = 0.1 STRK).
-        // Divide by 1e18 so `balance` is always expressed in STRK.
-        balance = notes.compactMap { Double($0.value) }.reduce(0, +) / 1e18
+        // Note values may be decimal or hex — use weiDouble() to handle both formats.
+        balance = notes.compactMap { WalletManager.weiDouble(from: $0.value) }.reduce(0, +) / 1e18
     }
 
     /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
@@ -424,8 +443,8 @@ class WalletManager: ObservableObject {
         // note.value is raw wei (e.g. "100000000000000000" for 0.1 STRK).
         // amount is in STRK (e.g. 0.1). Convert wei -> STRK before comparing.
         guard let inputNote = notes.first(where: {
-            guard let weiDouble = Double($0.value) else { return false }
-            let strk = weiDouble / 1e18
+            guard let weiVal = WalletManager.weiDouble(from: $0.value) else { return false }
+            let strk = weiVal / 1e18
             return abs(strk - amount) < 1e-9
         }) ?? selectNotes(for: amount).first
         else { throw ProverError.noMatchingNote }
@@ -566,7 +585,7 @@ class WalletManager: ObservableObject {
         }
 
         let proofInputNote = Note(
-            value: inputNote.value,
+            value: WalletManager.valueToHex(inputNote.value),
             asset_id: safeAssetId,
             owner_ivk: inputNote.owner_ivk,
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
@@ -574,16 +593,11 @@ class WalletManager: ObservableObject {
             spending_key: spendingKeyHex,
             memo: inputNote.memo,
             leaf_position: storedNote.leafPosition.map { UInt32($0) },
-            merkle_path: merklePath
+            merkle_path: merklePath,
+            commitment: storedNote.commitment.isEmpty ? nil : storedNote.commitment
         )
-        let amountU256Low: String
-        if let weiInt = Int(inputNote.value) {
-            amountU256Low = "0x" + String(weiInt, radix: 16)
-        } else if inputNote.value.hasPrefix("0x") {
-            amountU256Low = inputNote.value
-        } else {
-            amountU256Low = "0x0"
-        }
+        // Normalise value to hex for the u256 low-part calldata field.
+        let amountU256Low = WalletManager.valueToHex(inputNote.value)
         let amountU256High = "0x0"
 
         // Build an UnshieldInput for the Rust FFI, binding the proof to the current Merkle root
@@ -969,11 +983,11 @@ class WalletManager: ObservableObject {
         let amountWeiTarget = amount * 1e18
         guard let inputNote = notes
             .filter({
-                guard let w = Double($0.value) else { return false }
+                guard let w = WalletManager.weiDouble(from: $0.value) else { return false }
                 guard !pendingCommitments.contains($0.nonce) else { return false }
                 return w >= amountWeiTarget - 1.0   // small rounding epsilon
             })
-            .sorted(by: { (Double($0.value) ?? 0) < (Double($1.value) ?? 0) })
+            .sorted(by: { (WalletManager.weiDouble(from: $0.value) ?? 0) < (WalletManager.weiDouble(from: $1.value) ?? 0) })
             .first
         else { throw ProverError.insufficientBalance }
 
@@ -1059,7 +1073,7 @@ class WalletManager: ObservableObject {
         // Convert requested amount to raw wei. Use UInt64 arithmetic to avoid
         // floating-point rounding when computing change.
         let amountWeiVal  = UInt64(amountWeiTarget)   // recipient gets this
-        let inputWeiVal   = UInt64(Double(inputNote.value) ?? 0)
+        let inputWeiVal   = UInt64(WalletManager.weiDouble(from: inputNote.value) ?? 0)
         let changeWeiVal  = inputWeiVal > amountWeiVal ? inputWeiVal - amountWeiVal : 0
         let amountWeiStr  = String(amountWeiVal)
         let changeWeiStr  = String(changeWeiVal)
@@ -1172,9 +1186,13 @@ class WalletManager: ObservableObject {
             }
         }
 
-        // Generate the proof payload (mock proof + real nullifiers/commitments)
+        // Generate the proof payload (real STARK proof via Rust FFI)
+        // value must be 0x-prefixed hex for felt_from_hex() in Rust.
+        // SyncEngine stores decimal ("1000000000000000000"); normalise here.
+        // commitment bypasses recomputation from potentially inconsistent stored fields:
+        // SyncEngine stores nonce = on-chain commitment hash (not the original random nonce).
         let proofInputNote = Note(
-            value: inputNote.value,
+            value: WalletManager.valueToHex(inputNote.value),
             asset_id: safeAssetId,
             owner_ivk: ivkHex,
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
@@ -1182,7 +1200,8 @@ class WalletManager: ObservableObject {
             spending_key: spendingKeyHex,
             memo: inputNote.memo,
             leaf_position: storedNote.leafPosition.map { UInt32($0) },
-            merkle_path: xferMerklePath
+            merkle_path: xferMerklePath,
+            commitment: storedNote.commitment.isEmpty ? nil : storedNote.commitment
         )
         let proofStart = Date()
         let proofPayload = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
@@ -1322,7 +1341,7 @@ class WalletManager: ObservableObject {
         var selected: [Note] = []
         var accumulated = 0.0
         for note in notes {
-            guard let weiVal = Double(note.value) else { continue }
+            guard let weiVal = WalletManager.weiDouble(from: note.value) else { continue }
             let strkVal = weiVal / 1e18
             selected.append(note)
             accumulated += strkVal

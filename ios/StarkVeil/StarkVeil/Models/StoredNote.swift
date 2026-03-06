@@ -55,6 +55,6 @@ final class StoredNote {
         return Note(value: value, asset_id: asset_id, owner_ivk: owner_ivk,
                     owner_pubkey: owner_pubkey, nonce: nonce, spending_key: nil,
                     memo: memo, leaf_position: leafPosition.map { UInt32($0) },
-                    merkle_path: path)
+                    merkle_path: path, commitment: commitment.isEmpty ? nil : commitment)
     }
 }

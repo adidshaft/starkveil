@@ -12,6 +12,11 @@ pub struct Note {
     // Phase 20 (Stwo integration): Merkle witness fields for real proof generation
     pub leaf_position: Option<u32>,         // Position of this note's commitment in the Merkle tree
     pub merkle_path: Option<Vec<String>>,   // 20 sibling hashes (hex felt252), root→leaf order
+    // Commitment override: if present, used as the Merkle leaf directly instead of
+    // recomputing from (value, asset_id, owner_pubkey, nonce).
+    // Required because SyncEngine stores value as decimal (not hex) and nonce = on-chain
+    // commitment hash (not the original random nonce), so recomputation is always wrong.
+    pub commitment: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

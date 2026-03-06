@@ -19,6 +19,25 @@ struct Note: Codable {
     // Phase 20 (Stwo integration): Merkle witness fields for real STARK proof generation
     let leaf_position: UInt32?
     let merkle_path: [String]?
+    // Commitment override: if non-nil, the Rust prover uses this as the Merkle leaf
+    // directly instead of recomputing Poseidon(value, asset, owner, nonce).
+    // Required because SyncEngine stores value as decimal and nonce = on-chain commitment.
+    let commitment: String?
+
+    init(value: String, asset_id: String, owner_ivk: String, owner_pubkey: String,
+         nonce: String, spending_key: String?, memo: String,
+         leaf_position: UInt32?, merkle_path: [String]?, commitment: String? = nil) {
+        self.value = value
+        self.asset_id = asset_id
+        self.owner_ivk = owner_ivk
+        self.owner_pubkey = owner_pubkey
+        self.nonce = nonce
+        self.spending_key = spending_key
+        self.memo = memo
+        self.leaf_position = leaf_position
+        self.merkle_path = merkle_path
+        self.commitment = commitment
+    }
 }
 
 struct Nullifier: Codable {

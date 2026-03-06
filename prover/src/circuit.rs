@@ -56,6 +56,11 @@ pub struct NoteWitness {
     pub spending_key: FieldElement,
     pub leaf_position: u32,
     pub merkle_path: [FieldElement; 20],
+    /// Pre-computed Merkle leaf commitment. When Some, used directly instead of
+    /// recomputing from (value, asset_id, owner_pubkey, nonce). This is needed because
+    /// SyncEngine stores nonce = on-chain commitment hash and value as a decimal string,
+    /// so recomputation would produce the wrong leaf and therefore the wrong root.
+    pub commitment: Option<FieldElement>,
 }
 
 /// Witness for a single output note
@@ -157,10 +162,12 @@ pub fn generate_transfer_stark_proof(
 
     // Validate input notes
     for (i, note) in input_notes.iter().enumerate() {
-        // 1a. Compute commitment
-        let commitment = compute_commitment(
+        // 1a. Use pre-computed commitment if available, otherwise recompute from fields.
+        // SyncEngine stores nonce = on-chain commitment hash (not the original random nonce)
+        // and value as a decimal string (not hex), so recomputation produces the wrong leaf.
+        let commitment = note.commitment.unwrap_or_else(|| compute_commitment(
             &note.value, &note.asset_id, &note.owner_pubkey, &note.nonce,
-        );
+        ));
 
         // 1b. Verify Merkle membership
         let computed_root = verify_merkle_path(
@@ -316,11 +323,11 @@ pub fn generate_unshield_stark_proof(
     asset: &FieldElement,
     historic_root: &FieldElement,
 ) -> Result<(StarkVeilProof, FieldElement), CircuitError> {
-    // Compute commitment
-    let commitment = compute_commitment(
+    // Use pre-computed commitment if available, otherwise compute from fields.
+    let commitment = input_note.commitment.unwrap_or_else(|| compute_commitment(
         &input_note.value, &input_note.asset_id,
         &input_note.owner_pubkey, &input_note.nonce,
-    );
+    ));
 
     // Verify Merkle membership
     let computed_root = verify_merkle_path(
@@ -493,6 +500,7 @@ mod tests {
             spending_key: sk,
             leaf_position: 0,
             merkle_path: path,
+            commitment: None,
         };
 
         let fee = FieldElement::from(10u64);
@@ -554,6 +562,7 @@ mod tests {
             spending_key: sk,
             leaf_position: 0,
             merkle_path: path,
+            commitment: None,
         };
 
         let fee = FieldElement::from(10u64);

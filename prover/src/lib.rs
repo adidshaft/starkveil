@@ -409,21 +409,35 @@ pub unsafe extern "C" fn generate_transfer_proof(
             Err(e) => return ffi_error(&format!("Input note {} merkle_path error: {}", i, e)),
         };
 
+        // Parse commitment override if provided.
+        // When present, this is the actual on-chain leaf hash and is used directly
+        // instead of recomputing from (value, asset_id, owner_pubkey, nonce).
+        let commitment_override = match note.commitment.as_deref() {
+            Some(c) if !c.is_empty() && c != "0x" => match felt_from_hex(c) {
+                Ok(f) => Some(f),
+                Err(e) => return ffi_error(&format!("Input note {} commitment parse error: {}", i, e)),
+            },
+            _ => None,
+        };
+
         input_witnesses.push(NoteWitness {
             value, asset_id: asset, owner_pubkey: owner, nonce,
             spending_key: sk, leaf_position: leaf_pos, merkle_path,
+            commitment: commitment_override,
         });
     }
 
     // ── Derive historic root from the first note's Merkle path ──────────────
-    let first_commitment = circuit::compute_commitment(
+    // Use the stored commitment override if available so the root matches what
+    // the Cairo contract stored when the note was shielded.
+    let first_commitment_leaf = input_witnesses[0].commitment.unwrap_or_else(|| circuit::compute_commitment(
         &input_witnesses[0].value,
         &input_witnesses[0].asset_id,
         &input_witnesses[0].owner_pubkey,
         &input_witnesses[0].nonce,
-    );
+    ));
     let historic_root = circuit::verify_merkle_path(
-        &first_commitment,
+        &first_commitment_leaf,
         input_witnesses[0].leaf_position,
         &input_witnesses[0].merkle_path,
     );
@@ -562,9 +576,18 @@ pub unsafe extern "C" fn generate_unshield_proof(
         Err(e) => return ffi_error(&format!("merkle_path error: {}", e)),
     };
 
+    let commitment_override = match note.commitment.as_deref() {
+        Some(c) if !c.is_empty() && c != "0x" => match felt_from_hex(c) {
+            Ok(f) => Some(f),
+            Err(e) => return ffi_error(&format!("Unshield commitment parse error: {}", e)),
+        },
+        _ => None,
+    };
+
     let witness = NoteWitness {
         value, asset_id: asset, owner_pubkey: owner, nonce,
         spending_key: sk, leaf_position: leaf_pos, merkle_path,
+        commitment: commitment_override,
     };
 
     let proof_result = circuit::generate_unshield_stark_proof(
