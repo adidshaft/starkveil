@@ -744,9 +744,10 @@ class RPCClient {
         return path
     }
 
-    /// Scans all Shielded events to find the Merkle leaf index for a specific commitment.
-    /// Last-resort fallback when a stored note has leafPosition = nil (e.g. stored before
-    /// the keccak256 selector fix, so fetchMerkleNextIndex returned nil at shield time).
+    /// Scans all Shielded AND Transfer events to find the Merkle leaf index for a commitment.
+    /// Shielded events carry an explicit leaf_index in data[4] (ground truth).
+    /// Transfer events carry new_commitments in data[1..N]; their leaf indices are derived
+    /// by maintaining a running insertion counter anchored to Shielded event leaf_indices.
     func fetchLeafPositionByCommitment(
         rpcUrl: URL,
         contractAddress: String,
@@ -755,15 +756,32 @@ class RPCClient {
         let latestBlock = (try? await fetchLatestBlockNumber(rpcUrl: rpcUrl)) ?? 0
         guard latestBlock > 0 else { return nil }
         let shieldedSelector = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"
+        let transferSelector  = "0x99cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9"
         let events = try await fetchEvents(rpcUrl: rpcUrl, fromBlock: 0, toBlock: latestBlock,
                                            contractAddress: contractAddress)
         let normalised = commitment.lowercased()
+        // Running leaf count — anchored to Shielded events' leaf_index (ground truth),
+        // incremented by Transfer events' commitment count.
+        var runningCount = 0
         for event in events {
-            guard event.keys.first == shieldedSelector, event.data.count >= 5 else { continue }
-            if event.data[3].lowercased() == normalised {
+            guard let selector = event.keys.first else { continue }
+            if selector == shieldedSelector, event.data.count >= 5 {
                 let leafHex = event.data[4]
                 let leafStr = leafHex.hasPrefix("0x") ? String(leafHex.dropFirst(2)) : leafHex
-                if let idx = Int(leafStr, radix: 16) { return idx }
+                if let idx = Int(leafStr, radix: 16) {
+                    runningCount = idx + 1   // anchor running count to ground truth
+                    if event.data[3].lowercased() == normalised { return idx }
+                }
+            } else if selector == transferSelector, event.data.count >= 1 {
+                // data[0] = commitments_len; data[1..N] = commitments
+                let countHex = event.data[0]
+                let countStr = countHex.hasPrefix("0x") ? String(countHex.dropFirst(2)) : countHex
+                let count = Int(countStr, radix: 16) ?? 0
+                guard count > 0, event.data.count >= 1 + count else { continue }
+                for i in 0..<count {
+                    if event.data[1 + i].lowercased() == normalised { return runningCount + i }
+                }
+                runningCount += count
             }
         }
         return nil

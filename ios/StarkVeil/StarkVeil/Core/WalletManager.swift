@@ -1112,7 +1112,7 @@ class WalletManager: ObservableObject {
             let cc = try StarkVeilProver.noteCommitment(
                 value: changeWeiStr,
                 assetId: safeAssetId,
-                ownerPubkey: ivkHex,       // sender's raw IVK, not clamped
+                ownerPubkey: keys.publicKey.hexString,  // real STARK EC pubkey so circuit passes
                 nonce: changeNonceStr
             )
             changeCommitment = cc
@@ -1120,7 +1120,7 @@ class WalletManager: ObservableObject {
                 value: changeWeiStr,
                 asset_id: "0x5354524b",
                 owner_ivk: ivkHex,
-                owner_pubkey: ivkHex,      // raw IVK
+                owner_pubkey: keys.publicKey.hexString,  // real STARK EC pubkey — circuit checks get_public_key(sk)==owner_pubkey
                 nonce: changeNonceStr,
                 spending_key: nil,
                 memo: "Change",
@@ -1313,7 +1313,8 @@ class WalletManager: ObservableObject {
         let descriptor = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
         if let allStored = try? ctx.fetch(descriptor),
            let match = allStored.first(where: {
-               // Prefer commitment match; fall back to value+asset if no commitment stored
+               // Prefer explicit commitment field; fall back to nonce (legacy path); then value+asset
+               if let nc = note.commitment, !nc.isEmpty, $0.commitment == nc { return true }
                if !note.nonce.isEmpty && $0.commitment == note.nonce { return true }
                return $0.value == note.value && $0.asset_id == note.asset_id &&
                       $0.owner_ivk == note.owner_ivk
