@@ -1,0 +1,28 @@
+I need you to perform a comprehensive security audit of the StarkVeil iOS shielded wallet codebase. 
+Our last formal audit concluded at Phase 8. Since then, we have implemented massive cryptographic, state-management, and network-level changes across Phases 9 through 20. 
+
+Please analyze the codebase against the following updated threat model and focus areas:
+
+### 1. Cryptography & FFI Boundary (Rust <-> Swift)
+- **Files to check:** `prover/src/lib.rs`, `ios/StarkVeil/StarkVeil/Core/StarkVeilProver.swift`, `ios/StarkVeil/StarkVeil/Core/NoteEncryption.swift`
+- Check for memory leaks or dangling pointers in the `C` string FFI passing.
+- Evaluate the deterministic `k` generation for ECDSA signatures using the `rfc6979` crate. Are there any edge cases where `k` could be biased or reused?
+- Evaluate the `clampToFelt252` logic. Does masking the top 3 bits for STARK field prime compatibility weaken the key generation or introduce biases?
+- Verify AES-256-GCM encryption/decryption of the note memos. Is the HKDF-SHA256 derivation of the `encryptionKey` from the `IVK` using `commitment` as `info` cryptographically sound?
+
+### 2. State Isolation & Persistence
+- **Files to check:** `ios/StarkVeil/StarkVeil/Core/WalletManager.swift`, `ios/StarkVeil/StarkVeil/Core/SyncEngine.swift`, `ios/StarkVeil/StarkVeil/Models/StoredNote.swift`
+- Analyze the `SwiftData` persistence layer. We use `isPendingSpend` to prevent double-spending while a tx is inflight, using a `defer` block to revert it on failure. Is this robust against app crashes or rapid backgrounding?
+- Evaluate network isolation. When switching between Mainnet and Sepolia, we call `clearStore()` wrapped in `MainActor.assumeIsolated`. Does this definitively prevent cross-network UTXO leakage or phantom balances?
+
+### 3. V3 Transaction Migration & RPC Polling
+- **Files to check:** `ios/StarkVeil/StarkVeil/Core/RPCClient.swift`, `ios/StarkVeil/StarkVeil/Core/StarknetTransactionBuilder.swift`
+- We migrated to Starknet V3 transactions (RPC v0.8). Verify the Poseidon hash computation for V3 `INVOKE` and `DEPLOY_ACCOUNT`, specifically the placement of the `tip` and the 60-bit prefix encoding of the `ResourceBounds`.
+- The `SyncEngine` polls every 5 seconds. Evaluate the `syncEpoch` and `isFetchingRPC` concurrency guards. Are there any race conditions where old network events could be injected into a new network's SwiftData context?
+
+### 4. Smart Contract Mechanics (Cairo)
+- **Files to check:** `contracts/src/privacy_pool.cairo`
+- Evaluate the `is_nullifier_spent` check order. It was moved to execute before STARK proof generation to prevent griefing.
+- Verify the `calldata` array length prefixes (`[len, ...elements]`) for the `private_transfer` proofs, nullifiers, and new_commitments.
+
+Please format your response by severely grading the code. Output findings categorized as [CRITICAL], [HIGH], [MEDIUM], or [LOW], and explicitly provide the code snippets required to patch the vulnerabilities.

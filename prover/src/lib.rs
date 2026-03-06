@@ -198,7 +198,9 @@ pub unsafe extern "C" fn stark_sign_transaction(
 
     for attempt in 0u16..256 {
         // Feed counter into additional_data so each attempt produces a different k
-        let extra = [attempt as u8];
+        // M-3 fix: use 2-byte LE representation to avoid u16→u8 truncation
+        // (attempt=256 would wrap to 0, colliding with attempt=0)
+        let extra = attempt.to_le_bytes();
         let mut drbg = HmacDrbg::<Sha256>::new(&pk_bytes, &msg_bytes, &extra);
         let mut k_bytes = [0u8; 32];
         drbg.fill_bytes(&mut k_bytes);

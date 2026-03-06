@@ -23,10 +23,10 @@ const char* stark_get_public_key(const char* private_key_hex);
 /// Output: JSON "Ok" hex felt252 or "Error"
 const char* stark_pedersen_hash(const char* a_hex, const char* b_hex);
 
-/// Computes Poseidon hash of two felt252 inputs.
-/// Input:  hex felt252 a, hex felt252 b
+/// Computes Poseidon hash of a list of felt252 inputs (variable arity).
+/// Input:  JSON array of hex felt252 strings, e.g. "[\"0x1\", \"0x2\"]"
 /// Output: JSON "Ok" hex felt252 or "Error"
-const char* stark_poseidon_hash(const char* a_hex, const char* b_hex);
+const char* stark_poseidon_hash(const char* elements_json);
 
 /// Derives an Incoming Viewing Key (IVK) from a spending key.
 /// IVK = Poseidon("StarkVeilIVK", spending_key)

@@ -86,8 +86,9 @@ class RPCClient {
         for url in urls {
             do {
                 var req = URLRequest(url: url)
-                req.httpMethod  = "POST"
-                req.httpBody    = body
+                req.httpMethod       = "POST"
+                req.httpBody         = body
+                req.timeoutInterval  = 15   // L-2 fix: explicit timeout, matching performRequest
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
                 let (data, response) = try await urlSession.data(for: req)
@@ -566,7 +567,8 @@ class RPCClient {
                 let calldata: [String]
             }
         }
-        let selector = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
+        // C-2 fix: correct sn_keccak("is_nullifier_spent") — verified via sha3_256
+        let selector = "0x243759dd8b145b290cb0ebd7289fcba6c154362acb1c778339ec59a2be5527b"
         let payload = RPCRequest(method: "starknet_call",
                                  params: Params(request: Params.CallReq(
                                      contract_address: contractAddress,

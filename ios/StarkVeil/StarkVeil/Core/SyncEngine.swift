@@ -108,7 +108,11 @@ class SyncEngine: ObservableObject {
         } else {
             ctx.insert(SyncCheckpoint(networkId: networkId, lastBlockNumber: block))
         }
-        try? ctx.save()
+        do {
+            try ctx.save()
+        } catch {
+            print("[SyncEngine] CRITICAL: checkpoint save failed for block \(block): \(error)")
+        }
     }
 
     func loadCheckpoint(for networkId: String) -> Int {
@@ -193,7 +197,22 @@ class SyncEngine: ObservableObject {
                         return
                     }
 
-                    print("[SyncEngine] decryptIVK=\(ivkHex)")
+                    #if DEBUG
+                    print("[SyncEngine] decryptIVK=\(ivkHex.prefix(10))…")
+                    #endif
+
+                    // H-2 fix: pre-derive the STARK EC public key for owner_pubkey in notes.
+                    // This must match the commitment scheme: Poseidon(value, asset, pubkey, nonce)
+                    let starkPubkeyForNotes: String = {
+                        if let seed = KeychainManager.masterSeed(),
+                           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
+                            let clamped = WalletManager.clampToFelt252(keys.privateKey.hexString)
+                            if let pub = try? StarkVeilProver.starkPublicKey(privateKeyHex: clamped) {
+                                return pub
+                            }
+                        }
+                        return WalletManager.clampToFelt252(ivkHex) // fallback
+                    }()
                     // ── Event selector hashes (sn_keccak of event name) ──────────
                     // Used to differentiate Shielded vs Transfer vs Unshielded events.
                     let shieldedSelector  = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"
@@ -216,8 +235,30 @@ class SyncEngine: ObservableObject {
                             let commitment = event.data[3]
                             let encMemoHex = event.data.count >= 6 ? event.data[5] : nil
 
-                            guard let amountInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) else { continue }
-                            let amountDouble = Double(amountInt) / 1e18
+                            // C-3 fix: Use Decimal to parse hex amounts > 9.22 STRK (Int overflow)
+                            let amountLowHex  = event.data[1]
+                            let amountHighHex = event.data[2]
+                            let lowStr  = amountLowHex.hasPrefix("0x")  ? String(amountLowHex.dropFirst(2))  : amountLowHex
+                            let highStr = amountHighHex.hasPrefix("0x") ? String(amountHighHex.dropFirst(2)) : amountHighHex
+
+                            var weiDecimal = Decimal(0)
+                            for ch in lowStr {
+                                weiDecimal *= 16
+                                if let d = Int(String(ch), radix: 16) { weiDecimal += Decimal(d) }
+                            }
+                            // Handle amount.high (u128 high bits) — amounts > 2^128 wei are astronomically large
+                            if highStr != "0" {
+                                var highDecimal = Decimal(0)
+                                for ch in highStr {
+                                    highDecimal *= 16
+                                    if let d = Int(String(ch), radix: 16) { highDecimal += Decimal(d) }
+                                }
+                                // high * 2^128 — Decimal can handle this without overflow
+                                let shift128 = Decimal(sign: .plus, exponent: 0, significand: Decimal(string: "340282366920938463463374607431768211456")!)
+                                weiDecimal += highDecimal * shift128
+                            }
+                            guard weiDecimal > 0 else { continue }
+                            let amountDouble = NSDecimalNumber(decimal: weiDecimal / Decimal(sign: .plus, exponent: 18, significand: 1)).doubleValue
                             guard amountDouble > 0 else { continue }
 
                             var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
@@ -229,22 +270,20 @@ class SyncEngine: ObservableObject {
                                 }
                             }
 
-                            let clampedIVK = WalletManager.clampToFelt252(ivkHex)
-                            let rawWei: String
-                            if let weiInt = Int(amountHex.replacingOccurrences(of: "0x", with: ""), radix: 16) {
-                                rawWei = String(weiInt)
-                            } else {
-                                rawWei = amountHex
-                            }
+                            // H-2 fix: Use STARK EC public key (not IVK) as owner_pubkey
+                            // to match commitment scheme: Poseidon(value, asset, pubkey, nonce)
+                            let rawWei = (weiDecimal as NSDecimalNumber).stringValue
 
                             let note = Note(
                                 value: rawWei,
                                 asset_id: "0x5354524b",
                                 owner_ivk: ivkHex,
-                                owner_pubkey: clampedIVK,
+                                owner_pubkey: starkPubkeyForNotes,
                                 nonce: commitment,
                                 spending_key: nil,
-                                memo: decryptedMemo ?? "Shielded deposit"
+                                memo: decryptedMemo ?? "Shielded deposit",
+                                leaf_position: nil,
+                                merkle_path: nil
                             )
                             decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
 
@@ -272,26 +311,34 @@ class SyncEngine: ObservableObject {
                             // We try each commitment individually since keystream is commitment-specific.
                             for i in 0..<commitmentsLen {
                                 let commitment = event.data[1 + i]
-                                let clampedIVK = WalletManager.clampToFelt252(ivkHex)
+                                // H-2 fix: Use STARK EC public key (not IVK) as owner_pubkey
+                                #if DEBUG
                                 print("[SyncEngine] Transfer trial-decrypt commitment=\(commitment.prefix(10))… encMemo=\(encMemoHex.prefix(10))…")
+                                #endif
                                 guard let decrypted = try? NoteEncryption.decryptCompact(
                                     encMemoHex,
                                     ivkHex: ivkHex,
                                     commitment: commitment
                                 ) else {
+                                    #if DEBUG
                                     print("[SyncEngine] Transfer decryptCompact → nil (not ours)")
+                                    #endif
                                     continue   // not addressed to us
                                 }
+                                #if DEBUG
                                 print("[SyncEngine] Transfer decryptCompact SUCCESS value=\(decrypted.valueWei) memo=\(decrypted.memo)")
+                                #endif
 
                                 let note = Note(
                                     value: decrypted.valueWei.isEmpty ? "0" : decrypted.valueWei,
                                     asset_id: "0x5354524b",
                                     owner_ivk: ivkHex,
-                                    owner_pubkey: clampedIVK,
+                                    owner_pubkey: starkPubkeyForNotes,
                                     nonce: commitment,
                                     spending_key: nil,
-                                    memo: decrypted.memo.isEmpty ? "Private transfer" : "Private: \(decrypted.memo)"
+                                    memo: decrypted.memo.isEmpty ? "Private transfer" : "Private: \(decrypted.memo)",
+                                    leaf_position: nil,
+                                    merkle_path: nil
                                 )
                                 decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))
                             }

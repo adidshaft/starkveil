@@ -78,16 +78,18 @@ class WalletManager: ObservableObject {
             notes = []; recomputeBalance(); return
         }
 
-        let pending = all.filter { $0.isPendingSpend }
-        if !pending.isEmpty {
-            pending.forEach { ctx.delete($0) }
-            do { try ctx.save() }
-            catch { print("[WalletManager] CRITICAL: Could not purge pending-spend notes: \(error)") }
-        }
-
         notes = all.filter { !$0.isPendingSpend }.map { $0.toNote() }
         recomputeBalance()
         loadEvents(for: networkId)
+
+        // H-4 fix: schedule async recovery of pending notes (can't do async in init/loadNotes)
+        // This runs after the main actor settles, checking each pending note on-chain.
+        let pendingNotes = all.filter { $0.isPendingSpend }
+        if !pendingNotes.isEmpty {
+            Task { @MainActor [weak self] in
+                await self?.recoverPendingNotes(pendingNotes)
+            }
+        }
     }
 
     // MARK: - Event Loading
@@ -484,6 +486,16 @@ class WalletManager: ObservableObject {
             throw ProverError.noteAlreadySpent
         }
 
+        // H-3 fix: use generateUnshieldProof (not generateTransferProof).
+        // generateUnshieldProof binds (amount, asset, recipient) as public inputs,
+        // which is required for the unshield circuit. generateTransferProof creates
+        // change notes and uses a completely different proof structure.
+
+        // C-4 fix: include Merkle witness data (leaf_position + merkle_path) from StoredNote
+        let merklePath: [String]? = storedNote.merklePathJSON
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+
         let proofInputNote = Note(
             value: inputNote.value,
             asset_id: safeAssetId,
@@ -491,35 +503,42 @@ class WalletManager: ObservableObject {
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce,
             spending_key: spendingKeyHex,
-            memo: inputNote.memo
+            memo: inputNote.memo,
+            leaf_position: storedNote.leafPosition.map { UInt32($0) },
+            merkle_path: merklePath
         )
-        // Generate proof off the main actor (Rust FFI blocks the thread)
-        let result = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
-
-        // Use the note's stored raw wei value directly as the calldata amount.
-        // inputNote.value is already the canonical wei integer (e.g. "100000000000000000"),
-        // re-deriving from the Double `amount` causes floating-point precision loss.
         let amountU256Low: String
         if let weiInt = Int(inputNote.value) {
             amountU256Low = "0x" + String(weiInt, radix: 16)
         } else if inputNote.value.hasPrefix("0x") {
-            amountU256Low = inputNote.value  // already hex
+            amountU256Low = inputNote.value
         } else {
             amountU256Low = "0x0"
         }
         let amountU256High = "0x0"
 
-        let proofCalldata = result.proof.flatMap { [$0] }
+        // Build an UnshieldInput for the Rust FFI
+        let unshieldResult = try await StarkVeilProver.generateUnshieldProof(
+            note: proofInputNote,
+            amountLow: amountU256Low,
+            amountHigh: amountU256High,
+            recipient: recipient,
+            asset: safeAssetId,
+            historicRoot: "0x0"  // The prover derives historic_root from the Merkle path
+        )
+
+        let proofCalldata = unshieldResult.proof.flatMap { [$0] }
 
         // Starknet Keccak-250 selector for PrivacyPool.unshield()
         // Computed: starknet_keccak("unshield")
         let unshieldSelector = "0x3079978d9c0e08ca0a86356d70a7eea2408b5d3882425b2f30a60818eac5b1b"
 
         // Build the complete flat payload first, then derive calldata_len from it.
-        // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id]
-        // NOTE: asset here must be the STRK ERC-20 ContractAddress (safeAssetId), NOT the short string.
+        // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id, historic_root]
+        let unshieldNullifier = unshieldResult.nullifier
+        let historicRoot = unshieldResult.historic_root
         var callPayload: [String] = [String(format: "0x%x", proofCalldata.count)] + proofCalldata
-        callPayload += [nullifier, recipient, amountU256Low, amountU256High, safeAssetId]
+        callPayload += [unshieldNullifier, recipient, amountU256Low, amountU256High, safeAssetId, historicRoot]
 
         print("[Unshield] nullifier=\(nullifier)")
         print("[Unshield] recipient=\(recipient)")
@@ -699,7 +718,9 @@ class WalletManager: ObservableObject {
             owner_pubkey: ownerPubkeyHex,
             nonce: noteNonce,
             spending_key: nil,
-            memo: memo.isEmpty ? "shielded deposit" : memo
+            memo: memo.isEmpty ? "shielded deposit" : memo,
+            leaf_position: nil,
+            merkle_path: nil
         )
 
 
@@ -992,7 +1013,9 @@ class WalletManager: ObservableObject {
                 owner_pubkey: ivkHex,      // raw IVK
                 nonce: changeNonceStr,
                 spending_key: nil,
-                memo: "Change"
+                memo: "Change",
+                leaf_position: nil,
+                merkle_path: nil
             )
             print("[PrivateTransfer] changeCommitment=\(cc) changeWei=\(changeWeiStr)")
         }
@@ -1021,7 +1044,11 @@ class WalletManager: ObservableObject {
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce,
             spending_key: spendingKeyHex,
-            memo: inputNote.memo
+            memo: inputNote.memo,
+            leaf_position: storedNote.leafPosition.map { UInt32($0) },
+            merkle_path: storedNote.merklePathJSON
+                .flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
         )
         let proofPayload = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
 
@@ -1150,9 +1177,91 @@ class WalletManager: ObservableObject {
         return selected
     }
 
+    // MARK: - H-4 fix: Recover pending-spend notes
+
+    /// Checks each pending-spend note's nullifier on-chain:
+    ///   - If spent → the transaction succeeded, safe to delete the note.
+    ///   - If NOT spent → the transaction failed/timed out, restore the note to balance.
+    /// Called from loadNotes via a Task after init completes.
+    func recoverPendingNotes(_ pendingNotes: [StoredNote]) async {
+        let ctx = persistence.context
+        let currentNetwork = NetworkEnvironment.allCases.first(where: { $0.rawValue == activeNetworkId }) ?? .sepolia
+        let currentRpcUrl = currentNetwork.rpcUrl
+        let currentContractAddress = currentNetwork.contractAddress
+
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            // Can't derive keys — conservatively restore all pending notes
+            for note in pendingNotes {
+                note.isPendingSpend = false
+            }
+            try? ctx.save()
+            let netId = activeNetworkId
+            notes = (try? ctx.fetch(FetchDescriptor<StoredNote>(
+                predicate: #Predicate { $0.networkId == netId }
+            )))?.map { $0.toNote() } ?? notes
+            recomputeBalance()
+            return
+        }
+
+        let spendingKeyHex = WalletManager.clampToFelt252(keys.privateKey.hexString)
+
+        for storedNote in pendingNotes {
+            let commitment = storedNote.commitment
+            guard !commitment.isEmpty else {
+                // No commitment → can't derive nullifier; restore conservatively
+                storedNote.isPendingSpend = false
+                continue
+            }
+
+            do {
+                let nullifier = try StarkVeilProver.noteNullifier(
+                    commitment: commitment, spendingKey: spendingKeyHex
+                )
+                let spent = await RPCClient().isNullifierSpent(
+                    rpcUrl: currentRpcUrl,
+                    contractAddress: currentContractAddress,
+                    nullifier: nullifier
+                )
+                if spent {
+                    // Transaction succeeded — delete the note
+                    ctx.delete(storedNote)
+                    #if DEBUG
+                    print("[WalletManager] H-4: Pending note SPENT on-chain, deleting: \(commitment.prefix(12))…")
+                    #endif
+                } else {
+                    // Transaction failed — restore the note
+                    storedNote.isPendingSpend = false
+                    #if DEBUG
+                    print("[WalletManager] H-4: Pending note NOT spent, restoring: \(commitment.prefix(12))…")
+                    #endif
+                }
+            } catch {
+                // Nullifier derivation failed — restore conservatively
+                storedNote.isPendingSpend = false
+                print("[WalletManager] H-4: Could not check nullifier for \(commitment.prefix(12))…: \(error)")
+            }
+        }
+
+        do { try ctx.save() }
+        catch { print("[WalletManager] CRITICAL: Could not save pending note recovery: \(error)") }
+
+        // Refresh in-memory notes from the updated SwiftData state
+        let netId = activeNetworkId
+        let descriptor = FetchDescriptor<StoredNote>(
+            predicate: #Predicate { $0.networkId == netId },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        notes = ((try? ctx.fetch(descriptor)) ?? [])
+            .filter { !$0.isPendingSpend }
+            .map { $0.toNote() }
+        recomputeBalance()
+    }
+
     /// Clamps an arbitrary 32-byte hex private key to a valid felt252 value.
     /// The STARK field prime is slightly less than 2^252, so we clear the top
-    /// 3 bits of the most-significant byte to guarantee the result is in-range.
+    /// 5 bits of the most-significant byte to guarantee the result is in-range
+    /// (< 2^251, safely below the STARK prime ≈ 2^251.006).
     /// This matches the clamping that Cairo / starknet-rs apply internally.
     /// Privacy: the mathematical operation does not weaken the key — it only
     /// ensures the value can be encoded as a Cairo felt252 field element.
@@ -1164,7 +1273,7 @@ class WalletManager: ObservableObject {
             UInt8(padded[padded.index(padded.startIndex, offsetBy: $0) ..< padded.index(padded.startIndex, offsetBy: $0 + 2)], radix: 16)
         }
         if bytes.count == 32 {
-            bytes[0] &= 0x07  // clear top 3 bits → value < 2^253, safely < STARK prime
+            bytes[0] &= 0x07  // clear top 5 bits → value < 2^251, safely < STARK prime
         }
         return "0x" + bytes.map { String(format: "%02x", $0) }.joined()
     }

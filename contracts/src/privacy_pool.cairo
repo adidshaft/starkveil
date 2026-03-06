@@ -73,6 +73,23 @@ pub mod PrivacyPool {
         /// The proof format is:
         ///   [proof_length, constraint_hash, trace_hash, decommitment_hash,
         ///    fri_alpha, fri_layer_0, fri_layer_1, fri_final, ...merkle_paths]
+        /// ⚠️  HACKATHON / SEPOLIA ONLY — Mock Verification ⚠️
+        /// This function performs Poseidon hash-chain consistency checks on the proof
+        /// structure but does NOT perform full Stwo STARK arithmetic verification.
+        /// A production deployment MUST replace this with the Herodotus Integrity
+        /// FactRegistry (https://blockchain-lab.github.io/stark-anatomy/) or an
+        /// equivalent on-chain STARK verifier contract.
+        ///
+        /// The verification checks:
+        ///   1. decommitment_hash == Poseidon(constraint_hash, trace_hash)
+        ///   2. fri_alpha == Poseidon(decommitment_hash, historic_root)
+        ///   3. FRI layer consistency via Poseidon
+        ///   4. Proof commitment structure
+        ///
+        /// What it does NOT check:
+        ///   - Actual polynomial evaluation correctness
+        ///   - FRI proximity proofs
+        ///   - Trace execution validity
         fn verify_proof(ref self: ContractState, proof: Span<felt252>, public_inputs: Span<felt252>) -> bool {
             // Proof must have at least 8 core elements (length + 7 hashes)
             if proof.len() < 8 {
@@ -294,26 +311,35 @@ pub mod PrivacyPool {
                 m += 1;
             };
 
-            // 2. Verify Stwo STARK proof before any state mutation.
-            assert(self.verify_proof(proof.span(), public_inputs.span()), 'Invalid proof');
-
-            // 3. Mark nullifiers spent.
+            // M-1 fix: Check nullifiers BEFORE verify_proof (cheap storage reads first,
+            // expensive proof verification second). Also prevents wasted gas.
             let mut i = 0;
             loop {
                 if i == nullifiers.len() { break; }
                 let nf = *nullifiers.at(i);
                 assert(!self.nullifiers.read(nf), 'Note already spent');
-                self.nullifiers.write(nf, true);
                 i += 1;
             };
 
-            // 4. Insert new output commitments.
+            // 2. Verify Stwo STARK proof before any state mutation.
+            assert(self.verify_proof(proof.span(), public_inputs.span()), 'Invalid proof');
+
+            // 3. Mark nullifiers spent (write phase — after all validation passes).
             let mut j = 0;
             loop {
-                if j == new_commitments.len() { break; }
-                let commitment = *new_commitments.at(j);
-                self.insert_leaf(commitment);
+                if j == nullifiers.len() { break; }
+                let nf = *nullifiers.at(j);
+                self.nullifiers.write(nf, true);
                 j += 1;
+            };
+
+            // 4. Insert new output commitments.
+            let mut n = 0;
+            loop {
+                if n == new_commitments.len() { break; }
+                let commitment = *new_commitments.at(n);
+                self.insert_leaf(commitment);
+                n += 1;
             };
 
             self.emit(Event::Transfer(Transfer {
@@ -337,6 +363,9 @@ pub mod PrivacyPool {
             // Phase 20 (L-5 fix): Validate the proof's Merkle root.
             assert(self.historic_roots.read(historic_root), 'Invalid historic root');
 
+            // M-1 fix: Check nullifier BEFORE verify_proof (cheap read first)
+            assert(!self.nullifiers.read(nullifier), 'Note already spent');
+
             // 1. Verify Stwo STARK proof binds to the unshield amount, asset, recipient,
             //    and Merkle root. All five values are public inputs so the circuit commits
             //    to exactly what is being withdrawn and which tree state was proven.
@@ -348,7 +377,6 @@ pub mod PrivacyPool {
             public_inputs.append(asset.into());
             assert(self.verify_proof(proof.span(), public_inputs.span()), 'Invalid proof');
 
-            assert(!self.nullifiers.read(nullifier), 'Note already spent');
             self.nullifiers.write(nullifier, true);
 
             let erc20 = IERC20Dispatcher { contract_address: asset };

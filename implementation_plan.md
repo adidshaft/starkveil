@@ -11,7 +11,7 @@ The core philosophy of StarkVeil is **trustless computation** utilizing Starknet
 
 *   **Shielded Notes Model**: Adopt a StarkVeil Shielded Note model to handle private notes.
     *   **Note structure**: `Poseidon(value, asset_id, owner_ivk, memo)`
-    *   **Nullifiers (Double-spend protection)**: `Poseidon(spending_key, note_position)`
+    *   **Nullifiers (Double-spend protection)**: `Poseidon(commitment, spending_key)` — where commitment = `Poseidon(value, asset_id, owner_pubkey, nonce)`
 *   **Keys and Stealth Addresses**:
     *   **Spending Key**: Derived from the user's seed phrase, safeguarded in the iOS Secure Enclave.
     *   **Viewing Key**: Stored in iCloud Keychain (user-opt-in). Extracts decryptable incoming notes, and provides selective auditability compliance without risking funds.

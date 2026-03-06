@@ -190,8 +190,9 @@ enum StarknetTransactionBuilder {
         let amountPadded = String(repeating: "0", count: max(0, 16 - amountHex.count)) + amountHex
         let pricePadded  = String(repeating: "0", count: max(0, 32 - priceHex.count))  + priceHex
 
-        // Resource name in hex, no leading 0x — already a 60-bit value, fits in 15 hex chars
-        let nameHex = String(name, radix: 16)
+        // H-1 fix: pad name to exactly 15 hex chars (60 bits) per Starknet V3 spec
+        let rawName = String(name, radix: 16)
+        let nameHex = String(repeating: "0", count: max(0, 15 - rawName.count)) + rawName
 
         // Concatenate: name(15 hex) | amount(16 hex) | price(32 hex) = 63 hex = 252 bits
         return "0x" + nameHex + amountPadded + pricePadded
