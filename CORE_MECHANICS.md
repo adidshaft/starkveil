@@ -300,3 +300,22 @@ The STARK field prime is `P = 2^251 + 17·2^192 + 1` (slightly less than `2^252`
 
 **Files modified:** `NetworkEnvironment.swift`, `WalletManager.swift`, `ShieldView.swift`, `ReceiveView.swift`, `Scarb.toml`.
 
+---
+
+### Phase 21: Real Circle STARK Prover & Verifier (Stwo / M31) (Completed)
+
+Replaced the structural "mock" STARK verifier with a production-grade Circle STARK proving system built on the `stwo` framework.
+
+#### 1. Rust Stwo Prover (`prover/src/stark/`)
+The client-side iOS SDK now synthesizes real STARK proofs locally using the `M31` (base) and `QM31` (complex quad) prime fields.
+- **Trace Layout**: 68 `M31` columns encoding Poseidon hash I/O limbs, Merkle direction bits, step types, and public value bindings.
+- **Circle FRI**: Twin-point folding formula `f_fold(x) = (f(P)+f(P'))/2 + α·(f(P)-f(P'))/(2y)`. Perfect power of 2 (order `p+1 = 2^31`) means no root-of-unity search is required.
+- **AIR Constraints**: Enforces `commitment = Poseidon(value, asset, owner, nonce)`, `nullifier = Poseidon(commitment, key)`, Merkle authentication, and `Σin = Σout + fee`.
+
+#### 2. Cairo 1.x Verifier (`contracts/src/stwo_verifier.cairo`)
+A complete, optimized Cairo smart contract replacing the `verify_proof` hackathon mock.
+- **Fiat-Shamir Transcript**: Reconstructs the Poseidon sponge identical to the prover.
+- **FRI Verification**: Checks layer commitments, derives query indices, and validates Merkle decommitments for each FRI layer.
+- **Poseidon Oracle**: Spot-checks random execution traces against the claimed hash inputs.
+
+**Outcome**: The `PrivacyPool` contract now cryptographically verifies true zero-knowledge proofs on Sepolia, guaranteeing balance conservation and mathematical ownership for all Private Transfers and Unshields.

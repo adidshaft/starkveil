@@ -195,18 +195,14 @@ Resolved 2 Critical + 4 High + 5 Medium vulnerabilities from the Phase 15 audit:
 
 ---
 
-## Current State of the Product (Phase 18)
-StarkVeil is fully engineered through Phase 18.
-1. The **Smart Contracts** compile with real Poseidon commitments, nullifiers, and encrypted memo emission. Mock verifier (`verify_proof = true`) pending Stwo integration.
-2. The **Rust Prover SDK** exports 7 FFI functions with RFC-6979 deterministic signing inside Rust.
-3. The **SwiftUI Application** is a fully standalone privacy wallet with correct Cairo ABI encoding for all 3 operations (Shield, Private Transfer, Unshield).
-4. **30+ critical/high/medium bugs** resolved across 8+ audit passes.
-5. **All transaction types** are Starknet RPC v0.8 compliant V3 format with correct u256 encoding.
+## Phase 21: Real Circle STARKs (Stwo Integration) (Completed)
+- **Action**: Completely replaced the `verify_proof = true` mock placeholder with a full-blown Algebraic Intermediate Representation (AIR) and Circle STARK prover in Rust, matched by a Cairo 1.x FRI Verifier on-chain.
+- **Decision**: Used the `stwo` framework focusing on the `M31`/`QM31` fields. The prover generates a 68-column execution trace, evaluates the twin-point FRI folding scheme over the Circle domain, and commits the polynomial evaluations into a Poseidon-sponge Fiat-Shamir transcript.
+- **Why**: The MVP relied on a mock verifier to test the iOS → Starknet integration pipeline. To achieve true ZK privacy, real polynomial constraints must mathematically bind the Merkle leaf existence, nullifier derivation, and balance conservation `Σin = Σout + fee`. The contract now natively verifies these proofs.
 
 ## Post-Hackathon Roadmap
-1. **Stwo client-side ZK prover circuit** — replace `verify_proof = true` with real on-device Stwo proving. No API, fully private.
-2. **End-to-end Shield → PrivateTransfer → Unshield** live test on Sepolia with real STRK.
-3. **QR code** for account address display.
-4. **Multi-RPC fallback** — cycle through Lava, Blast, Nethermind automatically.
-5. **Mainnet contract deployment**.
-6. **Starknet ID** integration to replace `anon.stark` placeholder.
+1. **End-to-end Shield → PrivateTransfer → Unshield** live test on Sepolia with real STRK.
+2. **QR code** for account address display.
+3. **Multi-RPC fallback** — cycle through Lava, Blast, Nethermind automatically.
+4. **Mainnet contract deployment**.
+5. **Starknet ID** integration to replace `anon.stark` placeholder.
