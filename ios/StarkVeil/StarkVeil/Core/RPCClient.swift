@@ -741,6 +741,31 @@ class RPCClient {
         return path
     }
 
+    /// Scans all Shielded events to find the Merkle leaf index for a specific commitment.
+    /// Last-resort fallback when a stored note has leafPosition = nil (e.g. stored before
+    /// the keccak256 selector fix, so fetchMerkleNextIndex returned nil at shield time).
+    func fetchLeafPositionByCommitment(
+        rpcUrl: URL,
+        contractAddress: String,
+        commitment: String
+    ) async throws -> Int? {
+        let latestBlock = (try? await fetchLatestBlockNumber(rpcUrl: rpcUrl)) ?? 0
+        guard latestBlock > 0 else { return nil }
+        let shieldedSelector = "0x3905e8c1752e2e2f768e4ed493f6d4df0bcaaf86ad37ef5bc7c2bbf18fe8083"
+        let events = try await fetchEvents(rpcUrl: rpcUrl, fromBlock: 0, toBlock: latestBlock,
+                                           contractAddress: contractAddress)
+        let normalised = commitment.lowercased()
+        for event in events {
+            guard event.keys.first == shieldedSelector, event.data.count >= 5 else { continue }
+            if event.data[3].lowercased() == normalised {
+                let leafHex = event.data[4]
+                let leafStr = leafHex.hasPrefix("0x") ? String(leafHex.dropFirst(2)) : leafHex
+                if let idx = Int(leafStr, radix: 16) { return idx }
+            }
+        }
+        return nil
+    }
+
     /// Raw `starknet_getStorageAt` call — used as fallback when view functions are unavailable.
     private func fetchStorageAt(rpcUrl: URL, contractAddress: String, storageKey: String) async throws -> String {
         struct Params: Encodable {

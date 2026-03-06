@@ -160,6 +160,28 @@ class WalletManager: ObservableObject {
             return stored.contains { $0.commitment == commitKey && !$0.commitment.isEmpty }
         }()
         guard !isDuplicate && !isLegacyDup && !isStoredCommitmentDup else {
+            // Leaf-position back-patch: executeShield stores the note with leaf_position=nil because
+            // fetchMerkleNextIndex runs right after broadcast — before the tx is indexed. When
+            // SyncEngine later picks up the Shielded event it carries the real leaf index (data[4]).
+            // Patch the stored note here so executePrivateTransfer/executeUnshield can build a witness.
+            if let newLeaf = note.leaf_position, !commitKey.isEmpty {
+                let pCtx = persistence.context
+                let netId = activeNetworkId
+                let pDesc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
+                if let stored = try? pCtx.fetch(pDesc),
+                   let match = stored.first(where: { $0.commitment == commitKey && $0.leafPosition == nil }) {
+                    match.leafPosition = Int(newLeaf)
+                    try? pCtx.save()
+                    // Mirror into in-memory notes so the current session benefits immediately
+                    if let idx = notes.firstIndex(where: { $0.nonce == match.nonce || $0.nonce == commitKey }) {
+                        let old = notes[idx]
+                        notes[idx] = Note(value: old.value, asset_id: old.asset_id, owner_ivk: old.owner_ivk,
+                                          owner_pubkey: old.owner_pubkey, nonce: old.nonce, spending_key: old.spending_key,
+                                          memo: old.memo, leaf_position: newLeaf, merkle_path: old.merkle_path)
+                    }
+                    print("[WalletManager] Patched leafPosition=\(newLeaf) on stored note commitment=\(commitKey.prefix(12))…")
+                }
+            }
             print("[WalletManager] Duplicate note ignored (commitment: \(commitKey.prefix(16)))")
             return
         }
@@ -502,6 +524,20 @@ class WalletManager: ObservableObject {
         // Falls back to storage read if the view function isn't available on this deployment.
         let rpcClient = RPCClient()
         let fetchedRoot = (try? await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)) ?? "0x0"
+
+        // Last-resort leaf_position recovery for unshield (same issue as private transfer)
+        if storedNote.leafPosition == nil, !storedNote.commitment.isEmpty {
+            print("[Unshield] leafPosition nil — scanning events for commitment \(storedNote.commitment.prefix(12))…")
+            if let found = try? await rpcClient.fetchLeafPositionByCommitment(
+                rpcUrl: rpcUrl,
+                contractAddress: contractAddress,
+                commitment: storedNote.commitment
+            ) {
+                storedNote.leafPosition = found
+                try? ctx.save()
+                print("[Unshield] Recovered leafPosition=\(found) from on-chain events")
+            }
+        }
 
         if merklePath == nil, let leafIdx = storedNote.leafPosition {
             merklePath = try? await rpcClient.fetchMerkleWitness(
@@ -1077,6 +1113,23 @@ class WalletManager: ObservableObject {
         var xferMerklePath: [String]? = storedNote.merklePathJSON
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+
+        // Last-resort leaf_position recovery: if the note was stored before the selector fix,
+        // leafPosition may be nil. Scan on-chain Shielded events to find the correct index.
+        if storedNote.leafPosition == nil, !storedNote.commitment.isEmpty {
+            print("[PrivateTransfer] leafPosition nil — scanning events for commitment \(storedNote.commitment.prefix(12))…")
+            if let found = try? await xferRPCClient.fetchLeafPositionByCommitment(
+                rpcUrl: rpcUrl,
+                contractAddress: contractAddress,
+                commitment: storedNote.commitment
+            ) {
+                storedNote.leafPosition = found
+                let saveCtx = persistence.context
+                try? saveCtx.save()
+                print("[PrivateTransfer] Recovered leafPosition=\(found) from on-chain events")
+            }
+        }
+
         if xferMerklePath == nil, let leafIdx = storedNote.leafPosition {
             xferMerklePath = try? await xferRPCClient.fetchMerkleWitness(
                 rpcUrl: rpcUrl,
