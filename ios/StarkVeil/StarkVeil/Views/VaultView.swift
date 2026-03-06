@@ -66,6 +66,12 @@ struct VaultView: View {
                             .padding(.top, 4)
                     }
                     .padding(.bottom, 60)
+                case .prove:
+                    ScrollView(showsIndicators: false) {
+                        ProverActivityView()
+                            .padding(.top, 4)
+                    }
+                    .padding(.bottom, 60)
                 case .settings:
                     SettingsView(onWalletDeleted: onWalletDeleted)
                         .padding(.bottom, 60)

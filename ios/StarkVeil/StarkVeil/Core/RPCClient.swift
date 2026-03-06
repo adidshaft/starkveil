@@ -729,9 +729,12 @@ class RPCClient {
                                                     String(format: "0x%x", siblingIdx)])))
             let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
             if let error = response.error {
-                // get_mt_node not available on this contract — return what we have
-                print("[RPCClient] fetchMerkleWitness: entrypoint missing at level \(level), using zero hashes")
-                while path.count < 20 { path.append("0x0") }
+                // get_mt_node not available on this contract (old class).
+                // Return only the levels we already fetched. The Rust prover's
+                // parse_merkle_path fills missing levels with pre-computed ZERO_HASHES_20
+                // constants, which ARE the correct empty-sibling values. Padding with "0x0"
+                // here would override those constants with plain zeros, producing a wrong root.
+                print("[RPCClient] fetchMerkleWitness: entrypoint missing at level \(level), returning \(path.count) collected levels")
                 return path
             }
             guard let node = response.result?.first else { throw RPCClientError.invalidResponse }

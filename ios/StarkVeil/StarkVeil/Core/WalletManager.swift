@@ -41,6 +41,9 @@ class WalletManager: ObservableObject {
     // Activity feed — persisted, shown in the Activity tab
     @Published private(set) var activityEvents: [ActivityEvent] = []
 
+    // Prover feed — persisted, shown in the Prove tab
+    @Published private(set) var proverEvents: [ProverEvent] = []
+
     @Published private(set) var isProving: Bool = false
     @Published private(set) var isUnshielding: Bool = false
     @Published private(set) var isShielding: Bool = false
@@ -101,6 +104,12 @@ class WalletManager: ObservableObject {
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
         activityEvents = (try? ctx.fetch(descriptor)) ?? []
+
+        let proverDesc = FetchDescriptor<ProverEvent>(
+            predicate: #Predicate { $0.networkId == networkId },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        proverEvents = (try? ctx.fetch(proverDesc)) ?? []
     }
 
     @discardableResult
@@ -245,10 +254,12 @@ class WalletManager: ObservableObject {
         // L-WIPE-SILENT fix: use proper do-catch so a fetch failure is not silently swallowed,
         // leaving stale notes/events visible on next launch despite Keychain being wiped.
         do {
-            let allNotes  = try ctx.fetch(FetchDescriptor<StoredNote>())
-            let allEvents = try ctx.fetch(FetchDescriptor<ActivityEvent>())
+            let allNotes   = try ctx.fetch(FetchDescriptor<StoredNote>())
+            let allEvents  = try ctx.fetch(FetchDescriptor<ActivityEvent>())
+            let allProofs  = try ctx.fetch(FetchDescriptor<ProverEvent>())
             allNotes.forEach  { ctx.delete($0) }
             allEvents.forEach { ctx.delete($0) }
+            allProofs.forEach { ctx.delete($0) }
             try ctx.save()
         } catch {
             print("[WalletManager] CRITICAL: deleteAllNetworksData SwiftData wipe failed: \(error). Manual clear required.")
@@ -576,6 +587,7 @@ class WalletManager: ObservableObject {
         let amountU256High = "0x0"
 
         // Build an UnshieldInput for the Rust FFI, binding the proof to the current Merkle root
+        let unshieldProofStart = Date()
         let unshieldResult = try await StarkVeilProver.generateUnshieldProof(
             note: proofInputNote,
             amountLow: amountU256Low,
@@ -584,6 +596,21 @@ class WalletManager: ObservableObject {
             asset: safeAssetId,
             historicRoot: fetchedRoot
         )
+        let unshieldProofDurationMs = Date().timeIntervalSince(unshieldProofStart) * 1000
+
+        // Record Stwo prover event for the Prove tab
+        let unshieldProverEvent = ProverEvent(
+            kind: .unshield,
+            proofElementCount: unshieldResult.proof.count,
+            noteCommitment: storedNote.commitment,
+            historicRoot: unshieldResult.historic_root,
+            nullifier: unshieldResult.nullifier,
+            durationMs: unshieldProofDurationMs,
+            networkId: activeNetworkId
+        )
+        persistence.context.insert(unshieldProverEvent)
+        try? persistence.context.save()
+        proverEvents.insert(unshieldProverEvent, at: 0)
 
         let proofCalldata = unshieldResult.proof.flatMap { [$0] }
 
@@ -1157,7 +1184,23 @@ class WalletManager: ObservableObject {
             leaf_position: storedNote.leafPosition.map { UInt32($0) },
             merkle_path: xferMerklePath
         )
+        let proofStart = Date()
         let proofPayload = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
+        let proofDurationMs = Date().timeIntervalSince(proofStart) * 1000
+
+        // Record Stwo prover event for the Prove tab
+        let xferProverEvent = ProverEvent(
+            kind: .transfer,
+            proofElementCount: proofPayload.proof.count,
+            noteCommitment: storedNote.commitment,
+            historicRoot: proofPayload.historic_root,
+            nullifier: nullifier,
+            durationMs: proofDurationMs,
+            networkId: activeNetworkId
+        )
+        persistence.context.insert(xferProverEvent)
+        try? persistence.context.save()
+        proverEvents.insert(xferProverEvent, at: 0)
 
         // fee: u256 = (low=0x0, high=0x0) — mock verifier doesn't enforce fees
         var callPayload: [String] = []
@@ -1169,7 +1212,10 @@ class WalletManager: ObservableObject {
         callPayload += [String(format: "0x%x", newCommits.count)] + newCommits
         callPayload += ["0x0", "0x0"]                                            // fee: u256
         callPayload += [encryptedMemo]                                            // encrypted_memo: felt252
-        callPayload += [xferFetchedRoot]                                          // historic_root: felt252
+        // Use the root the proof was baked against — NOT the separately fetched xferFetchedRoot.
+        // The proof's fri_alpha = Poseidon(decommitment_hash, historic_root) binds to this exact
+        // root. Passing a different root makes verify_proof return false → error 41.
+        callPayload += [proofPayload.historic_root]                               // historic_root: felt252
 
         print("[PrivateTransfer] nullifier=\(nullifier)")
         print("[PrivateTransfer] outputCommitment=\(outputCommitment)")

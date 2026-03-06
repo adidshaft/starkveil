@@ -1,22 +1,24 @@
 import SwiftUI
 
 enum BottomNavTab: CaseIterable {
-    case wallet, swap, activity, settings
+    case wallet, swap, activity, prove, settings
 
     var label: String {
         switch self {
-        case .wallet: return "Wallet"
-        case .swap: return "Swap"
+        case .wallet:   return "Wallet"
+        case .swap:     return "Swap"
         case .activity: return "Activity"
+        case .prove:    return "Prove"
         case .settings: return "Settings"
         }
     }
 
     var icon: String {
         switch self {
-        case .wallet: return "wallet.bifold.fill"
-        case .swap: return "arrow.left.arrow.right"
+        case .wallet:   return "wallet.bifold.fill"
+        case .swap:     return "arrow.left.arrow.right"
         case .activity: return "clock.arrow.circlepath"
+        case .prove:    return "cpu"
         case .settings: return "gearshape.fill"
         }
     }

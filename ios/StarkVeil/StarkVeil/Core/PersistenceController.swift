@@ -15,7 +15,7 @@ class PersistenceController {
     let context: ModelContext
 
     private init() {
-        let schema = Schema([StoredNote.self, SyncCheckpoint.self, ActivityEvent.self])
+        let schema = Schema([StoredNote.self, SyncCheckpoint.self, ActivityEvent.self, ProverEvent.self])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
             container = try ModelContainer(for: schema, configurations: [config])
