@@ -51,19 +51,15 @@ class RPCClient {
         let bodyData = try encoder.encode(AnyEncodable(payload))
         request.httpBody = bodyData
 
-        // ── DEBUG (commented out to reduce console noise — uncomment for RPC debugging) ──
-        // if let bodyStr = String(data: bodyData, encoding: .utf8) {
-        //     print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
-        // }
-        // ─────────────────────────────────────────────────────────────────────
+        if let bodyStr = String(data: bodyData, encoding: .utf8) {
+            print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
+        }
 
         let (data, response) = try await urlSession.data(for: request)
 
-        // ── DEBUG (commented out to reduce console noise — uncomment for RPC debugging) ──
-        // if let respStr = String(data: data, encoding: .utf8) {
-        //     print("[RPC←] \(respStr)")
-        // }
-        // ─────────────────────────────────────────────────────────────────────
+        if let respStr = String(data: data, encoding: .utf8) {
+            print("[RPC←] \(respStr)")
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw RPCClientError.invalidResponse
@@ -260,8 +256,11 @@ class RPCClient {
             nonce: nonce,
             resource_bounds: resourceBounds
         )
+        // Starknet RPC v0.9.0 OpenRPC spec defines a single NAMED param "invoke_transaction".
+        // Sending [tx] (positional array) works on some nodes but fails on others.
+        struct AddInvokeTxParams: Encodable { let invoke_transaction: InvokeTransactionV3 }
         let payload = RPCRequest(method: "starknet_addInvokeTransaction",
-                                 params: [tx])
+                                 params: AddInvokeTxParams(invoke_transaction: tx))
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -307,8 +306,9 @@ class RPCClient {
             class_hash: classHash,
             resource_bounds: resourceBounds
         )
+        struct AddDeployTxParams: Encodable { let deploy_account_transaction: DeployAccountTxV3 }
         let payload = RPCRequest(method: "starknet_addDeployAccountTransaction",
-                                 params: [tx])
+                                 params: AddDeployTxParams(deploy_account_transaction: tx))
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -353,9 +353,12 @@ class RPCClient {
             let block_id: String = "latest"
             let simulation_flags: [String] = ["SKIP_VALIDATE"]
         }
+        // Starknet v0.14 requires non-zero L2 gas bounds in every INVOKE_V3 transaction,
+        // including estimation requests. SKIP_VALIDATE bypasses balance checks so using
+        // the same large ceiling as L1/L1_DATA is safe here.
         let maxBounds = ResourceBoundsMapping(
             l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
-            l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
+            l2_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
             l1_data_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff")
         )
         let tx = EstimateInvokeTx(
