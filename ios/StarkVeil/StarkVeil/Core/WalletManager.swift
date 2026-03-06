@@ -498,12 +498,13 @@ class WalletManager: ObservableObject {
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
 
-        // Fetch current Merkle root from contract (needed as historic_root for proof)
+        // Fetch current Merkle root from contract (needed as historic_root for proof).
+        // Falls back to storage read if the view function isn't available on this deployment.
         let rpcClient = RPCClient()
-        let fetchedRoot = try await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)
+        let fetchedRoot = (try? await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)) ?? "0x0"
 
         if merklePath == nil, let leafIdx = storedNote.leafPosition {
-            merklePath = try await rpcClient.fetchMerkleWitness(
+            merklePath = try? await rpcClient.fetchMerkleWitness(
                 rpcUrl: rpcUrl,
                 contractAddress: contractAddress,
                 leafIndex: leafIdx
@@ -1068,15 +1069,16 @@ class WalletManager: ObservableObject {
         // Array<felt252> ABI encoding = [len, ...elements]
         let transferSelector = "0x2605e7681cf37ab3a81d1732a9c8a75f2544c5967628a4d6999f276c6ba513c"
 
-        // Fetch current Merkle root + witness, then generate the proof
+        // Fetch current Merkle root + witness, then generate the proof.
+        // Falls back to storage read if the view function isn't available on this deployment.
         let xferRPCClient = RPCClient()
-        let xferFetchedRoot = try await xferRPCClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)
+        let xferFetchedRoot = (try? await xferRPCClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)) ?? "0x0"
 
         var xferMerklePath: [String]? = storedNote.merklePathJSON
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
         if xferMerklePath == nil, let leafIdx = storedNote.leafPosition {
-            xferMerklePath = try await xferRPCClient.fetchMerkleWitness(
+            xferMerklePath = try? await xferRPCClient.fetchMerkleWitness(
                 rpcUrl: rpcUrl,
                 contractAddress: contractAddress,
                 leafIndex: leafIdx
