@@ -30,4 +30,14 @@ pub trait IPrivacyPool<TContractState> {
         asset: ContractAddress,
         historic_root: felt252
     );
+
+    /// Returns the current Merkle tree root.
+    fn get_mt_root(self: @TContractState) -> felt252;
+
+    /// Returns the index of the next leaf to be inserted (== current leaf count).
+    fn get_mt_next_index(self: @TContractState) -> u32;
+
+    /// Returns the Merkle tree node at (level, index). Level 0 = leaf layer.
+    /// Returns the appropriate zero-hash for unwritten nodes.
+    fn get_mt_node(self: @TContractState, level: u32, index: u32) -> felt252;
 }

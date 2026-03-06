@@ -638,5 +638,99 @@ class RPCClient {
         let parts = response.result ?? ["0x0", "0x0"]
         return parts.joined(separator: ", ")
     }
+
+    // MARK: - Merkle tree view functions
+
+    /// Calls PrivacyPool.get_mt_root() → felt252 (the current Merkle root).
+    func fetchMerkleRoot(rpcUrl: URL, contractAddress: String) async throws -> String {
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let selector = "0x34e1f6ccad7ba626a9a12656055d13dbc3dbe08b5fdd1b13bb984513e5c49e7"
+        let payload = RPCRequest(method: "starknet_call",
+                                 params: Params(request: Params.CallReq(
+                                     contract_address: contractAddress,
+                                     entry_point_selector: selector,
+                                     calldata: []),
+                                     block_id: "latest"))
+        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        guard let result = response.result?.first else { throw RPCClientError.invalidResponse }
+        return result
+    }
+
+    /// Calls PrivacyPool.get_mt_next_index() → u32 (== current leaf count).
+    func fetchMerkleNextIndex(rpcUrl: URL, contractAddress: String) async throws -> Int {
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let selector = "0x22e07a6cee1e27832c24b95fde1d86aaebe8a37ebde24b8a77409974189c403"
+        let payload = RPCRequest(method: "starknet_call",
+                                 params: Params(request: Params.CallReq(
+                                     contract_address: contractAddress,
+                                     entry_point_selector: selector,
+                                     calldata: []),
+                                     block_id: "latest"))
+        let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+        if let error = response.error {
+            throw RPCClientError.serverError(code: error.code, message: error.message)
+        }
+        guard let hexStr = response.result?.first else { throw RPCClientError.invalidResponse }
+        guard let value = Int(hexStr.dropFirst(2), radix: 16) else { throw RPCClientError.invalidResponse }
+        return value
+    }
+
+    /// Reconstructs the 20-level Merkle authentication path for a leaf.
+    /// Returns an array of 20 sibling hashes (level 0 = leaf layer sibling first).
+    func fetchMerkleWitness(
+        rpcUrl: URL,
+        contractAddress: String,
+        leafIndex: Int
+    ) async throws -> [String] {
+        struct Params: Encodable {
+            let request: CallReq
+            let block_id: String
+            struct CallReq: Encodable {
+                let contract_address: String
+                let entry_point_selector: String
+                let calldata: [String]
+            }
+        }
+        let selector = "0x1b6655c07d9f2d2f3ac69005a4decc09f45872b8aeca43238a42b2ddfc222b"
+        var path: [String] = []
+        var idx = leafIndex
+        for level in 0..<20 {
+            let siblingIdx = idx ^ 1
+            let payload = RPCRequest(method: "starknet_call",
+                                     params: Params(request: Params.CallReq(
+                                         contract_address: contractAddress,
+                                         entry_point_selector: selector,
+                                         calldata: [String(format: "0x%x", level),
+                                                    String(format: "0x%x", siblingIdx)]),
+                                         block_id: "latest"))
+            let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
+            if let error = response.error {
+                throw RPCClientError.serverError(code: error.code, message: error.message)
+            }
+            guard let node = response.result?.first else { throw RPCClientError.invalidResponse }
+            path.append(node)
+            idx >>= 1
+        }
+        return path
+    }
 }
 

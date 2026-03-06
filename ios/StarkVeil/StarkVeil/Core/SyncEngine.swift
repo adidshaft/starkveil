@@ -274,6 +274,11 @@ class SyncEngine: ObservableObject {
                             // to match commitment scheme: Poseidon(value, asset, pubkey, nonce)
                             let rawWei = (weiDecimal as NSDecimalNumber).stringValue
 
+                            // C-4 fix: store leaf_position from event.data[4]
+                            let leafIdxHex = event.data[4]
+                            let leafIdxStr = leafIdxHex.hasPrefix("0x") ? String(leafIdxHex.dropFirst(2)) : leafIdxHex
+                            let leafPos = UInt32(leafIdxStr, radix: 16)
+
                             let note = Note(
                                 value: rawWei,
                                 asset_id: "0x5354524b",
@@ -282,7 +287,7 @@ class SyncEngine: ObservableObject {
                                 nonce: commitment,
                                 spending_key: nil,
                                 memo: decryptedMemo ?? "Shielded deposit",
-                                leaf_position: nil,
+                                leaf_position: leafPos,
                                 merkle_path: nil
                             )
                             decodedNotes.append((note: note, commitment: commitment, blockNumber: event.block_number))

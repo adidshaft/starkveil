@@ -389,5 +389,22 @@ pub mod PrivacyPool {
                 nullifier: nullifier
             }));
         }
+
+        fn get_mt_root(self: @ContractState) -> felt252 {
+            self.mt_root.read()
+        }
+
+        fn get_mt_next_index(self: @ContractState) -> u32 {
+            self.mt_next_index.read()
+        }
+
+        fn get_mt_node(self: @ContractState, level: u32, index: u32) -> felt252 {
+            let stored = self.mt_nodes.read((level, index));
+            if stored != 0 {
+                stored
+            } else {
+                InternalImpl::get_zero_hash(level)
+            }
+        }
     }
 }

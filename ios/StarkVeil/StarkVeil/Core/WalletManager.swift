@@ -166,7 +166,8 @@ class WalletManager: ObservableObject {
         notes.append(note)
         recomputeBalance()
         let ctx = persistence.context
-        ctx.insert(StoredNote(from: note, networkId: activeNetworkId, commitment: commitment))
+        ctx.insert(StoredNote(from: note, networkId: activeNetworkId, commitment: commitment,
+                              leafPosition: note.leaf_position.map { Int($0) }))
         do {
             try ctx.save()
         } catch {
@@ -491,10 +492,30 @@ class WalletManager: ObservableObject {
         // which is required for the unshield circuit. generateTransferProof creates
         // change notes and uses a completely different proof structure.
 
-        // C-4 fix: include Merkle witness data (leaf_position + merkle_path) from StoredNote
-        let merklePath: [String]? = storedNote.merklePathJSON
+        // C-4 fix: include Merkle witness data (leaf_position + merkle_path) from StoredNote.
+        // If the stored path is nil (old note), fetch it on-demand from the contract.
+        var merklePath: [String]? = storedNote.merklePathJSON
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+
+        // Fetch current Merkle root from contract (needed as historic_root for proof)
+        let rpcClient = RPCClient()
+        let fetchedRoot = try await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)
+
+        if merklePath == nil, let leafIdx = storedNote.leafPosition {
+            merklePath = try await rpcClient.fetchMerkleWitness(
+                rpcUrl: rpcUrl,
+                contractAddress: contractAddress,
+                leafIndex: leafIdx
+            )
+            // Persist witness so future spends don't need another RPC round-trip
+            if let path = merklePath,
+               let data = try? JSONEncoder().encode(path),
+               let json = String(data: data, encoding: .utf8) {
+                storedNote.merklePathJSON = json
+                try? ctx.save()
+            }
+        }
 
         let proofInputNote = Note(
             value: inputNote.value,
@@ -517,14 +538,14 @@ class WalletManager: ObservableObject {
         }
         let amountU256High = "0x0"
 
-        // Build an UnshieldInput for the Rust FFI
+        // Build an UnshieldInput for the Rust FFI, binding the proof to the current Merkle root
         let unshieldResult = try await StarkVeilProver.generateUnshieldProof(
             note: proofInputNote,
             amountLow: amountU256Low,
             amountHigh: amountU256High,
             recipient: recipient,
             asset: safeAssetId,
-            historicRoot: "0x0"  // The prover derives historic_root from the Merkle path
+            historicRoot: fetchedRoot
         )
 
         let proofCalldata = unshieldResult.proof.flatMap { [$0] }
@@ -819,7 +840,18 @@ class WalletManager: ObservableObject {
         case .accepted:
             // Pass the COMPUTED commitment so the StoredNote.commitment field is set correctly.
             // executeUnshield/executePrivateTransfer will use this directly for nullifier derivation.
-            addNote(note, commitment: commitmentKey)
+            // C-4 fix: fetch leaf position (get_mt_next_index() - 1) right after acceptance.
+            let leafPos: UInt32? = await {
+                if let idx = try? await RPCClient().fetchMerkleNextIndex(rpcUrl: rpcUrl, contractAddress: contractAddress), idx > 0 {
+                    return UInt32(idx - 1)
+                }
+                return nil
+            }()
+            let noteWithLeaf = Note(value: note.value, asset_id: note.asset_id,
+                                    owner_ivk: note.owner_ivk, owner_pubkey: note.owner_pubkey,
+                                    nonce: note.nonce, spending_key: note.spending_key,
+                                    memo: note.memo, leaf_position: leafPos, merkle_path: nil)
+            addNote(noteWithLeaf, commitment: commitmentKey)
             if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
                 last.txHash = broadcastedHash
                 let ctx = persistence.context
@@ -1036,6 +1068,28 @@ class WalletManager: ObservableObject {
         // Array<felt252> ABI encoding = [len, ...elements]
         let transferSelector = "0x2605e7681cf37ab3a81d1732a9c8a75f2544c5967628a4d6999f276c6ba513c"
 
+        // Fetch current Merkle root + witness, then generate the proof
+        let xferRPCClient = RPCClient()
+        let xferFetchedRoot = try await xferRPCClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)
+
+        var xferMerklePath: [String]? = storedNote.merklePathJSON
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+        if xferMerklePath == nil, let leafIdx = storedNote.leafPosition {
+            xferMerklePath = try await xferRPCClient.fetchMerkleWitness(
+                rpcUrl: rpcUrl,
+                contractAddress: contractAddress,
+                leafIndex: leafIdx
+            )
+            if let path = xferMerklePath,
+               let data = try? JSONEncoder().encode(path),
+               let json = String(data: data, encoding: .utf8) {
+                storedNote.merklePathJSON = json
+                let saveCtx = persistence.context
+                try? saveCtx.save()
+            }
+        }
+
         // Generate the proof payload (mock proof + real nullifiers/commitments)
         let proofInputNote = Note(
             value: inputNote.value,
@@ -1046,9 +1100,7 @@ class WalletManager: ObservableObject {
             spending_key: spendingKeyHex,
             memo: inputNote.memo,
             leaf_position: storedNote.leafPosition.map { UInt32($0) },
-            merkle_path: storedNote.merklePathJSON
-                .flatMap { $0.data(using: .utf8) }
-                .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+            merkle_path: xferMerklePath
         )
         let proofPayload = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
 
@@ -1062,6 +1114,7 @@ class WalletManager: ObservableObject {
         callPayload += [String(format: "0x%x", newCommits.count)] + newCommits
         callPayload += ["0x0", "0x0"]                                            // fee: u256
         callPayload += [encryptedMemo]                                            // encrypted_memo: felt252
+        callPayload += [xferFetchedRoot]                                          // historic_root: felt252
 
         print("[PrivateTransfer] nullifier=\(nullifier)")
         print("[PrivateTransfer] outputCommitment=\(outputCommitment)")
