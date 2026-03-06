@@ -1075,8 +1075,8 @@ class WalletManager: ObservableObject {
         let amountWeiVal  = UInt64(amountWeiTarget)   // recipient gets this
         let inputWeiVal   = UInt64(WalletManager.weiDouble(from: inputNote.value) ?? 0)
         let changeWeiVal  = inputWeiVal > amountWeiVal ? inputWeiVal - amountWeiVal : 0
-        let amountWeiStr  = String(amountWeiVal)
-        let changeWeiStr  = String(changeWeiVal)
+        let amountWeiStr  = WalletManager.valueToHex(String(amountWeiVal))
+        let changeWeiStr  = WalletManager.valueToHex(String(changeWeiVal))
         let hasChange     = changeWeiVal > 0
 
         // The recipient IVK (from SVK address) is already a valid felt252 — it's a
