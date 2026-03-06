@@ -45,6 +45,7 @@ struct ProverEventRowView: View {
 
     var iconName: String {
         switch event.kind {
+        case .shield: return "arrow.down.to.line.compact"
         case .transfer: return "lock.shield.fill"
         case .unshield: return "lock.open.fill"
         }
@@ -52,6 +53,7 @@ struct ProverEventRowView: View {
 
     var label: String {
         switch event.kind {
+        case .shield: return "Shield Proof"
         case .transfer: return "Private Transfer Proof"
         case .unshield: return "Unshield Proof"
         }
@@ -59,6 +61,7 @@ struct ProverEventRowView: View {
 
     var accentColor: Color {
         switch event.kind {
+        case .shield: return Color(hex: "#10B981")     // green — depositing
         case .transfer: return Color(hex: "#A855F7")   // purple — STARK privacy
         case .unshield: return Color(hex: "#FF9800")   // amber  — withdrawing
         }
@@ -136,6 +139,7 @@ struct ProverEventDetailSheet: View {
 
     private var kindLabel: String {
         switch event.kind {
+        case .shield: return "Shield Proof"
         case .transfer: return "Private Transfer Proof"
         case .unshield: return "Unshield Proof"
         }
@@ -143,6 +147,7 @@ struct ProverEventDetailSheet: View {
 
     private var kindIcon: String {
         switch event.kind {
+        case .shield: return "arrow.down.to.line.compact"
         case .transfer: return "lock.shield.fill"
         case .unshield: return "lock.open.fill"
         }
@@ -150,6 +155,7 @@ struct ProverEventDetailSheet: View {
 
     private var accentColor: Color {
         switch event.kind {
+        case .shield: return Color(hex: "#10B981")
         case .transfer: return Color(hex: "#A855F7")
         case .unshield: return Color(hex: "#FF9800")
         }
