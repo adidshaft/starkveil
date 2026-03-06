@@ -11,6 +11,7 @@ enum ProverError: LocalizedError {
     case insufficientBalance
     case noMatchingNote
     case noteAlreadySpent   // Phase 15: nullifier already revealed on-chain
+    case custom(String)
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,7 @@ enum ProverError: LocalizedError {
         case .insufficientBalance: return "Insufficient shielded balance."
         case .noMatchingNote:      return "No single note matches the exact unshield amount. Try the exact note value."
         case .noteAlreadySpent:    return "This note has already been spent on-chain. Refresh your balance."
+        case .custom(let message): return message
         }
     }
 }
@@ -279,29 +281,63 @@ class WalletManager: ObservableObject {
         activityEvents.removeAll()
     }
 
-    /// Parses a note value that may be decimal ("1000000000000000000") or hex ("0xde0b6b3a7640000").
-    /// Returns the raw wei value as a Double, or nil if unparseable.
-    /// executeShield stores values as hex; SyncEngine stores them as decimal.
-    static func weiDouble(from valueStr: String) -> Double? {
+    /// Parses a note value (decimal or hex string) into an exact Decimal representation.
+    /// This avoids the UInt64 max bound (18.4 STRK) and Double's 53-bit mantissa precision loss.
+    static func parseToDecimal(_ valueStr: String) -> Decimal {
         if valueStr.hasPrefix("0x") || valueStr.hasPrefix("0X") {
-            let hex = String(valueStr.dropFirst(2))
-            guard let n = UInt64(hex, radix: 16) else { return nil }
-            return Double(n)
+            let cleanHex = String(valueStr.dropFirst(2))
+            var result = Decimal(0)
+            for ch in cleanHex.lowercased() {
+                result *= 16
+                if let val = Int(String(ch), radix: 16) {
+                    result += Decimal(val)
+                }
+            }
+            return result
         }
-        return Double(valueStr)
+        return Decimal(string: valueStr) ?? Decimal(0)
     }
 
-    /// Normalises a note value to a 0x-prefixed hex felt252 string for felt_from_hex() in Rust.
-    /// SyncEngine stores values as decimal ("1000000000000000000"); the Rust prover needs hex.
+    /// Converts an exact Decimal integer into a 0x-prefixed hex string for the STARK circuit.
+    static func parseDecimalToHex(_ decimal: Decimal) -> String {
+        var remaining = decimal
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &remaining, 0, .down)
+        if rounded <= 0 { return "0x0" }
+        
+        var hexChars: [Character] = []
+        let hexMap: [Character] = ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"]
+        
+        while rounded > 0 {
+            var div = rounded / 16
+            var intDiv = Decimal()
+            NSDecimalRound(&intDiv, &div, 0, .down)
+            
+            let remDec = rounded - (intDiv * 16)
+            let remInt = NSDecimalNumber(decimal: remDec).intValue
+            hexChars.append(hexMap[remInt])
+            rounded = intDiv
+        }
+        return "0x" + String(hexChars.reversed())
+    }
+
+    /// Legacy compat getter for values strictly bounded to 53-bits exact,
+    /// but prefers parseToDecimal for consensus-critical math.
+    static func weiDouble(from valueStr: String) -> Double? {
+        let dec = parseToDecimal(valueStr)
+        return NSDecimalNumber(decimal: dec).doubleValue
+    }
+
     static func valueToHex(_ v: String) -> String {
         if v.hasPrefix("0x") || v.hasPrefix("0X") { return v }
-        if let n = UInt64(v) { return "0x" + String(n, radix: 16) }
-        return v  // best-effort fallback for astronomically large values
+        if let dec = Decimal(string: v) { return parseDecimalToHex(dec) }
+        return v
     }
 
     private func recomputeBalance() {
-        // Note values may be decimal or hex — use weiDouble() to handle both formats.
-        balance = notes.compactMap { WalletManager.weiDouble(from: $0.value) }.reduce(0, +) / 1e18
+        let totalWeiDec = notes.map { WalletManager.parseToDecimal($0.value) }.reduce(Decimal(0), +)
+        let strkVal = totalWeiDec / Decimal(sign: .plus, exponent: 18, significand: 1)
+        balance = NSDecimalNumber(decimal: strkVal).doubleValue
     }
 
     /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
@@ -313,15 +349,7 @@ class WalletManager: ObservableObject {
             // Result is "low_hex, high_hex" — parse the u256
             let parts = rawResult.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             let lowHex = parts.first ?? "0x0"
-            // UInt64 overflows for balances > 18.44 STRK. Use Decimal for safe parsing.
-            let hexDigits = lowHex.hasPrefix("0x") ? String(lowHex.dropFirst(2)) : lowHex
-            var weiDecimal = Decimal(0)
-            for ch in hexDigits {
-                weiDecimal *= 16
-                if let digit = Int(String(ch), radix: 16) {
-                    weiDecimal += Decimal(digit)
-                }
-            }
+            let weiDecimal = WalletManager.parseToDecimal(lowHex)
             let strkBalance = weiDecimal / Decimal(sign: .plus, exponent: 18, significand: 1)
             publicBalance = NSDecimalNumber(decimal: strkBalance).doubleValue
         } catch {
@@ -441,11 +469,14 @@ class WalletManager: ObservableObject {
         guard amount <= balance else { throw ProverError.insufficientBalance }
 
         // note.value is raw wei (e.g. "100000000000000000" for 0.1 STRK).
-        // amount is in STRK (e.g. 0.1). Convert wei -> STRK before comparing.
+        let amountDecimal = Decimal(amount)
+        var amountWeiRaw = amountDecimal * Decimal(sign: .plus, exponent: 18, significand: 1)
+        var amountWeiTarget = Decimal()
+        NSDecimalRound(&amountWeiTarget, &amountWeiRaw, 0, .down)
+
         guard let inputNote = notes.first(where: {
-            guard let weiVal = WalletManager.weiDouble(from: $0.value) else { return false }
-            let strk = weiVal / 1e18
-            return abs(strk - amount) < 1e-9
+            let weiVal = WalletManager.parseToDecimal($0.value)
+            return weiVal == amountWeiTarget
         }) ?? selectNotes(for: amount).first
         else { throw ProverError.noMatchingNote }
 
@@ -553,7 +584,17 @@ class WalletManager: ObservableObject {
         // Fetch current Merkle root from contract (needed as historic_root for proof).
         // Falls back to storage read if the view function isn't available on this deployment.
         let rpcClient = RPCClient()
-        let fetchedRoot = (try? await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)) ?? "0x0"
+        let fetchedRoot: String
+        do {
+            fetchedRoot = try await rpcClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)
+        } catch {
+            print("[Unshield] Cannot fetch Merkle root (network/RPC error): \(error)")
+            throw ProverError.custom("Network error while verifying your private balance. Please check your connection and try again.")
+        }
+
+        guard fetchedRoot != "0x0" else {
+            throw ProverError.custom("The privacy pool is currently empty on this network. Please clear your local app data if it contains stale notes from a previous deployment.")
+        }
 
         // Last-resort leaf_position recovery for unshield (same issue as private transfer)
         if storedNote.leafPosition == nil, !storedNote.commitment.isEmpty {
@@ -930,6 +971,20 @@ class WalletManager: ObservableObject {
                                     nonce: note.nonce, spending_key: note.spending_key,
                                     memo: note.memo, leaf_position: leafPos, merkle_path: nil)
             addNote(noteWithLeaf, commitment: commitmentKey)
+            
+            let shieldProverEvent = ProverEvent(
+                kind: .shield,
+                proofElementCount: 0,
+                noteCommitment: commitmentKey,
+                historicRoot: "0x0",
+                nullifier: "0x0",
+                durationMs: 0,
+                networkId: activeNetworkId
+            )
+            persistence.context.insert(shieldProverEvent)
+            try? persistence.context.save()
+            proverEvents.insert(shieldProverEvent, at: 0)
+
             if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
                 last.txHash = broadcastedHash
                 let ctx = persistence.context
@@ -980,14 +1035,18 @@ class WalletManager: ObservableObject {
 
         // Pick the SMALLEST available note that covers the requested amount.
         // We create a change note for any excess, so partial amounts are fully supported.
-        let amountWeiTarget = amount * 1e18
+        let amountDecimal = Decimal(amount)
+        var amountWeiRaw = amountDecimal * Decimal(sign: .plus, exponent: 18, significand: 1)
+        var amountWeiTarget = Decimal()
+        NSDecimalRound(&amountWeiTarget, &amountWeiRaw, 0, .down)
+        
         guard let inputNote = notes
             .filter({
-                guard let w = WalletManager.weiDouble(from: $0.value) else { return false }
+                let w = WalletManager.parseToDecimal($0.value)
                 guard !pendingCommitments.contains($0.nonce) else { return false }
-                return w >= amountWeiTarget - 1.0   // small rounding epsilon
+                return w >= amountWeiTarget
             })
-            .sorted(by: { (WalletManager.weiDouble(from: $0.value) ?? 0) < (WalletManager.weiDouble(from: $1.value) ?? 0) })
+            .sorted(by: { WalletManager.parseToDecimal($0.value) < WalletManager.parseToDecimal($1.value) })
             .first
         else { throw ProverError.insufficientBalance }
 
@@ -1070,13 +1129,11 @@ class WalletManager: ObservableObject {
         let outputNonce = "0x" + outputRandomBytes.map { String(format: "%02x", $0) }.joined()
 
         // ── Amount maths ────────────────────────────────────────────────────────
-        // Convert requested amount to raw wei. Use UInt64 arithmetic to avoid
-        // floating-point rounding when computing change.
-        let amountWeiVal  = UInt64(amountWeiTarget)   // recipient gets this
-        let inputWeiVal   = UInt64(WalletManager.weiDouble(from: inputNote.value) ?? 0)
-        let changeWeiVal  = inputWeiVal > amountWeiVal ? inputWeiVal - amountWeiVal : 0
-        let amountWeiStr  = WalletManager.valueToHex(String(amountWeiVal))
-        let changeWeiStr  = WalletManager.valueToHex(String(changeWeiVal))
+        // Convert requested amount to exact Decimal wei.
+        let inputWeiVal   = WalletManager.parseToDecimal(inputNote.value)
+        let changeWeiVal  = inputWeiVal > amountWeiTarget ? inputWeiVal - amountWeiTarget : 0
+        let amountWeiStr  = WalletManager.parseDecimalToHex(amountWeiTarget)
+        let changeWeiStr  = WalletManager.parseDecimalToHex(changeWeiVal)
         let hasChange     = changeWeiVal > 0
 
         // The recipient IVK (from SVK address) is already a valid felt252 — it's a
@@ -1203,8 +1260,45 @@ class WalletManager: ObservableObject {
             merkle_path: xferMerklePath,
             commitment: storedNote.commitment.isEmpty ? nil : storedNote.commitment
         )
+        
+        // Construct the output notes dynamically
+        var outNotes: [Note] = []
+        let recipientNote = Note(
+            value: amountWeiStr,
+            asset_id: safeAssetId,
+            owner_ivk: recipientIVK,
+            owner_pubkey: recipientIVK,
+            nonce: outputNonce,
+            spending_key: nil,
+            memo: "",
+            leaf_position: nil,
+            merkle_path: nil,
+            commitment: outputCommitment
+        )
+        outNotes.append(recipientNote)
+        
+        if let cn = changePlainNote {
+            // Also need to pass the commitment directly so Rust doesn't recompute
+            let changeNoteWithCommit = Note(
+                value: cn.value,
+                asset_id: cn.asset_id,
+                owner_ivk: cn.owner_ivk,
+                owner_pubkey: cn.owner_pubkey,
+                nonce: cn.nonce,
+                spending_key: cn.spending_key,
+                memo: cn.memo,
+                leaf_position: cn.leaf_position,
+                merkle_path: cn.merkle_path,
+                commitment: changeCommitment
+            )
+            outNotes.append(changeNoteWithCommit)
+        }
+
         let proofStart = Date()
-        let proofPayload = try await StarkVeilProver.generateTransferProof(notes: [proofInputNote])
+        let proofPayload = try await StarkVeilProver.generateTransferProof(
+            inputNotes: [proofInputNote],
+            outputNotes: outNotes
+        )
         let proofDurationMs = Date().timeIntervalSince(proofStart) * 1000
 
         // Record Stwo prover event for the Prove tab
@@ -1224,11 +1318,8 @@ class WalletManager: ObservableObject {
         // fee: u256 = (low=0x0, high=0x0) — mock verifier doesn't enforce fees
         var callPayload: [String] = []
         callPayload += [String(format: "0x%x", proofPayload.proof.count)] + proofPayload.proof  // proof array
-        callPayload += ["0x1", nullifier]                                        // nullifiers array
-        // new_commitments: recipient note + optional change note back to sender
-        var newCommits = [outputCommitment]
-        if let cc = changeCommitment { newCommits.append(cc) }
-        callPayload += [String(format: "0x%x", newCommits.count)] + newCommits
+        callPayload += [String(format: "0x%x", proofPayload.nullifiers.count)] + proofPayload.nullifiers        // nullifiers array
+        callPayload += [String(format: "0x%x", proofPayload.new_commitments.count)] + proofPayload.new_commitments
         callPayload += ["0x0", "0x0"]                                            // fee: u256
         callPayload += [encryptedMemo]                                            // encrypted_memo: felt252
         // Use the root the proof was baked against — NOT the separately fetched xferFetchedRoot.
@@ -1340,13 +1431,17 @@ class WalletManager: ObservableObject {
     private func selectNotes(for amount: Double) -> [Note] {
         // amount is in STRK; note.value is raw wei — convert before accumulating
         var selected: [Note] = []
-        var accumulated = 0.0
+        var accumulated: Decimal = 0
+        
+        var amountWeiRaw = Decimal(amount) * Decimal(sign: .plus, exponent: 18, significand: 1)
+        var amountWeiTarget = Decimal()
+        NSDecimalRound(&amountWeiTarget, &amountWeiRaw, 0, .down)
+
         for note in notes {
-            guard let weiVal = WalletManager.weiDouble(from: note.value) else { continue }
-            let strkVal = weiVal / 1e18
+            let dec = WalletManager.parseToDecimal(note.value)
             selected.append(note)
-            accumulated += strkVal
-            if accumulated >= amount { break }
+            accumulated += dec
+            if accumulated >= amountWeiTarget { break }
         }
         return selected
     }

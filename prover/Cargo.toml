@@ -16,8 +16,5 @@ starknet-crypto = "0.6"
 # Phase 18: RFC-6979 deterministic ECDSA nonce (H-2 fix — removes caller-supplied k)
 rfc6979 = "0.4"
 sha2 = "0.10"
-# Phase 20: Stwo STARK prover — Circle STARK proof generation (replaces mock verification)
-# Core types only — constraint evaluation uses starknet-crypto Poseidon for iOS compatibility
-stwo = { version = "2.1", default-features = false }
 # Random number generation for proof blinding factors
 rand = "0.8"

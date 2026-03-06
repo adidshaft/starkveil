@@ -1,5 +1,6 @@
 pub mod types;
 pub mod circuit;
+pub mod stark;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -357,18 +358,21 @@ pub unsafe extern "C" fn generate_transfer_proof(
         Err(_) => return ffi_error("Invalid UTF-8 sequence"),
     };
 
-    let notes: Vec<Note> = match serde_json::from_str(str_slice) {
-        Ok(n) => n,
-        Err(e) => return ffi_error(&format!("Failed to parse notes: {}", e)),
+    let input: types::TransferInput = match serde_json::from_str(str_slice) {
+        Ok(i) => i,
+        Err(e) => return ffi_error(&format!("Failed to parse transfer input: {}", e)),
     };
 
-    if notes.is_empty() {
+    let input_notes = input.input_notes;
+    let output_notes = input.output_notes;
+
+    if input_notes.is_empty() {
         return ffi_error("At least one input note is required");
     }
 
     // ── Parse input notes into NoteWitness structs ───────────────────────────
     let mut input_witnesses: Vec<NoteWitness> = Vec::new();
-    for (i, note) in notes.iter().enumerate() {
+    for (i, note) in input_notes.iter().enumerate() {
         let value_str = match note.value.as_deref() {
             Some(s) => s,
             None => return ffi_error(&format!("Input note {} missing required field: value", i)),
@@ -442,41 +446,51 @@ pub unsafe extern "C" fn generate_transfer_proof(
         &input_witnesses[0].merkle_path,
     );
 
-    // ── Build output note (change note) ─────────────────────────────────────
-    // Deterministic output commitment from the first note's parameters.
-    // In a full implementation, the caller would supply explicit output notes.
-    let first = &notes[0];
-    let out_value = match felt_from_hex(first.value.as_deref().unwrap_or("0x0")) {
-        Ok(f) => f, Err(e) => return ffi_error(&e),
-    };
-    let out_asset = match felt_from_hex(first.asset_id.as_deref().unwrap_or("0x0")) {
-        Ok(f) => f, Err(e) => return ffi_error(&e),
-    };
-    let out_owner = match felt_from_hex(first.owner_pubkey.as_deref().unwrap_or("0x0")) {
-        Ok(f) => f, Err(e) => return ffi_error(&e),
-    };
-    let out_nonce = poseidon_hash_many(&[out_value, out_asset, out_owner]);
+    // ── Parse output notes ──────────────────────────────────────────────────
+    let mut parsed_output_notes = Vec::new();
+    let mut total_output_value = FieldElement::ZERO;
+    
+    for (i, out_note) in output_notes.iter().enumerate() {
+        let val_str = out_note.value.as_deref().unwrap_or("0x0");
+        let asset_str = out_note.asset_id.as_deref().unwrap_or("0x0");
+        let owner_str = out_note.owner_pubkey.as_deref().unwrap_or("0x0");
+        let nonce_str = out_note.nonce.as_deref().unwrap_or("0x0");
 
-    let fee = FieldElement::from(100000000000000u64); // 0.0001 STRK
+        let out_value = match felt_from_hex(val_str) {
+            Ok(f) => f, Err(e) => return ffi_error(&format!("Output note {} value error: {}", i, e)),
+        };
+        let out_asset = match felt_from_hex(asset_str) {
+            Ok(f) => f, Err(e) => return ffi_error(&format!("Output note {} asset error: {}", i, e)),
+        };
+        let out_owner = match felt_from_hex(owner_str) {
+            Ok(f) => f, Err(e) => return ffi_error(&format!("Output note {} owner error: {}", i, e)),
+        };
+        let out_nonce = match felt_from_hex(nonce_str) {
+            Ok(f) => f, Err(e) => return ffi_error(&format!("Output note {} nonce error: {}", i, e)),
+        };
 
-    // Compute actual output value: total_input - fee
+        total_output_value = total_output_value + out_value;
+
+        parsed_output_notes.push(OutputNote {
+            value: out_value,
+            asset_id: out_asset,
+            owner_pubkey: out_owner,
+            nonce: out_nonce,
+        });
+    }
+
+    // Compute fee dynamically: fee = total_input - total_output
     let mut total_input = FieldElement::ZERO;
     for w in &input_witnesses {
         total_input = total_input + w.value;
     }
-    let output_value = total_input - fee;
-
-    let output_note = OutputNote {
-        value: output_value,
-        asset_id: out_asset,
-        owner_pubkey: out_owner,
-        nonce: out_nonce,
-    };
+    
+    let fee = total_input - total_output_value;
 
     // ── Generate the real STARK proof ────────────────────────────────────────
     let proof_result = circuit::generate_transfer_stark_proof(
         &input_witnesses,
-        &[output_note],
+        &parsed_output_notes,
         &fee,
         &historic_root,
     );
@@ -494,7 +508,7 @@ pub unsafe extern "C" fn generate_transfer_proof(
                 proof: proof.proof_elements,
                 nullifiers,
                 new_commitments,
-                fee: "100000000000000".to_string(),
+                fee: felt_to_hex(&fee),
                 historic_root: felt_to_hex(&public_inputs.historic_root),
             };
 

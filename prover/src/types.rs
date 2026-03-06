@@ -35,6 +35,14 @@ pub struct TransferPayload {
     pub historic_root: String,
 }
 
+/// Input for the transfer proof FFI function.
+/// Contains both the input notes being spent and the new output notes being created.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TransferInput {
+    pub input_notes: Vec<Note>,
+    pub output_notes: Vec<Note>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FFIResult {
     // Previously this held a pre-serialized JSON String, forcing Swift to

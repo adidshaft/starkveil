@@ -143,10 +143,17 @@ pub fn compute_nullifier(
 ///
 /// This function:
 /// 1. Validates all circuit constraints locally (Merkle membership, balance, nullifiers)
-/// 2. Computes the constraint satisfaction polynomial
+/// 2. Generates the execution trace for the Circle STARK AIR
 /// 3. Commits to the trace via Poseidon Merkle tree
-/// 4. Generates FRI decommitment (using Poseidon-based folding)
+/// 4. Runs the FRI proximity proof protocol
 /// 5. Serializes the proof as felt252 array for the Cairo verifier
+///
+/// The proof constrains:
+///   - Commitment wellformedness: Poseidon(value, asset_id, owner_pubkey, nonce) = commitment
+///   - Merkle membership: commitment exists in the depth-20 Poseidon Merkle tree
+///   - Nullifier derivation: Poseidon(commitment, spending_key) = nullifier
+///   - Ownership: owner_pubkey derives from spending_key
+///   - Balance conservation: Σ(input_values) = Σ(output_values) + fee
 pub fn generate_transfer_stark_proof(
     input_notes: &[NoteWitness],
     output_notes: &[OutputNote],
@@ -158,18 +165,14 @@ pub fn generate_transfer_stark_proof(
     let mut nullifiers = Vec::new();
     let mut new_commitments = Vec::new();
     let mut total_input_value = FieldElement::ZERO;
-    let mut constraint_elements: Vec<FieldElement> = Vec::new();
 
     // Validate input notes
     for (i, note) in input_notes.iter().enumerate() {
-        // 1a. Use pre-computed commitment if available, otherwise recompute from fields.
-        // SyncEngine stores nonce = on-chain commitment hash (not the original random nonce)
-        // and value as a decimal string (not hex), so recomputation produces the wrong leaf.
         let commitment = note.commitment.unwrap_or_else(|| compute_commitment(
             &note.value, &note.asset_id, &note.owner_pubkey, &note.nonce,
         ));
 
-        // 1b. Verify Merkle membership
+        // Verify Merkle membership
         let computed_root = verify_merkle_path(
             &commitment,
             note.leaf_position,
@@ -183,7 +186,7 @@ pub fn generate_transfer_stark_proof(
             });
         }
 
-        // 1c. Verify owner_pubkey matches spending_key
+        // Verify owner_pubkey matches spending_key
         let expected_pubkey = starknet_crypto::get_public_key(&note.spending_key);
         if expected_pubkey != note.owner_pubkey {
             return Err(CircuitError::MissingField(
@@ -191,17 +194,11 @@ pub fn generate_transfer_stark_proof(
             ));
         }
 
-        // 1d. Compute nullifier
+        // Compute nullifier
         let nullifier = compute_nullifier(&commitment, &note.spending_key);
         nullifiers.push(nullifier);
 
-        // Accumulate for balance check
         total_input_value = total_input_value + note.value;
-
-        // Accumulate constraint elements for proof commitment
-        constraint_elements.push(commitment);
-        constraint_elements.push(nullifier);
-        constraint_elements.push(computed_root);
     }
 
     // Validate output notes
@@ -212,11 +209,9 @@ pub fn generate_transfer_stark_proof(
         );
         new_commitments.push(commitment);
         total_output_value = total_output_value + note.value;
-
-        constraint_elements.push(commitment);
     }
 
-    // 1e. Balance conservation: Σin = Σout + fee
+    // Balance conservation: Σin = Σout + fee
     let expected_output = total_output_value + *fee;
     if total_input_value != expected_output {
         return Err(CircuitError::BalanceViolation {
@@ -224,73 +219,58 @@ pub fn generate_transfer_stark_proof(
             total_out: felt_to_hex(&expected_output),
         });
     }
-    constraint_elements.push(*fee);
-    constraint_elements.push(total_input_value);
 
-    // ── Step 2: Build proof commitment ─────────────────────────────────────────
-    // The proof commitment is a Poseidon hash of all constraint evaluation results.
-    // This binds the proof to the specific witness values.
-    let constraint_hash = poseidon_hash_many(&constraint_elements);
+    // ── Step 2: Build Stwo AIR witness and generate real STARK proof ──────────
+    use crate::stark;
 
-    // ── Step 3: Build the trace and FRI commitment ────────────────────────────
-    // We construct a proof that includes:
-    //   - The constraint commitment (binding the witness)
-    //   - The Merkle decommitment paths (proving trace evaluations)
-    //   - Random challenge responses (for soundness amplification)
-    //
-    // For the Integrity FactRegistry verifier, the proof must encode:
-    //   [n_elements, constraint_hash, ...trace_elements, ...decommitment]
+    // Convert NoteWitness → stark::InputNoteWitness
+    let stark_inputs: Vec<stark::InputNoteWitness> = input_notes.iter().enumerate()
+        .map(|(i, note)| {
+            let commitment = note.commitment.unwrap_or_else(|| compute_commitment(
+                &note.value, &note.asset_id, &note.owner_pubkey, &note.nonce,
+            ));
+            let nullifier = nullifiers[i];
+            stark::InputNoteWitness {
+                value: note.value,
+                asset_id: note.asset_id,
+                owner_pubkey: note.owner_pubkey,
+                nonce: note.nonce,
+                spending_key: note.spending_key,
+                commitment,
+                nullifier,
+                leaf_position: note.leaf_position,
+                merkle_path: note.merkle_path,
+            }
+        })
+        .collect();
 
-    // Build trace elements: each input note contributes its Merkle path hashes
-    let mut trace_elements: Vec<FieldElement> = Vec::new();
-    for note in input_notes {
-        trace_elements.push(note.value);
-        trace_elements.push(note.asset_id);
-        trace_elements.push(note.owner_pubkey);
-        trace_elements.push(note.nonce);
-        for sibling in &note.merkle_path {
-            trace_elements.push(*sibling);
-        }
-    }
+    // Convert OutputNote → stark::OutputNoteData
+    let stark_outputs: Vec<stark::OutputNoteData> = output_notes.iter().enumerate()
+        .map(|(i, note)| {
+            let commitment = new_commitments[i];
+            stark::OutputNoteData {
+                value: note.value,
+                asset_id: note.asset_id,
+                owner_pubkey: note.owner_pubkey,
+                nonce: note.nonce,
+                commitment,
+            }
+        })
+        .collect();
 
-    // Decommitment: Poseidon-based folding of trace layers
-    let trace_hash = poseidon_hash_many(&trace_elements);
-    let decommitment_hash = poseidon_hash_many(&[constraint_hash, trace_hash]);
+    let config = stark::ProverConfig::default();
+    let stwo_proof = stark::prove_transfer(&stark_inputs, &stark_outputs, fee, historic_root, &config)
+        .map_err(|e| CircuitError::ParseError(e))?;
 
-    // Random linear combination for FRI (computed deterministically from decommitment)
-    let fri_alpha = poseidon_hash_many(&[decommitment_hash, *historic_root]);
-    let fri_layer_0 = poseidon_hash_many(&[fri_alpha, constraint_hash]);
-    let fri_layer_1 = poseidon_hash_many(&[fri_alpha, trace_hash]);
-    let fri_final = poseidon_hash_many(&[fri_layer_0, fri_layer_1]);
+    // ── Step 3: Serialize proof for FFI / Cairo verifier ──────────────────────
+    let proof_elements: Vec<String> = stwo_proof.proof_felts
+        .iter()
+        .map(|f| felt_to_hex(f))
+        .collect();
 
-    // ── Step 4: Serialize proof ───────────────────────────────────────────────
-    // Format: [proof_length, constraint_hash, trace_hash, decommitment_hash,
-    //          fri_alpha, fri_layer_0, fri_layer_1, fri_final, ...merkle_paths]
-    let mut proof_elements: Vec<String> = Vec::new();
-
-    // Core proof elements
-    proof_elements.push(felt_to_hex(&constraint_hash));
-    proof_elements.push(felt_to_hex(&trace_hash));
-    proof_elements.push(felt_to_hex(&decommitment_hash));
-    proof_elements.push(felt_to_hex(&fri_alpha));
-    proof_elements.push(felt_to_hex(&fri_layer_0));
-    proof_elements.push(felt_to_hex(&fri_layer_1));
-    proof_elements.push(felt_to_hex(&fri_final));
-
-    // Include Merkle path elements as proof decommitment
-    for note in input_notes {
-        proof_elements.push(format!("0x{:x}", note.leaf_position));
-        for sibling in &note.merkle_path {
-            proof_elements.push(felt_to_hex(sibling));
-        }
-    }
-
-    // Prepend proof length
-    let total_len = proof_elements.len();
-    proof_elements.insert(0, format!("0x{:x}", total_len));
-
-    // Proof commitment for the FactRegistry fact hash
-    let proof_commitment = poseidon_hash_many(&[constraint_hash, decommitment_hash, fri_final]);
+    let proof_commitment = poseidon_hash_many(
+        &stwo_proof.proof_felts[..3.min(stwo_proof.proof_felts.len())]
+    );
 
     let public_inputs = TransferPublicInputs {
         historic_root: *historic_root,
@@ -315,6 +295,8 @@ pub fn generate_transfer_stark_proof(
 /// 2. The caller owns the note (spending_key → owner_pubkey)
 /// 3. The nullifier is correctly derived
 /// 4. The (amount, asset, recipient) are bound as public inputs
+///
+/// Uses the real Circle STARK prover with FRI proximity proof.
 pub fn generate_unshield_stark_proof(
     input_note: &NoteWitness,
     amount_low: &FieldElement,
@@ -323,7 +305,6 @@ pub fn generate_unshield_stark_proof(
     asset: &FieldElement,
     historic_root: &FieldElement,
 ) -> Result<(StarkVeilProof, FieldElement), CircuitError> {
-    // Use pre-computed commitment if available, otherwise compute from fields.
     let commitment = input_note.commitment.unwrap_or_else(|| compute_commitment(
         &input_note.value, &input_note.asset_id,
         &input_note.owner_pubkey, &input_note.nonce,
@@ -354,48 +335,35 @@ pub fn generate_unshield_stark_proof(
     // Compute nullifier
     let nullifier = compute_nullifier(&commitment, &input_note.spending_key);
 
-    // Build constraint elements
-    let constraint_elements = vec![
-        commitment, nullifier, computed_root,
-        *amount_low, *amount_high, *recipient, *asset,
-    ];
-    let constraint_hash = poseidon_hash_many(&constraint_elements);
+    // ── Generate real Stwo STARK proof ────────────────────────────────────
+    use crate::stark;
 
-    // Build trace
-    let trace_elements = vec![
-        input_note.value, input_note.asset_id,
-        input_note.owner_pubkey, input_note.nonce,
-    ];
-    let trace_hash = poseidon_hash_many(&trace_elements);
-    let decommitment_hash = poseidon_hash_many(&[constraint_hash, trace_hash]);
+    let stark_input = stark::InputNoteWitness {
+        value: input_note.value,
+        asset_id: input_note.asset_id,
+        owner_pubkey: input_note.owner_pubkey,
+        nonce: input_note.nonce,
+        spending_key: input_note.spending_key,
+        commitment,
+        nullifier,
+        leaf_position: input_note.leaf_position,
+        merkle_path: input_note.merkle_path,
+    };
 
-    // FRI folding
-    let fri_alpha = poseidon_hash_many(&[decommitment_hash, *historic_root]);
-    let fri_layer_0 = poseidon_hash_many(&[fri_alpha, constraint_hash]);
-    let fri_layer_1 = poseidon_hash_many(&[fri_alpha, trace_hash]);
-    let fri_final = poseidon_hash_many(&[fri_layer_0, fri_layer_1]);
+    let config = stark::ProverConfig::default();
+    let stwo_proof = stark::prove_unshield(
+        &stark_input, amount_low, amount_high, recipient, asset, historic_root, &config,
+    ).map_err(|e| CircuitError::ParseError(e))?;
 
-    // Serialize proof
-    let mut proof_elements: Vec<String> = Vec::new();
-    proof_elements.push(felt_to_hex(&constraint_hash));
-    proof_elements.push(felt_to_hex(&trace_hash));
-    proof_elements.push(felt_to_hex(&decommitment_hash));
-    proof_elements.push(felt_to_hex(&fri_alpha));
-    proof_elements.push(felt_to_hex(&fri_layer_0));
-    proof_elements.push(felt_to_hex(&fri_layer_1));
-    proof_elements.push(felt_to_hex(&fri_final));
+    // Serialize
+    let proof_elements: Vec<String> = stwo_proof.proof_felts
+        .iter()
+        .map(|f| felt_to_hex(f))
+        .collect();
 
-    // Merkle path decommitment
-    proof_elements.push(format!("0x{:x}", input_note.leaf_position));
-    for sibling in &input_note.merkle_path {
-        proof_elements.push(felt_to_hex(sibling));
-    }
-
-    // Prepend length
-    let total_len = proof_elements.len();
-    proof_elements.insert(0, format!("0x{:x}", total_len));
-
-    let proof_commitment = poseidon_hash_many(&[constraint_hash, decommitment_hash, fri_final]);
+    let proof_commitment = poseidon_hash_many(
+        &stwo_proof.proof_felts[..3.min(stwo_proof.proof_felts.len())]
+    );
 
     Ok((
         StarkVeilProof {

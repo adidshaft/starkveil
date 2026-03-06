@@ -212,7 +212,7 @@ class RPCClient {
     /// Must be called before every invoke or deploy transaction.
     func getNonce(rpcUrl: URL, address: String) async throws -> String {
         struct Params: Encodable {
-            let block_id: String = "latest"
+            let block_id: String = "pending"
             let contract_address: String
         }
         let payload = RPCRequest(method: "starknet_getNonce",
@@ -649,6 +649,7 @@ class RPCClient {
         // Primary: call view function
         struct CallParams: Encodable {
             let request: CallReq
+            let block_id: String = "latest"
             struct CallReq: Encodable {
                 let contract_address: String
                 let entry_point_selector: String
@@ -676,6 +677,7 @@ class RPCClient {
     func fetchMerkleNextIndex(rpcUrl: URL, contractAddress: String) async throws -> Int {
         struct CallParams: Encodable {
             let request: CallReq
+            let block_id: String = "latest"
             struct CallReq: Encodable {
                 let contract_address: String
                 let entry_point_selector: String
@@ -710,6 +712,7 @@ class RPCClient {
     ) async throws -> [String] {
         struct CallParams: Encodable {
             let request: CallReq
+            let block_id: String = "latest"
             struct CallReq: Encodable {
                 let contract_address: String
                 let entry_point_selector: String

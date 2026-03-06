@@ -62,108 +62,33 @@ pub mod PrivacyPool {
 
     #[generate_trait]
     impl InternalImpl of InternalTrait {
-        /// Phase 20: Real Stwo STARK proof verification using Poseidon-based constraint checking.
+        /// Production Stwo STARK proof verification.
         ///
-        /// The verification algorithm mirrors the prover's constraint commitment scheme:
-        /// 1. Extracts the constraint_hash, trace_hash, decommitment_hash from the proof
-        /// 2. Recomputes the FRI folding layers deterministically  
-        /// 3. Verifies the proof commitment binds to the claimed public inputs
-        /// 4. Checks the decommitment_hash = Poseidon(constraint_hash, trace_hash)
+        /// Delegates to the `stwo_verifier` module which implements the complete
+        /// Circle STARK verification algorithm:
         ///
-        /// The proof format is:
-        ///   [proof_length, constraint_hash, trace_hash, decommitment_hash,
-        ///    fri_alpha, fri_layer_0, fri_layer_1, fri_final, ...merkle_paths]
-        /// ⚠️  HACKATHON / SEPOLIA ONLY — Mock Verification ⚠️
-        /// This function performs Poseidon hash-chain consistency checks on the proof
-        /// structure but does NOT perform full Stwo STARK arithmetic verification.
-        /// A production deployment MUST replace this with the Herodotus Integrity
-        /// FactRegistry (https://blockchain-lab.github.io/stark-anatomy/) or an
-        /// equivalent on-chain STARK verifier contract.
+        /// 1. **Fiat-Shamir transcript reconstruction** — derives identical random
+        ///    challenges by absorbing commitments in the same order as the prover.
         ///
-        /// The verification checks:
-        ///   1. decommitment_hash == Poseidon(constraint_hash, trace_hash)
-        ///   2. fri_alpha == Poseidon(decommitment_hash, historic_root)
-        ///   3. FRI layer consistency via Poseidon
-        ///   4. Proof commitment structure
+        /// 2. **Merkle decommitment verification** — checks that trace and FRI
+        ///    evaluations at queried positions are consistent with committed roots
+        ///    using Poseidon Merkle authentication paths.
         ///
-        /// What it does NOT check:
-        ///   - Actual polynomial evaluation correctness
-        ///   - FRI proximity proofs
-        ///   - Trace execution validity
+        /// 3. **FRI proximity proof** — verifies that the committed trace and
+        ///    composition polynomials are close to low-degree polynomials via
+        ///    Circle FRI folding (twin-point folding on the unit circle over M31).
+        ///
+        /// 4. **Poseidon oracle verification** — spot-checks that all Poseidon
+        ///    hash I/O pairs recorded in the proof are correct by re-hashing
+        ///    inputs and comparing outputs.
+        ///
+        /// 5. **Public input binding** — the Fiat-Shamir transcript absorbs the
+        ///    public inputs first, so any mismatch causes challenge divergence
+        ///    and Merkle/FRI verification failure.
+        ///
+        /// Security: 128-bit soundness via 32 FRI queries with blowup factor 16.
         fn verify_proof(ref self: ContractState, proof: Span<felt252>, public_inputs: Span<felt252>) -> bool {
-            // Proof must have at least 7 core elements (7 hashes)
-            if proof.len() < 7 {
-                return false;
-            }
-
-            // Extract core proof elements 
-            let constraint_hash = *proof.at(0);
-            let trace_hash = *proof.at(1);
-            let decommitment_hash = *proof.at(2);
-            let fri_alpha = *proof.at(3);
-            let fri_layer_0 = *proof.at(4);
-            let fri_layer_1 = *proof.at(5);
-            let fri_final = *proof.at(6);
-
-            // Verify decommitment_hash = Poseidon(constraint_hash, trace_hash)
-            let mut decommit_data = ArrayTrait::new();
-            decommit_data.append(constraint_hash);
-            decommit_data.append(trace_hash);
-            let expected_decommitment = poseidon_hash_span(decommit_data.span());
-            if expected_decommitment != decommitment_hash {
-                return false;
-            }
-
-            // Verify FRI alpha = Poseidon(decommitment_hash, historic_root)
-            // The historic_root is the first public input
-            if public_inputs.len() == 0 {
-                return false;
-            }
-            let historic_root = *public_inputs.at(0);
-            let mut fri_alpha_data = ArrayTrait::new();
-            fri_alpha_data.append(decommitment_hash);
-            fri_alpha_data.append(historic_root);
-            let expected_fri_alpha = poseidon_hash_span(fri_alpha_data.span());
-            if expected_fri_alpha != fri_alpha {
-                return false;
-            }
-
-            // Verify FRI layer 0 = Poseidon(fri_alpha, constraint_hash)
-            let mut layer0_data = ArrayTrait::new();
-            layer0_data.append(fri_alpha);
-            layer0_data.append(constraint_hash);
-            let expected_layer_0 = poseidon_hash_span(layer0_data.span());
-            if expected_layer_0 != fri_layer_0 {
-                return false;
-            }
-
-            // Verify FRI layer 1 = Poseidon(fri_alpha, trace_hash)
-            let mut layer1_data = ArrayTrait::new();
-            layer1_data.append(fri_alpha);
-            layer1_data.append(trace_hash);
-            let expected_layer_1 = poseidon_hash_span(layer1_data.span());
-            if expected_layer_1 != fri_layer_1 {
-                return false;
-            }
-
-            // Verify FRI final = Poseidon(fri_layer_0, fri_layer_1)
-            let mut final_data = ArrayTrait::new();
-            final_data.append(fri_layer_0);
-            final_data.append(fri_layer_1);
-            let expected_final = poseidon_hash_span(final_data.span());
-            if expected_final != fri_final {
-                return false;
-            }
-
-            // Verify proof commitment = Poseidon(constraint_hash, decommitment_hash, fri_final)
-            let mut commit_data = ArrayTrait::new();
-            commit_data.append(constraint_hash);
-            commit_data.append(decommitment_hash);
-            commit_data.append(fri_final);
-            let _proof_commitment = poseidon_hash_span(commit_data.span());
-
-            // All FRI consistency checks pass — proof is valid
-            true
+            super::super::stwo_verifier::verify_stwo_proof(proof, public_inputs)
         }
 
         fn get_zero_hash(level: u32) -> felt252 {

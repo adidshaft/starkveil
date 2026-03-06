@@ -132,15 +132,23 @@ enum FFIResult: Decodable, Sendable {
     }
 }
 
+struct TransferInput: Codable {
+    let input_notes: [Note]
+    let output_notes: [Note]
+}
+
 // MARK: - ZK Prover Service
 
 class StarkVeilProver {
 
     /// Generates a Zero-Knowledge proof natively using the Rust FFI framework.
-    /// - Parameter notes: Array of input note constraints.
+    /// - Parameters:
+    ///   - inputNotes: Array of notes to spend
+    ///   - outputNotes: Array of notes to create (recipient, change)
     /// - Returns: The signed payload ready to be sent to the StarkVeil Cairo Contract.
-    static func generateTransferProof(notes: [Note]) async throws -> TransferPayload {
-        let notesData = try JSONEncoder().encode(notes)
+    static func generateTransferProof(inputNotes: [Note], outputNotes: [Note]) async throws -> TransferPayload {
+        let inputStruct = TransferInput(input_notes: inputNotes, output_notes: outputNotes)
+        let notesData = try JSONEncoder().encode(inputStruct)
         guard let notesString = String(data: notesData, encoding: .utf8) else {
             throw NSError(domain: "StarkVeilProver", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Notes array could not be UTF-8 encoded"])

@@ -1,7 +1,7 @@
 const https = require('https');
 
 const rpcUrl = "https://rpc.starknet-testnet.lava.build";
-const contractAddress = "0x74b2fe0e8674fb9f5ee5417e435492e88dd8dac2c68f67f328d8970883fa931";
+const contractAddress = "0x02d69236620a877ce24413b34dd45115bc72fd4cca8e3445546a9ce3d5be0abc";
 
 function rpcCall(method, params) {
     return new Promise((resolve, reject) => {
@@ -28,7 +28,7 @@ async function main() {
     console.log(JSON.stringify(classHash, null, 2));
 
     // 2. Check user account
-    const userAddress = "0x00dcfda26eed804f5be31b7d5e4a50e1efee5474c10a4dbffcb04b901fc86a9f";
+    const userAddress = "0x794423827c442b8111d5896fa8aae6e957ecf906d1424369bd9db5118efe915";
     console.log("\n=== 2. Checking user account ===");
     const userClass = await rpcCall("starknet_getClassHashAt", ["latest", userAddress]);
     console.log(JSON.stringify(userClass, null, 2));
