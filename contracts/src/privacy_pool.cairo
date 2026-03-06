@@ -91,19 +91,19 @@ pub mod PrivacyPool {
         ///   - FRI proximity proofs
         ///   - Trace execution validity
         fn verify_proof(ref self: ContractState, proof: Span<felt252>, public_inputs: Span<felt252>) -> bool {
-            // Proof must have at least 8 core elements (length + 7 hashes)
-            if proof.len() < 8 {
+            // Proof must have at least 7 core elements (7 hashes)
+            if proof.len() < 7 {
                 return false;
             }
 
-            // Extract core proof elements (skip index 0 which is proof_length)
-            let constraint_hash = *proof.at(1);
-            let trace_hash = *proof.at(2);
-            let decommitment_hash = *proof.at(3);
-            let fri_alpha = *proof.at(4);
-            let fri_layer_0 = *proof.at(5);
-            let fri_layer_1 = *proof.at(6);
-            let fri_final = *proof.at(7);
+            // Extract core proof elements 
+            let constraint_hash = *proof.at(0);
+            let trace_hash = *proof.at(1);
+            let decommitment_hash = *proof.at(2);
+            let fri_alpha = *proof.at(3);
+            let fri_layer_0 = *proof.at(4);
+            let fri_layer_1 = *proof.at(5);
+            let fri_final = *proof.at(6);
 
             // Verify decommitment_hash = Poseidon(constraint_hash, trace_hash)
             let mut decommit_data = ArrayTrait::new();

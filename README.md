@@ -10,7 +10,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. **Phase 21:** Activity feed now correctly shows `+`/`−` prefixes and green/red/amber colours for all 5 event kinds (deposit, receive, private send, unshield, public send). Activity tab is fully scrollable from the bottom nav. All views use a consistent glassmorphic design (frosted cards, purple glow borders, green/red accent icons). **QR Scanner:** No reinstall required — grant camera permission once in iOS Settings → Privacy → Camera. **Security:** 18-finding security audit completed (Phases 9–20); all findings resolved. **Stwo Integration:** Real Poseidon-based proof verification live; Merkle witnesses fetched on-demand from contract view functions for every spend.
+**Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. **Phase 21:** Activity feed now correctly shows `+`/`−` prefixes and green/red/amber colours for all 5 event kinds (deposit, receive, private send, unshield, public send). Activity tab is fully scrollable from the bottom nav. All views use a consistent glassmorphic design (frosted cards, purple glow borders, green/red accent icons). **QR Scanner:** No reinstall required — grant camera permission once in iOS Settings → Privacy → Camera. **Security:** 18-finding security audit completed (Phases 9–20); all findings resolved. **Stwo Integration:** Real Poseidon-based proof verification live; Merkle witnesses fetched on-demand from contract view functions for every spend. Fixed Swift/Cairo STARK proof array bounds misalignment and commitment serializations mapping, ensuring full compatibility with Starknet OS validations and resolving private transfer execution errors (RPC 41).
 
 ---
 
@@ -54,14 +54,14 @@ The PrivacyPool contract is **already deployed** on Sepolia. No local node requi
 | | |
 |---|---|
 | **Network** | Starknet Sepolia (v0.14.1) |
-| **Contract address** | `0x03e5309aae68ecafb93e82e70a4fa5d8c96a38f072a1e5de66370519aeb1c54c` |
-| **Class hash** | `0x2d83a57fa7d4acf29be38e9b05920f12ca4672fc457c38f70978c58de1f8861` |
+| **Contract address** | `0x02d69236620a877ce24413b34dd45115bc72fd4cca8e3445546a9ce3d5be0abc` |
+| **Class hash** | `0x6f55e881019ffa68fdffed5fa0bc2ebb9cb1b8366ba44ab63dd5985f8cc7dec` |
 | **Compiler** | Scarb / Cairo 2.16.0 · Sierra 1.7.0 |
 | **Deployed** | 2026-03-06 |
 | **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
-| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x03e5309aae68ecafb93e82e70a4fa5d8c96a38f072a1e5de66370519aeb1c54c) |
-| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x043147d727c8b501cf89ba50736a169a770237c3c412aa66636ffb89d1b3b5c4) |
-| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x057435b7d6321f948b36f18fe8beb3892a463bc1fdebc6341f7809ada1e577c1) |
+| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x02d69236620a877ce24413b34dd45115bc72fd4cca8e3445546a9ce3d5be0abc) |
+| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x63c4a6cf2d616e6c92ad2b156366e11a4584f1e585ccbbc33a6ac5863b61da4) |
+| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x0664a8f22e7d347c3b4db927dfade3cba8b8ad3441707e8e477f43d0f0e19144) |
 
 ### 1. Build the Rust Prover
 ```bash
