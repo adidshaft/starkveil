@@ -360,6 +360,52 @@ class WalletManager: ObservableObject {
         balance = NSDecimalNumber(decimal: strkVal).doubleValue
     }
 
+    private func estimatedMaxFeeSTRK(from resourceBounds: ResourceBoundsMapping) -> Decimal {
+        let l1Gas = WalletManager.parseToDecimal(resourceBounds.l1_gas.max_amount)
+            * WalletManager.parseToDecimal(resourceBounds.l1_gas.max_price_per_unit)
+        let l2Gas = WalletManager.parseToDecimal(resourceBounds.l2_gas.max_amount)
+            * WalletManager.parseToDecimal(resourceBounds.l2_gas.max_price_per_unit)
+        let l1DataGas = WalletManager.parseToDecimal(resourceBounds.l1_data_gas.max_amount)
+            * WalletManager.parseToDecimal(resourceBounds.l1_data_gas.max_price_per_unit)
+        let totalFri = l1Gas + l2Gas + l1DataGas
+        return totalFri / Decimal(sign: .plus, exponent: 18, significand: 1)
+    }
+
+    private func fetchCurrentPublicBalanceSTRK(rpcUrl: URL) async throws -> Decimal {
+        guard let address = KeychainManager.accountAddress() else {
+            throw NSError(domain: "StarkVeil", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Account not activated."])
+        }
+
+        let rawResult = try await RPCClient().getSTRKBalance(rpcUrl: rpcUrl, address: address)
+        let parts = rawResult.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let low = WalletManager.parseToDecimal(parts.first ?? "0x0")
+        let high = WalletManager.parseToDecimal(parts.count > 1 ? parts[1] : "0x0")
+        let twoPow128 = WalletManager.parseToDecimal("0x100000000000000000000000000000000")
+        let weiBalance = low + (high * twoPow128)
+        let strkBalance = weiBalance / Decimal(sign: .plus, exponent: 18, significand: 1)
+        publicBalance = NSDecimalNumber(decimal: strkBalance).doubleValue
+        return strkBalance
+    }
+
+    private func ensureSufficientPublicGas(
+        rpcUrl: URL,
+        resourceBounds: ResourceBoundsMapping,
+        actionLabel: String,
+        additionalRequiredSTRK: Decimal = 0
+    ) async throws {
+        let estimatedMaxFee = estimatedMaxFeeSTRK(from: resourceBounds)
+        let totalRequired = estimatedMaxFee + additionalRequiredSTRK
+        let currentPublic = try await fetchCurrentPublicBalanceSTRK(rpcUrl: rpcUrl)
+        guard currentPublic >= totalRequired else {
+            let required = String(format: "%.4f", NSDecimalNumber(decimal: totalRequired).doubleValue)
+            let available = String(format: "%.4f", NSDecimalNumber(decimal: currentPublic).doubleValue)
+            throw ProverError.custom(
+                "Need unshielded STRK (U) for \(actionLabel). Estimated max required: \(required) STRK. Current public balance: \(available) STRK."
+            )
+        }
+    }
+
     /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
     /// Updates `publicBalance` which is displayed as the U balance in the Zashi-style UI.
     func refreshPublicBalance(rpcUrl: URL) async {
@@ -553,6 +599,12 @@ class WalletManager: ObservableObject {
             senderAddress: senderAddress,
             calldata: calldata,
             nonce: chainNonce
+        )
+        try await ensureSufficientPublicGas(
+            rpcUrl: rpcUrl,
+            resourceBounds: resourceBounds,
+            actionLabel: "public send",
+            additionalRequiredSTRK: Decimal(amount)
         )
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
@@ -906,6 +958,11 @@ class WalletManager: ObservableObject {
             throw NSError(domain: "StarkVeil", code: 41,
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
+        try await ensureSufficientPublicGas(
+            rpcUrl: rpcUrl,
+            resourceBounds: resourceBounds,
+            actionLabel: "unshield"
+        )
         let (_, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
@@ -1122,6 +1179,12 @@ class WalletManager: ObservableObject {
             senderAddress: senderAddress,
             calldata: calldata,
             nonce: chainNonce
+        )
+        try await ensureSufficientPublicGas(
+            rpcUrl: rpcUrl,
+            resourceBounds: resourceBounds,
+            actionLabel: "shield",
+            additionalRequiredSTRK: Decimal(amount)
         )
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
@@ -1531,6 +1594,11 @@ class WalletManager: ObservableObject {
             throw NSError(domain: "StarkVeil", code: 41,
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
+        try await ensureSufficientPublicGas(
+            rpcUrl: rpcUrl,
+            resourceBounds: resourceBounds,
+            actionLabel: "private send"
+        )
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,

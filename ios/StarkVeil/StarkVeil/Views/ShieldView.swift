@@ -135,6 +135,16 @@ struct ShieldView: View {
                                         .foregroundStyle(themeManager.textSecondary.opacity(0.6))
                                 }
                             }
+
+                            HStack(spacing: 8) {
+                                Image(systemName: "fuelpump.fill")
+                                    .foregroundStyle(themeManager.textSecondary.opacity(0.8))
+                                Text("Network fees are paid from unshielded STRK (U). Available U: \(String(format: "%.4f", walletManager.publicBalance)) STRK. If U is too low, StarkVeil shows the estimated STRK required before submit.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(themeManager.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
                         // ── Error ────────────────────────────────────────

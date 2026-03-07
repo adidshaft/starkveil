@@ -22,6 +22,10 @@ struct PrivateSendForm: View {
         !walletManager.isProving && !recipientAddress.isEmpty && parsedAmount != nil
     }
 
+    var gasHint: String {
+        "Gas is paid from unshielded STRK (U). Available U: \(String(format: "%.4f", walletManager.publicBalance)) STRK."
+    }
+
     var body: some View {
         VStack(spacing: 20) {
 
@@ -47,6 +51,16 @@ struct PrivateSendForm: View {
             .padding()
             .background(themeManager.surface1)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            HStack(spacing: 8) {
+                Image(systemName: "fuelpump.fill")
+                    .foregroundStyle(themeManager.textSecondary)
+                Text(gasHint)
+                    .font(.caption)
+                    .foregroundStyle(themeManager.textSecondary)
+                    .multilineTextAlignment(.leading)
+                Spacer()
+            }
 
             // Error Display
             let displayError = walletManager.transferError ?? errorMessage
