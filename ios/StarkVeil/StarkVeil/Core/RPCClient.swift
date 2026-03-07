@@ -259,12 +259,25 @@ class RPCClient {
     /// Returns the current on-chain nonce for the given account address.
     /// Must be called before every invoke or deploy transaction.
     func getNonce(rpcUrl: URL, address: String) async throws -> String {
+        struct BlockIdPending: Encodable {
+            let block_id: String = "pending"
+        }
+        
+        // Starknet v0.8+ requires block_id to be explicitly tagged if using a struct,
+        // or passed as a direct string literal if positional. Using named params:
         struct Params: Encodable {
             let block_id: String = "pending"
             let contract_address: String
         }
-        let payload = RPCRequest(method: "starknet_getNonce",
-                                 params: Params(contract_address: address))
+        // Actually, the API specifies block_id can be "pending", "latest", or an object.
+        // Let's use the standard "pending" string directly or {"block_tag": "pending"} if strict OpenRPC.
+        let payload = RPCRequest(
+            method: "starknet_getNonce",
+            params: [
+                "pending",
+                address
+            ]
+        )
         let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
             throw RPCClientError.serverError(code: error.code, message: error.message)
@@ -613,22 +626,20 @@ class RPCClient {
         contractAddress: String,
         nullifier: String
     ) async -> Bool {
-        struct Params: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
         // C-2 fix: correct sn_keccak("is_nullifier_spent") — verified via starkli selector
         let selector = "0x01717756976e0193c74b6f98c2feece48233c9c0c2663525c4886b4404e1329c"
-        let payload = RPCRequest(method: "starknet_call",
-                                 params: Params(request: Params.CallReq(
-                                     contract_address: contractAddress,
-                                     entry_point_selector: selector,
-                                     calldata: [nullifier])))
+        
+        let payload = RPCRequest(
+            method: "starknet_call",
+            params: [
+                "request": [
+                    "contract_address": contractAddress,
+                    "entry_point_selector": selector,
+                    "calldata": [nullifier]
+                ],
+                "block_id": "latest"
+            ]
+        )
         guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[String]>,
               let first = response.result?.first else { return false }
         return first == "0x1"
@@ -639,22 +650,17 @@ class RPCClient {
     func getETHBalance(rpcUrl: URL, address: String) async throws -> String {
         let ethContract = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
         let selector    = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
-        struct Params: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
+        
         let payload = RPCRequest(
             method: "starknet_call",
-            params: Params(request: Params.CallReq(
-                contract_address: ethContract,
-                entry_point_selector: selector,
-                calldata: [address]
-            ))
+            params: [
+                "request": [
+                    "contract_address": ethContract,
+                    "entry_point_selector": selector,
+                    "calldata": [address]
+                ],
+                "block_id": "latest"
+            ]
         )
         let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -669,22 +675,17 @@ class RPCClient {
     func getSTRKBalance(rpcUrl: URL, address: String) async throws -> String {
         let strkContract = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
         let selector     = "0x2e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e"
-        struct Params: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
+        
         let payload = RPCRequest(
             method: "starknet_call",
-            params: Params(request: Params.CallReq(
-                contract_address: strkContract,
-                entry_point_selector: selector,
-                calldata: [address]
-            ))
+            params: [
+                "request": [
+                    "contract_address": strkContract,
+                    "entry_point_selector": selector,
+                    "calldata": [address]
+                ],
+                "block_id": "latest"
+            ]
         )
         let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -702,21 +703,18 @@ class RPCClient {
     /// deployments where the entrypoint doesn't exist (RPC error 21).
     func fetchMerkleRoot(rpcUrl: URL, contractAddress: String) async throws -> String {
         // Primary: call view function
-        struct CallParams: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
         let selector = "0x00074addea198acfff933b6d6b4a4ba165265c7d7261d654c5e32ed6e53e4437"
-        let callPayload = RPCRequest(method: "starknet_call",
-                                     params: CallParams(request: CallParams.CallReq(
-                                         contract_address: contractAddress,
-                                         entry_point_selector: selector,
-                                         calldata: [])))
+        let callPayload = RPCRequest(
+            method: "starknet_call",
+            params: [
+                "request": [
+                    "contract_address": contractAddress,
+                    "entry_point_selector": selector,
+                    "calldata": [] as [String]
+                ],
+                "block_id": "latest"
+            ]
+        )
         let callResp: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: callPayload)
         if let result = callResp.result?.first, callResp.error == nil {
             return result
@@ -730,21 +728,18 @@ class RPCClient {
 
     /// Reads mt_next_index. Tries view function, falls back to storage slot.
     func fetchMerkleNextIndex(rpcUrl: URL, contractAddress: String) async throws -> Int {
-        struct CallParams: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
         let selector = "0x03dbad2e340264907e47b2cbbcc75d5a93b48640ed9d6082f3a29a2fd650e56d"
-        let callPayload = RPCRequest(method: "starknet_call",
-                                     params: CallParams(request: CallParams.CallReq(
-                                         contract_address: contractAddress,
-                                         entry_point_selector: selector,
-                                         calldata: [])))
+        let callPayload = RPCRequest(
+            method: "starknet_call",
+            params: [
+                "request": [
+                    "contract_address": contractAddress,
+                    "entry_point_selector": selector,
+                    "calldata": [] as [String]
+                ],
+                "block_id": "latest"
+            ]
+        )
         let callResp: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: callPayload)
         if let hexStr = callResp.result?.first, callResp.error == nil {
             let clean = hexStr.hasPrefix("0x") ? String(hexStr.dropFirst(2)) : hexStr
@@ -765,26 +760,22 @@ class RPCClient {
         contractAddress: String,
         leafIndex: Int
     ) async throws -> [String] {
-        struct CallParams: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
-        }
         let selector = "0x00f240b02d924525746aea6e87814fae41da607a0e7d674b69cd564b3ee85d7c"
         var path: [String] = []
         var idx = leafIndex
         for level in 0..<20 {
             let siblingIdx = idx ^ 1
-            let payload = RPCRequest(method: "starknet_call",
-                                     params: CallParams(request: CallParams.CallReq(
-                                         contract_address: contractAddress,
-                                         entry_point_selector: selector,
-                                         calldata: [String(format: "0x%x", level),
-                                                    String(format: "0x%x", siblingIdx)])))
+            let payload = RPCRequest(
+                method: "starknet_call",
+                params: [
+                    "request": [
+                        "contract_address": contractAddress,
+                        "entry_point_selector": selector,
+                        "calldata": [String(format: "0x%x", level), String(format: "0x%x", siblingIdx)]
+                    ],
+                    "block_id": "latest"
+                ]
+            )
             let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
             if let error = response.error {
                 // get_mt_node not available on this contract (old class).
@@ -847,15 +838,14 @@ class RPCClient {
 
     /// Raw `starknet_getStorageAt` call — used as fallback when view functions are unavailable.
     private func fetchStorageAt(rpcUrl: URL, contractAddress: String, storageKey: String) async throws -> String {
-        struct Params: Encodable {
-            let contract_address: String
-            let key: String
-            let block_id: String
-        }
-        let payload = RPCRequest(method: "starknet_getStorageAt",
-                                 params: Params(contract_address: contractAddress,
-                                                key: storageKey,
-                                                block_id: "latest"))
+        let payload = RPCRequest(
+            method: "starknet_getStorageAt",
+            params: [
+                "contract_address": contractAddress,
+                "key": storageKey,
+                "block_id": "latest"
+            ]
+        )
         let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
             throw RPCClientError.serverError(code: error.code, message: error.message)
