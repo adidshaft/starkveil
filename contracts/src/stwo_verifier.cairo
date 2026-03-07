@@ -423,16 +423,16 @@ pub fn verify_stwo_proof(
             };
             cursor += path_len;
 
-            // Compute the leaf hash for this query position.
-            let mut leaf_data = ArrayTrait::new();
-            leaf_data.append(val_p);
-            let leaf_hash = poseidon_hash_span(leaf_data.span());
+            // The Rust prover commits FRI layers with raw felt252 leaves:
+            // `MerkleTree::new(vec![FieldElement::from(v)])`. Re-hashing the
+            // queried value here would make every valid proof fail on-chain.
+            let leaf = val_p;
 
             // Verify Merkle decommitment against the layer commitment.
             if layer < fri_commitments.len() {
                 let valid = verify_merkle_path(
                     *fri_commitments.at(layer),
-                    leaf_hash,
+                    leaf,
                     query_index,
                     siblings.span(),
                 );
