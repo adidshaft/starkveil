@@ -5,7 +5,7 @@ pub mod stark;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use types::{Note, TransferPayload, FFIResult, UnshieldInput, UnshieldPayload, UnshieldFFIResult};
+use types::{TransferPayload, FFIResult, UnshieldInput, UnshieldPayload, UnshieldFFIResult};
 use circuit::{NoteWitness, OutputNote, parse_merkle_path};
 
 // Phase 12: Real Starknet cryptography via starknet-crypto crate
@@ -19,6 +19,32 @@ use starknet_crypto::{
     sign,
     FieldElement,
 };
+
+fn checked_commitment(
+    value: &FieldElement,
+    asset_id: &FieldElement,
+    owner_pubkey: &FieldElement,
+    nonce: &FieldElement,
+    provided: Option<&str>,
+    label: &str,
+) -> Result<FieldElement, String> {
+    let expected = circuit::compute_commitment(value, asset_id, owner_pubkey, nonce);
+    if let Some(raw) = provided {
+        if !raw.is_empty() && raw != "0x" {
+            let parsed = felt_from_hex(raw)
+                .map_err(|e| format!("{} commitment parse error: {}", label, e))?;
+            if parsed != expected {
+                return Err(format!(
+                    "{} commitment mismatch: expected {}, got {}",
+                    label,
+                    felt_to_hex(&expected),
+                    felt_to_hex(&parsed),
+                ));
+            }
+        }
+    }
+    Ok(expected)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Helper: parse FieldElement from hex string
@@ -413,27 +439,26 @@ pub unsafe extern "C" fn generate_transfer_proof(
             Err(e) => return ffi_error(&format!("Input note {} merkle_path error: {}", i, e)),
         };
 
-        // Parse commitment override if provided.
-        // When present, this is the actual on-chain leaf hash and is used directly
-        // instead of recomputing from (value, asset_id, owner_pubkey, nonce).
-        let commitment_override = match note.commitment.as_deref() {
-            Some(c) if !c.is_empty() && c != "0x" => match felt_from_hex(c) {
-                Ok(f) => Some(f),
-                Err(e) => return ffi_error(&format!("Input note {} commitment parse error: {}", i, e)),
-            },
-            _ => None,
+        let commitment = match checked_commitment(
+            &value,
+            &asset,
+            &owner,
+            &nonce,
+            note.commitment.as_deref(),
+            &format!("Input note {}", i),
+        ) {
+            Ok(c) => c,
+            Err(e) => return ffi_error(&e),
         };
 
         input_witnesses.push(NoteWitness {
             value, asset_id: asset, owner_pubkey: owner, nonce,
             spending_key: sk, leaf_position: leaf_pos, merkle_path,
-            commitment: commitment_override,
+            commitment: Some(commitment),
         });
     }
 
     // ── Derive historic root from the first note's Merkle path ──────────────
-    // Use the stored commitment override if available so the root matches what
-    // the Cairo contract stored when the note was shielded.
     let first_commitment_leaf = input_witnesses[0].commitment.unwrap_or_else(|| circuit::compute_commitment(
         &input_witnesses[0].value,
         &input_witnesses[0].asset_id,
@@ -468,6 +493,17 @@ pub unsafe extern "C" fn generate_transfer_proof(
         let out_nonce = match felt_from_hex(nonce_str) {
             Ok(f) => f, Err(e) => return ffi_error(&format!("Output note {} nonce error: {}", i, e)),
         };
+
+        if let Err(e) = checked_commitment(
+            &out_value,
+            &out_asset,
+            &out_owner,
+            &out_nonce,
+            out_note.commitment.as_deref(),
+            &format!("Output note {}", i),
+        ) {
+            return ffi_error(&e);
+        }
 
         total_output_value = total_output_value + out_value;
 
@@ -590,18 +626,22 @@ pub unsafe extern "C" fn generate_unshield_proof(
         Err(e) => return ffi_error(&format!("merkle_path error: {}", e)),
     };
 
-    let commitment_override = match note.commitment.as_deref() {
-        Some(c) if !c.is_empty() && c != "0x" => match felt_from_hex(c) {
-            Ok(f) => Some(f),
-            Err(e) => return ffi_error(&format!("Unshield commitment parse error: {}", e)),
-        },
-        _ => None,
+    let commitment = match checked_commitment(
+        &value,
+        &asset,
+        &owner,
+        &nonce,
+        note.commitment.as_deref(),
+        "Unshield input note",
+    ) {
+        Ok(c) => c,
+        Err(e) => return ffi_error(&e),
     };
 
     let witness = NoteWitness {
         value, asset_id: asset, owner_pubkey: owner, nonce,
         spending_key: sk, leaf_position: leaf_pos, merkle_path,
-        commitment: commitment_override,
+        commitment: Some(commitment),
     };
 
     let proof_result = circuit::generate_unshield_stark_proof(

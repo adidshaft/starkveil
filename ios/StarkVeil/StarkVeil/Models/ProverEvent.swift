@@ -4,6 +4,7 @@ import SwiftData
 // MARK: - ProverEvent Kind
 
 enum ProverEventKind: String, Codable {
+    case shield   = "shield"
     case transfer = "transfer"
     case unshield = "unshield"
 }

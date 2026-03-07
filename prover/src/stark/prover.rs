@@ -54,27 +54,13 @@ pub struct PrivacyPoolProof {
     pub public_inputs: CircuitPublicInputs,
 }
 
-/// Configuration for the STARK prover.
-pub struct ProverConfig {
-    pub log_blowup: u32,
-    pub n_queries: usize,
-}
-
-impl Default for ProverConfig {
-    fn default() -> Self {
-        ProverConfig {
-            log_blowup: 4,
-            n_queries: 32,
-        }
-    }
-}
-
-/// Generate a complete STARK proof for a private transfer.
-pub fn prove_transfer(
+fn prove_core(
     inputs: &[InputNoteWitness],
     outputs: &[OutputNoteData],
     fee: &FieldElement,
     historic_root: &FieldElement,
+    transcript_public_inputs: &[FieldElement],
+    public_inputs: CircuitPublicInputs,
     config: &ProverConfig,
 ) -> Result<PrivacyPoolProof, String> {
     // ── Step 1: Generate execution trace ──────────────────────────────────
@@ -83,25 +69,17 @@ pub fn prove_transfer(
     let log_trace_len = (trace_len as f64).log2() as u32;
 
     // ── Step 2: Commit to trace ──────────────────────────────────────────
-    // Evaluate trace polynomials over the LDE (Low-Degree Extended) domain.
-    // LDE domain size = trace_len * blowup.
     let log_lde_size = log_trace_len + config.log_blowup;
     let lde_domain = CircleDomain::standard(log_lde_size);
     let lde_size = lde_domain.size();
 
-    // For each evaluation point in the LDE domain, pack all trace column values
-    // into a single Merkle leaf.
-    // In a full implementation, we'd do polynomial interpolation + evaluation.
-    // Here we use a direct extension (repeat + shift) for the prototype.
     let mut trace_lde: Vec<Vec<M31>> = vec![vec![M31::ZERO; lde_size]; N_COLUMNS];
     for col in 0..N_COLUMNS {
         for i in 0..lde_size {
-            // Extend by repeating (simplified; real implementation uses NTT).
             trace_lde[col][i] = trace_columns[col][i % trace_len];
         }
     }
 
-    // Build Merkle commitment over trace LDE rows.
     let trace_leaves: Vec<FieldElement> = (0..lde_size)
         .map(|i| {
             let row_vals: Vec<M31> = (0..N_COLUMNS).map(|c| trace_lde[c][i]).collect();
@@ -114,27 +92,17 @@ pub fn prove_transfer(
 
     // ── Step 3: Fiat-Shamir channel setup ─────────────────────────────────
     let mut channel = Channel::new();
-
-    // Absorb public inputs.
-    channel.absorb_felt(historic_root);
-    for input in inputs {
-        channel.absorb_felt(&input.nullifier);
+    for value in transcript_public_inputs {
+        channel.absorb_felt(value);
     }
-    for output in outputs {
-        channel.absorb_felt(&output.commitment);
-    }
-    channel.absorb_felt(fee);
 
     // Absorb trace commitment.
     channel.absorb_felt(&trace_commitment);
 
     // ── Step 4: Poseidon Oracle Commitment ────────────────────────────────
-    // Record all Poseidon hash evaluations performed during trace generation.
-    // The prover commits to these, and the verifier spot-checks them.
     let mut poseidon_io_pairs: Vec<FieldElement> = Vec::new();
 
     for input in inputs {
-        // Commitment hash I/O
         let comm = poseidon_hash_many(&[input.value, input.asset_id, input.owner_pubkey, input.nonce]);
         poseidon_io_pairs.push(input.value);
         poseidon_io_pairs.push(input.asset_id);
@@ -142,13 +110,11 @@ pub fn prove_transfer(
         poseidon_io_pairs.push(input.nonce);
         poseidon_io_pairs.push(comm);
 
-        // Nullifier hash I/O
         let null = poseidon_hash_many(&[input.commitment, input.spending_key]);
         poseidon_io_pairs.push(input.commitment);
         poseidon_io_pairs.push(input.spending_key);
         poseidon_io_pairs.push(null);
 
-        // Merkle path hashes
         let mut current = input.commitment;
         let mut idx = input.leaf_position;
         for level in 0..air::TREE_DEPTH {
@@ -192,11 +158,8 @@ pub fn prove_transfer(
     channel.absorb_felt(&composition_commitment);
 
     // ── Step 6: OOD (Out-of-Domain) Evaluation ────────────────────────────
-    // Sample a random point z outside the LDE domain and evaluate trace +
-    // composition there.  This binds the committed polynomials to specific values.
     let ood_point = channel.squeeze_felt();
 
-    // OOD trace evaluations (simplified: use the trace value at a wrapped index).
     let ood_index = {
         let bytes = ood_point.to_bytes_be();
         let raw = u32::from_be_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]);
@@ -222,7 +185,6 @@ pub fn prove_transfer(
         n_queries: config.n_queries,
     };
 
-    // Combine trace and composition into a single column for FRI.
     let fri_alpha = channel.squeeze_m31();
     let mut combined_column = vec![M31::ZERO; lde_size];
     for i in 0..lde_size {
@@ -245,23 +207,16 @@ pub fn prove_transfer(
 
     // ── Step 8: Serialize proof ───────────────────────────────────────────
     let mut proof_felts: Vec<FieldElement> = Vec::new();
-
-    // Header.
     proof_felts.push(FieldElement::from(log_trace_len as u64));
     proof_felts.push(FieldElement::from(N_COLUMNS as u64));
     proof_felts.push(FieldElement::from(config.log_blowup as u64));
-
-    // Commitments.
     proof_felts.push(trace_commitment);
     proof_felts.push(composition_commitment);
     proof_felts.push(poseidon_commitment);
-
-    // OOD evaluations.
     proof_felts.push(FieldElement::from(ood_trace_evals.len() as u64));
     proof_felts.extend_from_slice(&ood_trace_evals);
     proof_felts.push(ood_composition_eval);
 
-    // FRI proof.
     let fri_serialized = serialize_fri_proof(
         &fri_layers,
         &fri_alphas,
@@ -270,22 +225,62 @@ pub fn prove_transfer(
     );
     proof_felts.extend_from_slice(&fri_serialized);
 
-    // Poseidon I/O pairs (for oracle verification).
     proof_felts.push(FieldElement::from(poseidon_io_pairs.len() as u64));
     proof_felts.extend_from_slice(&poseidon_io_pairs);
 
-    // ── Assemble public inputs ────────────────────────────────────────────
+    Ok(PrivacyPoolProof {
+        proof_felts,
+        public_inputs,
+    })
+}
+
+/// Configuration for the STARK prover.
+pub struct ProverConfig {
+    pub log_blowup: u32,
+    pub n_queries: usize,
+}
+
+impl Default for ProverConfig {
+    fn default() -> Self {
+        ProverConfig {
+            log_blowup: 4,
+            n_queries: 32,
+        }
+    }
+}
+
+/// Generate a complete STARK proof for a private transfer.
+pub fn prove_transfer(
+    inputs: &[InputNoteWitness],
+    outputs: &[OutputNoteData],
+    fee: &FieldElement,
+    historic_root: &FieldElement,
+    config: &ProverConfig,
+) -> Result<PrivacyPoolProof, String> {
     let public_inputs = CircuitPublicInputs {
         historic_root: *historic_root,
         nullifiers: inputs.iter().map(|n| n.nullifier).collect(),
         new_commitments: outputs.iter().map(|n| n.commitment).collect(),
         fee: *fee,
     };
+    let mut transcript_public_inputs = Vec::with_capacity(
+        1 + inputs.len() + outputs.len() + 2
+    );
+    transcript_public_inputs.push(*historic_root);
+    transcript_public_inputs.extend(inputs.iter().map(|n| n.nullifier));
+    transcript_public_inputs.extend(outputs.iter().map(|n| n.commitment));
+    transcript_public_inputs.push(*fee);
+    transcript_public_inputs.push(FieldElement::ZERO);
 
-    Ok(PrivacyPoolProof {
-        proof_felts,
+    prove_core(
+        inputs,
+        outputs,
+        fee,
+        historic_root,
+        &transcript_public_inputs,
         public_inputs,
-    })
+        config,
+    )
 }
 
 /// Generate a STARK proof for an unshield operation.
@@ -300,34 +295,31 @@ pub fn prove_unshield(
     historic_root: &FieldElement,
     config: &ProverConfig,
 ) -> Result<PrivacyPoolProof, String> {
-    // For unshield, the "output" is the withdrawal itself (no new notes).
-    // We generate a transfer proof with zero outputs and bind the withdrawal
-    // parameters as additional public inputs.
-
-    let fee = FieldElement::ZERO; // Unshield has no internal fee.
-    let result = prove_transfer(&[*input], &[], &fee, historic_root, config)?;
-
-    // Extend the proof with unshield-specific public input bindings.
-    let mut extended_felts = result.proof_felts;
-
-    // Append unshield public inputs as a tagged section.
-    let unshield_tag = poseidon_hash_many(&[
-        FieldElement::from(0x756E7368u64), // "unsh" as felt
+    let fee = FieldElement::ZERO;
+    let public_inputs = CircuitPublicInputs {
+        historic_root: *historic_root,
+        nullifiers: vec![input.nullifier],
+        new_commitments: vec![],
+        fee,
+    };
+    let transcript_public_inputs = vec![
+        *historic_root,
+        input.nullifier,
         *amount_low,
         *amount_high,
         *recipient,
         *asset,
-    ]);
-    extended_felts.push(unshield_tag);
-    extended_felts.push(*amount_low);
-    extended_felts.push(*amount_high);
-    extended_felts.push(*recipient);
-    extended_felts.push(*asset);
+    ];
 
-    Ok(PrivacyPoolProof {
-        proof_felts: extended_felts,
-        public_inputs: result.public_inputs,
-    })
+    prove_core(
+        &[*input],
+        &[],
+        &fee,
+        historic_root,
+        &transcript_public_inputs,
+        public_inputs,
+        config,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

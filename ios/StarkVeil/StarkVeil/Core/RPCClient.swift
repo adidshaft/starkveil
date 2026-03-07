@@ -259,24 +259,13 @@ class RPCClient {
     /// Returns the current on-chain nonce for the given account address.
     /// Must be called before every invoke or deploy transaction.
     func getNonce(rpcUrl: URL, address: String) async throws -> String {
-        struct BlockIdPending: Encodable {
-            let block_id: String = "pending"
-        }
-        
-        // Starknet v0.8+ requires block_id to be explicitly tagged if using a struct,
-        // or passed as a direct string literal if positional. Using named params:
         struct Params: Encodable {
-            let block_id: String = "pending"
+            let block_id: String = "latest"
             let contract_address: String
         }
-        // Actually, the API specifies block_id can be "pending", "latest", or an object.
-        // Let's use the standard "pending" string directly or {"block_tag": "pending"} if strict OpenRPC.
         let payload = RPCRequest(
             method: "starknet_getNonce",
-            params: [
-                "pending",
-                address
-            ]
+            params: Params(contract_address: address)
         )
         let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
@@ -413,6 +402,11 @@ class RPCClient {
             let nonce_data_availability_mode: String = "L1"
             let fee_data_availability_mode: String = "L1"
         }
+        struct Params: Encodable {
+            let request: [EstimateInvokeTx]
+            let block_id: String = "latest"
+            let simulation_flags: [String] = ["SKIP_VALIDATE"]
+        }
         let maxBounds = ResourceBoundsMapping(
             l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
             l2_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
@@ -424,15 +418,8 @@ class RPCClient {
             nonce: nonce,
             resource_bounds: maxBounds
         )
-        // Starknet RPC starknet_estimateFee expects positional params: [request_array, simulation_flags, block_id]
-        let payload = RPCRequest(
-            method: "starknet_estimateFee",
-            params: [
-                AnyEncodable([tx]),
-                AnyEncodable(["SKIP_VALIDATE"] as [String]),
-                AnyEncodable("latest")
-            ]
-        )
+        let payload = RPCRequest(method: "starknet_estimateFee",
+                                 params: Params(request: [tx]))
         do {
             let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
             if let estimate = response.result?.first {
@@ -475,6 +462,11 @@ class RPCClient {
             let nonce_data_availability_mode: String = "L1"
             let fee_data_availability_mode: String = "L1"
         }
+        struct Params: Encodable {
+            let request: [EstimateDeployTx]
+            let block_id: String = "latest"
+            let simulation_flags: [String] = ["SKIP_VALIDATE"]
+        }
         let maxBounds = ResourceBoundsMapping(
             l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
             l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
@@ -486,14 +478,8 @@ class RPCClient {
             class_hash: classHash,
             resource_bounds: maxBounds
         )
-        let payload = RPCRequest(
-            method: "starknet_estimateFee",
-            params: [
-                AnyEncodable([tx]),
-                AnyEncodable(["SKIP_VALIDATE"] as [String]),
-                AnyEncodable("latest")
-            ]
-        )
+        let payload = RPCRequest(method: "starknet_estimateFee",
+                                 params: Params(request: [tx]))
         do {
             let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
             if let estimate = response.result?.first {
@@ -620,32 +606,25 @@ class RPCClient {
 
     // MARK: - Nullifier check
 
-    /// Calls PrivacyPool.is_nullifier_spent(nullifier) → bool.
+    /// Checks if a nullifier is spent by directly reading the contract's storage map.
     func isNullifierSpent(
         rpcUrl: URL,
         contractAddress: String,
         nullifier: String
     ) async -> Bool {
-        // C-2 fix: correct sn_keccak("is_nullifier_spent") — verified via starkli selector
-        let selector = "0x01717756976e0193c74b6f98c2feece48233c9c0c2663525c4886b4404e1329c"
+        // Keep using direct storage reads here so nullifier checks remain ABI-independent
+        // across old and newly deployed pool contracts.
+        // Storage address = Poseidon(sn_keccak("nullifiers"), nullifier)
+        // Storage address = Poseidon(sn_keccak("nullifiers"), nullifier)
+        // sn_keccak("nullifiers") = "0x011eb1cfd6dc2270dd714e86a9f4fb7dcb1701385311eab1be1d38260a927c32"
+        let mapSelector = "0x011eb1cfd6dc2270dd714e86a9f4fb7dcb1701385311eab1be1d38260a927c32"
         
-        struct Params: Encodable {
-            let request: CallReq
-            let block_id: String = "latest"
-            struct CallReq: Encodable {
-                let contract_address: String
-                let entry_point_selector: String
-                let calldata: [String]
-            }
+        guard let storageAddress = try? StarkVeilProver.poseidonHash(elements: [mapSelector, nullifier]),
+              let value = try? await fetchStorageAt(rpcUrl: rpcUrl, contractAddress: contractAddress, storageKey: storageAddress) else {
+            return false
         }
-        let payload = RPCRequest(method: "starknet_call",
-                                 params: Params(request: Params.CallReq(
-                                     contract_address: contractAddress,
-                                     entry_point_selector: selector,
-                                     calldata: [nullifier])))
-        guard let response = try? await performRequest(url: rpcUrl, payload: payload) as RPCResponse<[String]>,
-              let first = response.result?.first else { return false }
-        return first == "0x1"
+        
+        return value != "0x0" && value != "0"
     }
 
     // MARK: - ETH balance
@@ -879,4 +858,3 @@ class RPCClient {
         return response.result ?? "0x0"
     }
 }
-

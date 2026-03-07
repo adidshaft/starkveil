@@ -403,16 +403,14 @@ private struct UnifiedSendView: View {
                 let network = networkManager.activeNetwork
 
                 if isPrivateSend {
-                    // Shielded send — extract IVK from svk: prefix if present
-                    let ivk: String
-                    if recipientAddress.lowercased().hasPrefix("svk:") {
-                        ivk = String(recipientAddress.dropFirst(4))
-                    } else {
-                        ivk = recipientAddress
+                    guard let shielded = ShieldedAddress.parse(recipientAddress) else {
+                        throw NSError(domain: "StarkVeil", code: 40,
+                                      userInfo: [NSLocalizedDescriptionKey: "Invalid shielded address. Expected svk:<ivk>:<pubkey>."])
                     }
                     let hash = try await walletManager.executePrivateTransfer(
-                        recipientAddress: ivk,
-                        recipientIVK: ivk,
+                        recipientAddress: recipientAddress,
+                        recipientIVK: shielded.ivk,
+                        recipientPubkey: shielded.pubkey,
                         amount: amount,
                         memo: "private send",
                         rpcUrl: rpcUrl,
@@ -450,6 +448,5 @@ private struct UnifiedSendView: View {
         }
     }
 }
-
 
 

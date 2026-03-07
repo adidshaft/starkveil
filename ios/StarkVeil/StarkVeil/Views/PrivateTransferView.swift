@@ -11,7 +11,7 @@ import SwiftUI
 //   1. Select sender's note (exact amount match)
 //   2. Derive recipient's IVK key from their address (for memo encryption)
 //   3. Encrypt note details with recipient's IVK-derived key
-//   4. Build PrivacyPool.transfer(nullifier, new_commitment, encrypted_memo) calldata
+//   4. Build PrivacyPool.transfer(..., encrypted_note, ...) calldata
 //   5. Sign + submit via real nonce / estimateFee flow
 
 struct PrivateTransferView: View {
@@ -102,8 +102,8 @@ struct PrivateTransferView: View {
 
             // Recipient IVK field
             inputField(
-                label: "RECIPIENT SHIELDED KEY (paste svk:0x… or 0x…)",
-                placeholder: "svk:0x123abc…",
+                label: "RECIPIENT SHIELDED ADDRESS",
+                placeholder: "svk:0xivk…:0xpubkey…",
                 text: $recipientIVK,
                 monospaced: true
             )
@@ -257,19 +257,15 @@ struct PrivateTransferView: View {
                 let rpcUrl = networkManager.activeNetwork.rpcUrl
                 let contract = networkManager.activeNetwork.contractAddress
 
-                // Strip the "svk:" prefix if the user pasted the full SVK string.
-                // Both "svk:0x..." and bare "0x..." are valid inputs.
-                let rawIVK = recipientIVK.trimmingCharacters(in: .whitespaces)
-                let cleanIVK: String
-                if rawIVK.lowercased().hasPrefix("svk:") {
-                    cleanIVK = String(rawIVK.dropFirst(4))
-                } else {
-                    cleanIVK = rawIVK
+                guard let shielded = ShieldedAddress.parse(recipientIVK) else {
+                    throw NSError(domain: "StarkVeil", code: 40,
+                                  userInfo: [NSLocalizedDescriptionKey: "Invalid shielded address. Expected svk:<ivk>:<pubkey>."])
                 }
 
                 let txHash = try await walletManager.executePrivateTransfer(
-                    recipientAddress: cleanIVK,   // for private transfer, IVK doubles as the identifier
-                    recipientIVK: cleanIVK,
+                    recipientAddress: recipientAddress,
+                    recipientIVK: shielded.ivk,
+                    recipientPubkey: shielded.pubkey,
                     amount: amount,
                     memo: memo,
                     rpcUrl: rpcUrl,

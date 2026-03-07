@@ -118,9 +118,14 @@ struct PrivateSendForm: View {
             resultFeedback.prepare()
             do {
                 let network = networkManager.activeNetwork
+                guard let shielded = ShieldedAddress.parse(recipientAddress) else {
+                    throw NSError(domain: "StarkVeil", code: 40,
+                                  userInfo: [NSLocalizedDescriptionKey: "Invalid shielded address. Expected svk:<ivk>:<pubkey>."])
+                }
                 try await walletManager.executePrivateTransfer(
                     recipientAddress: recipientAddress,
-                    recipientIVK: recipientAddress,  // IVK == address in shielded address model
+                    recipientIVK: shielded.ivk,
+                    recipientPubkey: shielded.pubkey,
                     amount: amount,
                     memo: memo,
                     rpcUrl: network.rpcUrl,

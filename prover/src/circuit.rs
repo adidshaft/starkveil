@@ -29,6 +29,12 @@ pub enum CircuitError {
     InvalidMerklePath { leaf_index: u32, expected_root: String, computed_root: String },
     /// Balance equation does not hold
     BalanceViolation { total_in: String, total_out: String },
+    /// The operation mixes mismatched assets.
+    AssetMismatch { expected: String, found: String },
+    /// Unshield amount does not match the spent note.
+    AmountMismatch { expected: String, found: String },
+    /// Unshield amount.high must currently be zero because note values are encoded as felt252.
+    UnsupportedAmountHigh { found: String },
     /// Field element parsing error
     ParseError(String),
 }
@@ -42,6 +48,12 @@ impl std::fmt::Display for CircuitError {
                        leaf_index, expected_root, computed_root),
             CircuitError::BalanceViolation { total_in, total_out } =>
                 write!(f, "Balance violation: inputs={} != outputs={}", total_in, total_out),
+            CircuitError::AssetMismatch { expected, found } =>
+                write!(f, "Asset mismatch: expected {}, found {}", expected, found),
+            CircuitError::AmountMismatch { expected, found } =>
+                write!(f, "Amount mismatch: expected {}, found {}", expected, found),
+            CircuitError::UnsupportedAmountHigh { found } =>
+                write!(f, "Unsupported non-zero amount.high: {}", found),
             CircuitError::ParseError(msg) => write!(f, "Parse error: {}", msg),
         }
     }
@@ -56,10 +68,8 @@ pub struct NoteWitness {
     pub spending_key: FieldElement,
     pub leaf_position: u32,
     pub merkle_path: [FieldElement; 20],
-    /// Pre-computed Merkle leaf commitment. When Some, used directly instead of
-    /// recomputing from (value, asset_id, owner_pubkey, nonce). This is needed because
-    /// SyncEngine stores nonce = on-chain commitment hash and value as a decimal string,
-    /// so recomputation would produce the wrong leaf and therefore the wrong root.
+    /// Pre-validated Merkle leaf commitment. When present, it must match
+    /// Poseidon(value, asset_id, owner_pubkey, nonce).
     pub commitment: Option<FieldElement>,
 }
 
@@ -161,6 +171,7 @@ pub fn generate_transfer_stark_proof(
     historic_root: &FieldElement,
 ) -> Result<(StarkVeilProof, TransferPublicInputs), CircuitError> {
     // ── Step 1: Validate all constraints ──────────────────────────────────────
+    let expected_asset = input_notes[0].asset_id;
 
     let mut nullifiers = Vec::new();
     let mut new_commitments = Vec::new();
@@ -168,6 +179,13 @@ pub fn generate_transfer_stark_proof(
 
     // Validate input notes
     for (i, note) in input_notes.iter().enumerate() {
+        if note.asset_id != expected_asset {
+            return Err(CircuitError::AssetMismatch {
+                expected: felt_to_hex(&expected_asset),
+                found: felt_to_hex(&note.asset_id),
+            });
+        }
+
         let commitment = note.commitment.unwrap_or_else(|| compute_commitment(
             &note.value, &note.asset_id, &note.owner_pubkey, &note.nonce,
         ));
@@ -204,6 +222,13 @@ pub fn generate_transfer_stark_proof(
     // Validate output notes
     let mut total_output_value = FieldElement::ZERO;
     for note in output_notes {
+        if note.asset_id != expected_asset {
+            return Err(CircuitError::AssetMismatch {
+                expected: felt_to_hex(&expected_asset),
+                found: felt_to_hex(&note.asset_id),
+            });
+        }
+
         let commitment = compute_commitment(
             &note.value, &note.asset_id, &note.owner_pubkey, &note.nonce,
         );
@@ -305,6 +330,24 @@ pub fn generate_unshield_stark_proof(
     asset: &FieldElement,
     historic_root: &FieldElement,
 ) -> Result<(StarkVeilProof, FieldElement), CircuitError> {
+    if *asset != input_note.asset_id {
+        return Err(CircuitError::AssetMismatch {
+            expected: felt_to_hex(&input_note.asset_id),
+            found: felt_to_hex(asset),
+        });
+    }
+    if *amount_high != FieldElement::ZERO {
+        return Err(CircuitError::UnsupportedAmountHigh {
+            found: felt_to_hex(amount_high),
+        });
+    }
+    if *amount_low != input_note.value {
+        return Err(CircuitError::AmountMismatch {
+            expected: felt_to_hex(&input_note.value),
+            found: felt_to_hex(amount_low),
+        });
+    }
+
     let commitment = input_note.commitment.unwrap_or_else(|| compute_commitment(
         &input_note.value, &input_note.asset_id,
         &input_note.owner_pubkey, &input_note.nonce,

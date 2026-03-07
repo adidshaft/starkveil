@@ -443,6 +443,16 @@ class WalletManager: ObservableObject {
             nonce: chainNonce
         )
 
+        // Log to activity feed
+        let strkAmount = String(format: "%.6f", amount)
+        logEvent(
+            kind: .transfer,
+            amount: strkAmount,
+            assetId: "STRK (U)",
+            counterparty: String(recipient.prefix(16)) + "…",
+            txHash: broadcastedHash
+        )
+
         // Refresh public balance after send
         await refreshPublicBalance(rpcUrl: rpcUrl)
 
@@ -674,7 +684,7 @@ class WalletManager: ObservableObject {
         let unshieldSelector = "0x3079978d9c0e08ca0a86356d70a7eea2408b5d3882425b2f30a60818eac5b1b"
 
         // Build the complete flat payload first, then derive calldata_len from it.
-        // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount_low, amount_high, asset_id, historic_root]
+        // Encoding: [proof_len, ...proof_items, nullifier, recipient, amount.low, amount.high, asset_id, historic_root]
         let unshieldNullifier = unshieldResult.nullifier
         let historicRoot = unshieldResult.historic_root
         var callPayload: [String] = [String(format: "0x%x", proofCalldata.count)] + proofCalldata
@@ -871,21 +881,12 @@ class WalletManager: ObservableObject {
         // Phase 15 Item 5: Encrypt the memo with AES-256-GCM using IVK-derived key.
         // The encrypted memo is embedded in calldata so the recipient can trial-decrypt it
         // during SyncEngine polling. Falls back to plaintext hex if encryption fails.
-        let encryptedMemo: String
-        do {
-            let encRaw = try NoteEncryption.encryptMemo(
-                memo.isEmpty ? "shielded deposit" : memo,
-                ivkHex: ivkHex
-            )
-            // C-FELT-OVERFLOW fix: felt252 max length is 31 bytes (62 hex chars).
-            // Truncate the encrypted memo to fit within a single felt argument.
-            encryptedMemo = "0x" + String(encRaw.prefix(62))
-        } catch {
-            // Encrypt failure is non-fatal — include plaintext hex so at least
-            // the self-owned SyncEngine can still see the memo.
-            let textHex = Data((memo.isEmpty ? "shield" : memo).utf8).hexString
-            encryptedMemo = "0x" + String(textHex.prefix(62))
-        }
+        let encryptedNote = try NoteEncryption.encryptShieldNote(
+            nonce: noteNonce,
+            memo: memo.isEmpty ? "shielded deposit" : memo,
+            ivkHex: ivkHex,
+            commitment: commitmentKey
+        )
 
         // Starknet Keccak-250 selector for PrivacyPool.shield()
         let shieldSelector = "0x1d142bf165333b22247aed261a8174bd8ba65a3f9b25570d99a8b8f2c32e3ba"
@@ -909,7 +910,11 @@ class WalletManager: ObservableObject {
         let approvePayload = [contractAddress, amountLow, amountHigh]
         
         // 2. Shield Call
-        let shieldPayload = [strkContractAddress, amountLow, amountHigh, commitmentKey, encryptedMemo]
+        // Local Cairo ABI: shield(asset, amount.low, amount.high, note_commitment, encrypted_note)
+        let shieldPayload =
+            [strkContractAddress, amountLow, amountHigh, commitmentKey]
+            + [String(format: "0x%x", encryptedNote.count)]
+            + encryptedNote
         
         var calldata: [String] = [
             "0x2",                      // number of calls (= 2)
@@ -924,7 +929,7 @@ class WalletManager: ObservableObject {
             // Call 2: shield
             contractAddress,            // to (PrivacyPool)
             shieldSelector,             // selector
-            "0x5"                       // calldata_len
+            String(format: "0x%x", shieldPayload.count)
         ])
         calldata.append(contentsOf: shieldPayload)
 
@@ -1016,6 +1021,7 @@ class WalletManager: ObservableObject {
     func executePrivateTransfer(
         recipientAddress: String,
         recipientIVK: String,
+        recipientPubkey: String,
         amount: Double,
         memo: String,
         rpcUrl: URL,
@@ -1029,9 +1035,9 @@ class WalletManager: ObservableObject {
         let ctxPre = persistence.context
         let netIdPre = activeNetworkId
         let descPre = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netIdPre })
-        let pendingCommitments = Set((try? ctxPre.fetch(descPre))?
+        let pendingNoteKeys = Set((try? ctxPre.fetch(descPre))?
             .filter { $0.isPendingSpend }
-            .map { $0.commitment } ?? [])
+            .flatMap { [$0.commitment, $0.nonce] } ?? [])
 
         // Pick the SMALLEST available note that covers the requested amount.
         // We create a change note for any excess, so partial amounts are fully supported.
@@ -1043,7 +1049,7 @@ class WalletManager: ObservableObject {
         guard let inputNote = notes
             .filter({
                 let w = WalletManager.parseToDecimal($0.value)
-                guard !pendingCommitments.contains($0.nonce) else { return false }
+                guard !pendingNoteKeys.contains($0.nonce) else { return false }
                 return w >= amountWeiTarget
             })
             .sorted(by: { WalletManager.parseToDecimal($0.value) < WalletManager.parseToDecimal($1.value) })
@@ -1150,7 +1156,7 @@ class WalletManager: ObservableObject {
         let outputCommitment = try StarkVeilProver.noteCommitment(
             value: amountWeiStr,
             assetId: safeAssetId,
-            ownerPubkey: recipientIVK,      // raw IVK, not clamped
+            ownerPubkey: recipientPubkey,
             nonce: outputNonce
         )
 
@@ -1189,13 +1195,14 @@ class WalletManager: ObservableObject {
 
         // ── Encrypt memo for recipient (compact 31-byte felt252 scheme) ──────────
         let userMemo = memo.isEmpty ? "" : memo
-        let encryptedMemo = try NoteEncryption.encryptCompact(
-            valueWei: amountWeiStr,
+        let encryptedNote = try NoteEncryption.encryptTransferNote(
+            value: amountWeiStr,
+            nonce: outputNonce,
             memo: userMemo,
             ivkHex: recipientIVK,           // RAW IVK, not clamped — must match receiver's
             commitment: outputCommitment
         )
-        print("[PrivateTransfer] encryptedMemo=\(encryptedMemo)")
+        print("[PrivateTransfer] encryptedNote.count=\(encryptedNote.count)")
 
         // C-6 fix: Cairo private_transfer() expects:
         //   proof: Array<felt252>, nullifiers: Array<felt252>,
@@ -1267,7 +1274,7 @@ class WalletManager: ObservableObject {
             value: amountWeiStr,
             asset_id: safeAssetId,
             owner_ivk: recipientIVK,
-            owner_pubkey: recipientIVK,
+            owner_pubkey: recipientPubkey,
             nonce: outputNonce,
             spending_key: nil,
             memo: "",
@@ -1315,13 +1322,13 @@ class WalletManager: ObservableObject {
         try? persistence.context.save()
         proverEvents.insert(xferProverEvent, at: 0)
 
-        // fee: u256 = (low=0x0, high=0x0) — mock verifier doesn't enforce fees
+        // fee: u256
         var callPayload: [String] = []
         callPayload += [String(format: "0x%x", proofPayload.proof.count)] + proofPayload.proof  // proof array
         callPayload += [String(format: "0x%x", proofPayload.nullifiers.count)] + proofPayload.nullifiers        // nullifiers array
         callPayload += [String(format: "0x%x", proofPayload.new_commitments.count)] + proofPayload.new_commitments
-        callPayload += ["0x0", "0x0"]                                            // fee: u256
-        callPayload += [encryptedMemo]                                            // encrypted_memo: felt252
+        callPayload += [proofPayload.fee, "0x0"]                                  // fee.low, fee.high
+        callPayload += [String(format: "0x%x", encryptedNote.count)] + encryptedNote
         // Use the root the proof was baked against — NOT the separately fetched xferFetchedRoot.
         // The proof's fri_alpha = Poseidon(decommitment_hash, historic_root) binds to this exact
         // root. Passing a different root makes verify_proof return false → error 41.
@@ -1330,7 +1337,13 @@ class WalletManager: ObservableObject {
         print("[PrivateTransfer] nullifier=\(nullifier)")
         print("[PrivateTransfer] outputCommitment=\(outputCommitment)")
         print("[PrivateTransfer] proof items=\(proofPayload.proof.count)")
+        print("[PrivateTransfer] nullifiers=\(proofPayload.nullifiers)")
+        print("[PrivateTransfer] new_commitments=\(proofPayload.new_commitments)")
+        print("[PrivateTransfer] fee=\(proofPayload.fee),0x0")
+        print("[PrivateTransfer] encrypted_note.len=\(encryptedNote.count)")
+        print("[PrivateTransfer] historic_root=\(proofPayload.historic_root)")
         print("[PrivateTransfer] calldata_len=\(callPayload.count)")
+        print("[PrivateTransfer] EXACT CALLDATA: \(callPayload.joined(separator: ", "))")
 
         let calldata: [String] = [
             "0x1",                      // number of calls

@@ -21,7 +21,7 @@ struct Note: Codable {
     let merkle_path: [String]?
     // Commitment override: if non-nil, the Rust prover uses this as the Merkle leaf
     // directly instead of recomputing Poseidon(value, asset, owner, nonce).
-    // Required because SyncEngine stores value as decimal and nonce = on-chain commitment.
+    // Required for backward compatibility with notes imported under older formats.
     let commitment: String?
 
     init(value: String, asset_id: String, owner_ivk: String, owner_pubkey: String,

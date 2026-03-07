@@ -10,7 +10,7 @@
 
 StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial privacy on Starknet. Unlike standard web3 wallets, StarkVeil removes the need for Trusted Execution Environments (TEEs) and external wallet apps. It brings Zero-Knowledge STARK proof synthesis directly onto A-series silicon via a Rust SDK, gives users a fully self-contained shielded account (no ArgentX needed), and uses an original Shielded Note commitment scheme for private transfers.
 
-**Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x…` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. Activity feed correctly shows `+`/`−` prefixes and colours for all 5 event kinds. **Phase 21:** Completely replaced the hackathon mock proof verifier with a production-grade Circle STARK proving system. The iOS Swift client now synthesizes a 68-column M31/QM31 algebraic execution trace locally via the Rust `stwo` framework. The Starknet Sepolia `PrivacyPool` contract natively verifies this STARK proof via Fiat-Shamir FRI layering, guaranteeing balance conservation and unforgeable ownership on-chain without TEEs.
+**Current status (Phase 21 — Live on Sepolia):** PrivacyPool contract deployed on Starknet Sepolia testnet. Full U↔S cycle functional: shield, unshield, private transfer and shielded-to-shielded sends all work end-to-end. Wallet uses a clean U/S model inspired by Zashi. Total balance card shows U+S inline breakdown. 3 action buttons: Send, Receive, Shield. Unified Send auto-detects `svk:` prefix for private transfers vs `0x` for public sends. Shield/Unshield is a single toggle view. Receive shows two clearly labelled addresses: S (`svk:0x<ivk>:0x<pubkey>` — for private receives) and U (`0x…` — for exchanges). 4-tab nav: Wallet | Swap | Activity | Settings. Activity feed correctly shows `+`/`−` prefixes and colours for all 5 event kinds. **Phase 21:** Completely replaced the hackathon mock proof verifier with a production-grade Circle STARK proving system. The iOS Swift client now synthesizes a 68-column M31/QM31 algebraic execution trace locally via the Rust `stwo` framework. The Starknet Sepolia `PrivacyPool` contract natively verifies this STARK proof via Fiat-Shamir FRI layering, guaranteeing balance conservation and unforgeable ownership on-chain without TEEs.
 
 ---
 
@@ -54,14 +54,14 @@ The PrivacyPool contract is **already deployed** on Sepolia. No local node requi
 | | |
 |---|---|
 | **Network** | Starknet Sepolia (v0.14.1) |
-| **Contract address** | `0x067f30422a1fb9c48000e71736b3ac4b6a3ad1880187d1e89143dd68cf23b7a5` |
-| **Class hash** | `0x32f1e67ec2535a243e9a27f6414bbc6dc505f8b06fdd8bac50b8f70221783e7` |
+| **Contract address** | `0x062cf904594a71239b0a72350289175b233bacf84e5649c656acabee69206b6f` |
+| **Class hash** | `0x024559a23de684c4421ff64afd7edce6630b905c12d8a7f6431f9459e3fb76f9` |
 | **Compiler** | Scarb / Cairo 2.16.0 · Sierra 1.7.0 |
 | **Deployed** | 2026-03-07 |
 | **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
-| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x067f30422a1fb9c48000e71736b3ac4b6a3ad1880187d1e89143dd68cf23b7a5) |
-| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x47c55a066d66ac942ad2aede07443b32a21fb0ef38be92e6282c6bfbabb2fa7) |
-| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x05d0ccfafa62db5ee9919df909b4ee0765a86e192f5e5bbda8fbf2684ebab051) |
+| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x062cf904594a71239b0a72350289175b233bacf84e5649c656acabee69206b6f) |
+| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x05ba511955e82ebe8b04290421599769dbed9f2b716488ae4b3a376cc499ea8a) |
+| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x02dae02bd25317a78f07f23d039b0c2fe03dd4e2ca5c377df77e833f795299ef) |
 
 ### 1. Build the Rust Prover
 ```bash
@@ -99,7 +99,7 @@ The app points to Sepolia by default. No configuration needed.
 ### 6. Private Transfer (S → S)
 1. Ask the recipient to share their SVK from **Receive → Shielded Address (S)**.
 2. Tap **Send** → select **Shielded (S)** mode.
-3. Paste the `svk:0x…` address and amount.
+3. Paste the `svk:0x<ivk>:0x<pubkey>` address and amount.
 4. Tap **Send (Private)** — no amounts or addresses visible on-chain.
 
 ### 7. Unshield (S → U)
@@ -148,7 +148,7 @@ Update `NetworkEnvironment.swift` local case with your new contract address.
 > ```bash
 > sncast --profile katana_test call \
 >   --contract-address <CONTRACT_ADDRESS> \
->   --function mt_next_index
+>   --function get_mt_next_index
 > # Value increments by 1 per shield
 > ```
 
@@ -156,9 +156,9 @@ Update `NetworkEnvironment.swift` local case with your new contract address.
 | Checkpoint | Expected Result |
 |---|---|
 | Tap **Private Transfer** button (below action grid) | `PrivateTransferView` opens as full-screen cover |
-| Enter: recipient Starknet address, their IVK hex, amount, optional memo | Fields validated live |
+| Enter: recipient shielded address (`svk:<ivk>:<pubkey>`), amount, optional memo | Fields validated live |
 | Tap **Send Privately** | On-chain `Transfer` event emitted with encrypted output commitment |
-| Recipient's SyncEngine polls Shielded events | Recipient trial-decrypts memo with their IVK — note appears in their balance |
+| Recipient's SyncEngine polls Transfer events | Recipient trial-decrypts the encrypted note with their IVK — note appears in their balance |
 | Activity tab on sender's device | Shows 🔒 Transfer row with tx hash |
 
 > **Privacy confirmation:** Query `starknet_getEvents` for the Transfer event — you will see only opaque commitment hashes, no amounts, no addresses.
@@ -228,7 +228,7 @@ This section details how to verify the cryptographic proofs, on-chain state tran
 
 #### Stage 2: Private Transfer (S → S)
 **What happens:** Moving shielded STRK to another user inside the privacy pool without revealing sender, receiver, or amount.
-*   **Action:** User inputs the recipient's Shielded Address (`svk:0x...`) and an amount, then taps **Send**.
+*   **Action:** User inputs the recipient's Shielded Address (`svk:0x<ivk>:0x<pubkey>`) and an amount, then taps **Send**.
 *   **Algorithms:**
     *   **Nullifier Generation:** `nf = Poseidon(commitment, spending_key)`
         *   *Why Nullifier?* It proves the note is spent without revealing *which* note was spent. The contract enforces `!nullifiers[nf]` to stop double-spends.
@@ -244,7 +244,7 @@ This section details how to verify the cryptographic proofs, on-chain state tran
 **What happens:** The recipient's wallet detects the incoming private transfer.
 *   **Action:** The wallet's `SyncEngine` polls the RPC every 5 seconds for new `Transfer` events.
 *   **Algorithms:**
-    *   **Trial Decryption:** The wallet attempts to decrypt the `encrypted_memo` field of every new commitment using its own `IVK`.
+    *   **Trial Decryption:** The wallet attempts to decrypt the `encrypted_note` payload of every new commitment using its own `IVK`.
         *   `if decrypt(ciphertext, IVK) == success: add_to_wallet_balance()`
         *   *Why Trial Decryption?* Since the destination address is not on-chain, the wallet must attempt to unlock every new note. If it succeeds, the note belongs to the user.
 *   **Verification:**

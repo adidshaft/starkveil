@@ -36,6 +36,18 @@ enum NoteEncryptionError: Error, LocalizedError {
 }
 
 struct NoteEncryption {
+    private struct ShieldNoteEnvelope: Codable {
+        let version: Int
+        let nonce: String
+        let memo: String
+    }
+
+    private struct TransferNoteEnvelope: Codable {
+        let version: Int
+        let value: String
+        let nonce: String
+        let memo: String
+    }
 
     // MARK: - IVK Derivation
 
@@ -130,6 +142,153 @@ struct NoteEncryption {
                 return nil
             }
         }
+    }
+
+    // MARK: - Chunked Note Encryption
+
+    static func encryptShieldNote(
+        nonce: String,
+        memo: String,
+        ivkHex: String,
+        commitment: String
+    ) throws -> [String] {
+        let envelope = ShieldNoteEnvelope(version: 1, nonce: nonce, memo: memo)
+        return try encryptEnvelope(envelope, ivkHex: ivkHex, commitment: commitment)
+    }
+
+    static func decryptShieldNote(
+        _ felts: [String],
+        ivkHex: String,
+        commitment: String
+    ) throws -> (nonce: String, memo: String)? {
+        guard let envelope: ShieldNoteEnvelope = try decryptEnvelope(
+            felts,
+            ivkHex: ivkHex,
+            commitment: commitment,
+            as: ShieldNoteEnvelope.self
+        ) else {
+            return nil
+        }
+        return (nonce: envelope.nonce, memo: envelope.memo)
+    }
+
+    static func encryptTransferNote(
+        value: String,
+        nonce: String,
+        memo: String,
+        ivkHex: String,
+        commitment: String
+    ) throws -> [String] {
+        let envelope = TransferNoteEnvelope(version: 1, value: value, nonce: nonce, memo: memo)
+        return try encryptEnvelope(envelope, ivkHex: ivkHex, commitment: commitment)
+    }
+
+    static func decryptTransferNote(
+        _ felts: [String],
+        ivkHex: String,
+        commitment: String
+    ) throws -> (value: String, nonce: String, memo: String)? {
+        guard let envelope: TransferNoteEnvelope = try decryptEnvelope(
+            felts,
+            ivkHex: ivkHex,
+            commitment: commitment,
+            as: TransferNoteEnvelope.self
+        ) else {
+            return nil
+        }
+        return (value: envelope.value, nonce: envelope.nonce, memo: envelope.memo)
+    }
+
+    private static func encryptEnvelope<T: Encodable>(
+        _ envelope: T,
+        ivkHex: String,
+        commitment: String
+    ) throws -> [String] {
+        let key = try encryptionKey(from: ivkHex)
+        let plaintext = try JSONEncoder().encode(envelope)
+        let aad = try commitmentData(from: commitment)
+        let sealedBox = try AES.GCM.seal(plaintext, using: key, authenticating: aad)
+        guard let combined = sealedBox.combined else {
+            throw NoteEncryptionError.encryptionFailed
+        }
+        return encodeFeltChunks(combined)
+    }
+
+    private static func decryptEnvelope<T: Decodable>(
+        _ felts: [String],
+        ivkHex: String,
+        commitment: String,
+        as type: T.Type
+    ) throws -> T? {
+        guard let combined = decodeFeltChunks(felts) else {
+            throw NoteEncryptionError.invalidCiphertext
+        }
+        let aad = try commitmentData(from: commitment)
+
+        let keys = [
+            try encryptionKey(from: ivkHex),
+            try legacyEncryptionKey(from: ivkHex),
+        ]
+
+        for key in keys {
+            do {
+                let sealedBox = try AES.GCM.SealedBox(combined: combined)
+                let plaintext = try AES.GCM.open(sealedBox, using: key, authenticating: aad)
+                return try JSONDecoder().decode(type, from: plaintext)
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private static func commitmentData(from commitment: String) throws -> Data {
+        let raw = commitment.hasPrefix("0x") ? String(commitment.dropFirst(2)) : commitment
+        let even = raw.count % 2 == 1 ? "0" + raw : raw
+        guard let data = Data(hexString: even) else {
+            throw NoteEncryptionError.invalidCiphertext
+        }
+        return data
+    }
+
+    private static func encodeFeltChunks(_ data: Data) -> [String] {
+        var felts = ["0x" + String(data.count, radix: 16)]
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + 31, data.count)
+            felts.append("0x" + data[offset..<end].hexString)
+            offset = end
+        }
+        return felts
+    }
+
+    private static func decodeFeltChunks(_ felts: [String]) -> Data? {
+        guard let lengthHex = felts.first else { return nil }
+        let cleanLength = lengthHex.hasPrefix("0x") ? String(lengthHex.dropFirst(2)) : lengthHex
+        guard let totalLength = Int(cleanLength, radix: 16), totalLength >= 0 else { return nil }
+
+        let expectedChunkCount = totalLength == 0 ? 0 : Int(ceil(Double(totalLength) / 31.0))
+        guard felts.count == expectedChunkCount + 1 else { return nil }
+
+        var out = Data()
+        out.reserveCapacity(totalLength)
+
+        for chunkIndex in 0..<expectedChunkCount {
+            let expectedSize = min(31, totalLength - out.count)
+            let chunkHexRaw = felts[chunkIndex + 1].hasPrefix("0x")
+                ? String(felts[chunkIndex + 1].dropFirst(2))
+                : felts[chunkIndex + 1]
+            let padded = chunkHexRaw.count % 2 == 1 ? "0" + chunkHexRaw : chunkHexRaw
+            guard let chunkData = Data(hexString: padded), chunkData.count <= expectedSize else {
+                return nil
+            }
+            if chunkData.count < expectedSize {
+                out.append(Data(repeating: 0, count: expectedSize - chunkData.count))
+            }
+            out.append(chunkData)
+        }
+
+        return out
     }
 
     // MARK: - Compact felt252 Encryption (for on-chain Transfer events)

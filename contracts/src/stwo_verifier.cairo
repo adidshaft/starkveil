@@ -245,7 +245,7 @@ fn read_felt(proof: Span<felt252>, offset: u32) -> felt252 {
 ///
 /// # Arguments
 /// * `proof` — Serialized STARK proof (flat felt252 array from prover)
-/// * `public_inputs` — Public values: [historic_root, nullifier_0, ..., commitment_0, ..., fee]
+/// * `public_inputs` — Flow-specific public values supplied by the contract entrypoint.
 ///
 /// # Returns
 /// `true` if the proof is valid, `false` otherwise.
@@ -533,6 +533,12 @@ pub fn verify_stwo_proof(
     // This is implicitly enforced by the Fiat-Shamir transcript reconstruction
     // above — if the prover used different public inputs, the challenges would
     // diverge, and the FRI/Merkle decommitments would fail.
+
+    // Reject proofs with ignored trailing felts. Without this, callers can append
+    // junk and accidentally believe extra data is verifier-bound when it is not.
+    if cursor != proof.len() {
+        return false;
+    }
 
     // ── All checks passed ─────────────────────────────────────────────────
     true

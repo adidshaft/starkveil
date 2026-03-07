@@ -4,7 +4,7 @@ import CoreImage.CIFilterBuiltins
 
 /// Phase 19: Zashi-style Receive screen.
 /// Shows two addresses:
-/// - S address: svk:<IVK_hex> for private receives (shielded)
+/// - S address: svk:<IVK_hex>:<PUBKEY_hex> for private receives (shielded)
 /// - U address: 0x<account_address> for public receives (unshielded)
 ///
 /// Privacy model: IVK is a public receive key — safe to share.
@@ -30,13 +30,20 @@ struct ReceiveView: View {
         }
         return "unavailable"
     }
+    private var shieldedPubkey: String {
+        if let seed = KeychainManager.masterSeed(),
+           let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) {
+            return keys.publicKey.hexString
+        }
+        return "unavailable"
+    }
     /// Phase 19: S address with svk: prefix for auto-detection by senders
     private var svkAddress: String {
-        "svk:\(ivkHex)"
+        ShieldedAddress.format(ivk: ivkHex, pubkey: shieldedPubkey)
     }
     private var shortSVK: String {
         guard ivkHex.count > 20 else { return svkAddress }
-        return "svk:\(ivkHex.prefix(10))…\(ivkHex.suffix(8))"
+        return "svk:\(ivkHex.prefix(8))…\(ivkHex.suffix(6)):\(shieldedPubkey.prefix(8))…"
     }
     /// Real Starknet account address from Keychain (not a stub)
     private var publicAddress: String {

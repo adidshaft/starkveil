@@ -40,16 +40,15 @@ pub mod PrivacyPool {
         amount: u256,
         commitment: felt252,
         leaf_index: u32,
-        // AES-256-GCM encrypted memo (IVK-keyed). Recipients trial-decrypt this
-        // during SyncEngine polling to identify incoming notes.
-        encrypted_memo: felt252
+        // AES-256-GCM encrypted note payload chunks (IVK-keyed).
+        encrypted_note: Array<felt252>
     }
 
     #[derive(Drop, starknet::Event)]
     struct Transfer {
         new_commitments: Array<felt252>,
         fee: u256,
-        encrypted_memo: felt252,
+        encrypted_note: Array<felt252>,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -181,7 +180,13 @@ pub mod PrivacyPool {
 
     #[abi(embed_v0)]
     impl PrivacyPoolImpl of IPrivacyPool<ContractState> {
-        fn shield(ref self: ContractState, asset: ContractAddress, amount: u256, note_commitment: felt252, encrypted_memo: felt252) {
+        fn shield(
+            ref self: ContractState,
+            asset: ContractAddress,
+            amount: u256,
+            note_commitment: felt252,
+            encrypted_note: Array<felt252>
+        ) {
             let caller = get_caller_address();
             let contract_addr = get_contract_address();
 
@@ -196,7 +201,7 @@ pub mod PrivacyPool {
                 amount: amount,
                 commitment: note_commitment,
                 leaf_index: index,
-                encrypted_memo: encrypted_memo
+                encrypted_note: encrypted_note
             }));
         }
 
@@ -209,7 +214,7 @@ pub mod PrivacyPool {
             nullifiers: Array<felt252>,
             new_commitments: Array<felt252>,
             fee: u256,
-            encrypted_memo: felt252,
+            encrypted_note: Array<felt252>,
             historic_root: felt252
         ) {
             // Phase 20 (H-6 fix): Validate that the proof's Merkle root is a known historic root.
@@ -218,7 +223,7 @@ pub mod PrivacyPool {
             assert(self.historic_roots.read(historic_root), 'Invalid historic root');
 
             // 1. Build public inputs for the Stwo STARK verifier.
-            //    Schema: [historic_root, nullifier_0, ..., commitment_0, ...]
+            //    Schema: [historic_root, nullifier_0, ..., commitment_0, ..., fee.low, fee.high]
             let mut public_inputs = ArrayTrait::new();
             public_inputs.append(historic_root);
 
@@ -235,6 +240,8 @@ pub mod PrivacyPool {
                 public_inputs.append(*new_commitments.at(m));
                 m += 1;
             };
+            public_inputs.append(fee.low.into());
+            public_inputs.append(fee.high.into());
 
             // M-1 fix: Check nullifiers BEFORE verify_proof (cheap storage reads first,
             // expensive proof verification second). Also prevents wasted gas.
@@ -270,7 +277,7 @@ pub mod PrivacyPool {
             self.emit(Event::Transfer(Transfer {
                 new_commitments: new_commitments,
                 fee: fee,
-                encrypted_memo: encrypted_memo
+                encrypted_note: encrypted_note
             }));
         }
 
@@ -291,11 +298,12 @@ pub mod PrivacyPool {
             // M-1 fix: Check nullifier BEFORE verify_proof (cheap read first)
             assert(!self.nullifiers.read(nullifier), 'Note already spent');
 
-            // 1. Verify Stwo STARK proof binds to the unshield amount, asset, recipient,
-            //    and Merkle root. All five values are public inputs so the circuit commits
+            // 1. Verify Stwo STARK proof binds to the nullifier, unshield amount, asset,
+            //    recipient, and Merkle root. All six values are public inputs so the circuit commits
             //    to exactly what is being withdrawn and which tree state was proven.
             let mut public_inputs = ArrayTrait::new();
             public_inputs.append(historic_root);
+            public_inputs.append(nullifier);
             public_inputs.append(amount.low.into());
             public_inputs.append(amount.high.into());
             public_inputs.append(recipient.into());
@@ -330,6 +338,10 @@ pub mod PrivacyPool {
             } else {
                 InternalImpl::get_zero_hash(level)
             }
+        }
+
+        fn is_nullifier_spent(self: @ContractState, nullifier: felt252) -> bool {
+            self.nullifiers.read(nullifier)
         }
     }
 }

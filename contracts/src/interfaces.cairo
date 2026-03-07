@@ -5,7 +5,13 @@ use starknet::ContractAddress;
 /// asynchronous proof generation (the tree may have changed since proof creation).
 #[starknet::interface]
 pub trait IPrivacyPool<TContractState> {
-    fn shield(ref self: TContractState, asset: ContractAddress, amount: u256, note_commitment: felt252, encrypted_memo: felt252);
+    fn shield(
+        ref self: TContractState,
+        asset: ContractAddress,
+        amount: u256,
+        note_commitment: felt252,
+        encrypted_note: Array<felt252>
+    );
     
     /// Phase 20: Added `historic_root` parameter.
     /// The proof is verified against this root (must exist in `historic_roots` map).
@@ -15,7 +21,7 @@ pub trait IPrivacyPool<TContractState> {
         nullifiers: Array<felt252>,
         new_commitments: Array<felt252>,
         fee: u256,
-        encrypted_memo: felt252,
+        encrypted_note: Array<felt252>,
         historic_root: felt252
     );
 
@@ -40,4 +46,7 @@ pub trait IPrivacyPool<TContractState> {
     /// Returns the Merkle tree node at (level, index). Level 0 = leaf layer.
     /// Returns the appropriate zero-hash for unwritten nodes.
     fn get_mt_node(self: @TContractState, level: u32, index: u32) -> felt252;
+
+    /// Returns whether a nullifier has been spent.
+    fn is_nullifier_spent(self: @TContractState, nullifier: felt252) -> bool;
 }

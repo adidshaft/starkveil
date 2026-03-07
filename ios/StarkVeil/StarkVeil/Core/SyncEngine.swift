@@ -174,7 +174,8 @@ class SyncEngine: ObservableObject {
                     //   data[2] = amount.high (u256 high 128 bits)
                     //   data[3] = commitment  (felt252 hash)
                     //   data[4] = leaf_index  (u32)
-                    //   data[5] = encrypted_memo (Phase 15 IVK-encrypted hex, optional)
+                    //   data[5] = encrypted_note_len
+                    //   data[6..] = encrypted_note chunks
                     // Phase 15 Item 2 & Audit Fixes (H-IVK-FAIL-DROPS-NOTES, M-IVK-LOOP-PERF):
                     // Derive IVK strictly ONCE outside the loop to avoid O(N) expensive operations.
                     // Fallback to keychain if derivation fails to prevent empty string breaking decryption.
@@ -229,11 +230,16 @@ class SyncEngine: ObservableObject {
                             // data[2] = amount.high (u256)
                             // data[3] = commitment  (felt252)
                             // data[4] = leaf_index  (u32)
-                            // data[5] = encrypted_memo (felt252, optional)
-                            guard event.data.count >= 5 else { continue }
-                            let amountHex  = event.data[1]
+                            // data[5] = encrypted_note_len
+                            // data[6..] = encrypted_note chunks
+                            guard event.data.count >= 6 else { continue }
                             let commitment = event.data[3]
-                            let encMemoHex = event.data.count >= 6 ? event.data[5] : nil
+                            let encryptedNoteLen = Int(
+                                event.data[5].replacingOccurrences(of: "0x", with: ""),
+                                radix: 16
+                            ) ?? 0
+                            guard event.data.count >= 6 + encryptedNoteLen else { continue }
+                            let encryptedNote = Array(event.data[6..<(6 + encryptedNoteLen)])
 
                             // C-3 fix: Use Decimal to parse hex amounts > 9.22 STRK (Int overflow)
                             let amountLowHex  = event.data[1]
@@ -261,13 +267,12 @@ class SyncEngine: ObservableObject {
                             let amountDouble = NSDecimalNumber(decimal: weiDecimal / Decimal(sign: .plus, exponent: 18, significand: 1)).doubleValue
                             guard amountDouble > 0 else { continue }
 
-                            var decryptedMemo: String? = "Shielded: \(commitment.prefix(10))…"
-                            if let encHex = encMemoHex, !encHex.isEmpty, encHex != "0x0" {
-                                if let plain = try? NoteEncryption.decryptMemo(encHex, ivkHex: ivkHex) {
-                                    decryptedMemo = plain
-                                } else {
-                                    continue   // not addressed to us
-                                }
+                            guard let decryptedNote = try? NoteEncryption.decryptShieldNote(
+                                encryptedNote,
+                                ivkHex: ivkHex,
+                                commitment: commitment
+                            ) else {
+                                continue
                             }
 
                             // H-2 fix: Use STARK EC public key (not IVK) as owner_pubkey
@@ -284,9 +289,9 @@ class SyncEngine: ObservableObject {
                                 asset_id: "0x5354524b",
                                 owner_ivk: ivkHex,
                                 owner_pubkey: starkPubkeyForNotes,
-                                nonce: commitment,
+                                nonce: decryptedNote.nonce,
                                 spending_key: nil,
-                                memo: decryptedMemo ?? "Shielded deposit",
+                                memo: decryptedNote.memo.isEmpty ? "Shielded deposit" : decryptedNote.memo,
                                 leaf_position: leafPos,
                                 merkle_path: nil
                             )
@@ -294,23 +299,29 @@ class SyncEngine: ObservableObject {
 
                         } else if eventSelector == transferSelector {
                             // ── Transfer event (private-to-private) ─────────────────
-                            // Cairo serialization of Transfer { new_commitments: Array<felt252>, fee: u256, encrypted_memo: felt252 }
+                            // Cairo serialization of Transfer { new_commitments: Array<felt252>, fee: u256, encrypted_note: Array<felt252> }
                             // data[0] = commitments_len
                             // data[1..N] = commitments
                             // data[N+1] = fee.low
                             // data[N+2] = fee.high
-                            // data[N+3] = encrypted_memo
-                            guard event.data.count >= 4 else { continue }
+                            // data[N+3] = encrypted_note_len
+                            // data[N+4..] = encrypted_note chunks
+                            guard event.data.count >= 5 else { continue }
                             guard let commitmentsLen = Int(event.data[0].replacingOccurrences(of: "0x", with: ""), radix: 16),
                                   commitmentsLen > 0,
-                                  event.data.count >= 1 + commitmentsLen + 3 else { continue }
+                                  event.data.count >= 1 + commitmentsLen + 4 else { continue }
 
-                            let encMemoIdx = 1 + commitmentsLen + 2  // skip commitments + fee u256
-                            let encMemoHex = event.data[encMemoIdx]
+                            let encryptedNoteLenIdx = 1 + commitmentsLen + 2
+                            let encryptedNoteLen = Int(
+                                event.data[encryptedNoteLenIdx].replacingOccurrences(of: "0x", with: ""),
+                                radix: 16
+                            ) ?? 0
+                            let encryptedNoteStart = encryptedNoteLenIdx + 1
+                            guard event.data.count >= encryptedNoteStart + encryptedNoteLen else { continue }
+                            let encryptedNote = Array(event.data[encryptedNoteStart..<(encryptedNoteStart + encryptedNoteLen)])
 
                             print("[SyncEngine] Transfer event data[\(event.data.count)]: " +
-                                  "len=\(event.data[0]) encMemoIdx=\(encMemoIdx) " +
-                                  "encMemo=\(encMemoHex.prefix(20))…")
+                                  "len=\(event.data[0]) encryptedNoteLen=\(encryptedNoteLen)")
 
                             // Trial-decrypt using compactDecrypt — if it returns nil, note isn't for us.
                             // We try each commitment individually since keystream is commitment-specific.
@@ -318,28 +329,30 @@ class SyncEngine: ObservableObject {
                                 let commitment = event.data[1 + i]
                                 // H-2 fix: Use STARK EC public key (not IVK) as owner_pubkey
                                 #if DEBUG
-                                print("[SyncEngine] Transfer trial-decrypt commitment=\(commitment.prefix(10))… encMemo=\(encMemoHex.prefix(10))…")
+                                print("[SyncEngine] Transfer trial-decrypt commitment=\(commitment.prefix(10))… encryptedNoteLen=\(encryptedNote.count)")
                                 #endif
-                                guard let decrypted = try? NoteEncryption.decryptCompact(
-                                    encMemoHex,
+                                guard let decrypted = try? NoteEncryption.decryptTransferNote(
+                                    encryptedNote,
                                     ivkHex: ivkHex,
                                     commitment: commitment
                                 ) else {
                                     #if DEBUG
-                                    print("[SyncEngine] Transfer decryptCompact → nil (not ours)")
+                                    print("[SyncEngine] Transfer decrypt → nil (not ours)")
                                     #endif
                                     continue   // not addressed to us
                                 }
                                 #if DEBUG
-                                print("[SyncEngine] Transfer decryptCompact SUCCESS value=\(decrypted.valueWei) memo=\(decrypted.memo)")
+                                print("[SyncEngine] Transfer decrypt SUCCESS value=\(decrypted.value) memo=\(decrypted.memo)")
                                 #endif
 
+                                let rawWei = NSDecimalNumber(decimal: WalletManager.parseToDecimal(decrypted.value)).stringValue
+
                                 let note = Note(
-                                    value: decrypted.valueWei.isEmpty ? "0" : decrypted.valueWei,
+                                    value: rawWei.isEmpty ? "0" : rawWei,
                                     asset_id: "0x5354524b",
                                     owner_ivk: ivkHex,
                                     owner_pubkey: starkPubkeyForNotes,
-                                    nonce: commitment,
+                                    nonce: decrypted.nonce,
                                     spending_key: nil,
                                     memo: decrypted.memo.isEmpty ? "Private transfer" : "Private: \(decrypted.memo)",
                                     leaf_position: nil,
