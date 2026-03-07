@@ -54,14 +54,14 @@ The PrivacyPool contract is **already deployed** on Sepolia. No local node requi
 | | |
 |---|---|
 | **Network** | Starknet Sepolia (v0.14.1) |
-| **Contract address** | `0x062cf904594a71239b0a72350289175b233bacf84e5649c656acabee69206b6f` |
-| **Class hash** | `0x024559a23de684c4421ff64afd7edce6630b905c12d8a7f6431f9459e3fb76f9` |
+| **Contract address** | `0x03dbdd7619868f04300fa97223dc0f626d6ce03d32c0569e5a8b38789d26f1a0` |
+| **Class hash** | `0x06e61cde681c47bdc539e7f1c95f505e70aa021da89d9d1ead22900ae62a5607` |
 | **Compiler** | Scarb / Cairo 2.16.0 · Sierra 1.7.0 |
 | **Deployed** | 2026-03-07 |
 | **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
-| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x062cf904594a71239b0a72350289175b233bacf84e5649c656acabee69206b6f) |
-| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x05ba511955e82ebe8b04290421599769dbed9f2b716488ae4b3a376cc499ea8a) |
-| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x02dae02bd25317a78f07f23d039b0c2fe03dd4e2ca5c377df77e833f795299ef) |
+| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x03dbdd7619868f04300fa97223dc0f626d6ce03d32c0569e5a8b38789d26f1a0) |
+| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x0300be54599666bbe5c27c823287ed18f97d795568247352ea85e94be454729c) |
+| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x068178252bcc3962f71be9ed2418e16376c5fb9946416932ef568cb59ba58b3e) |
 
 ### 1. Build the Rust Prover
 ```bash
