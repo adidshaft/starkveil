@@ -613,11 +613,45 @@ class WalletManager: ObservableObject {
         var amountWeiTarget = Decimal()
         NSDecimalRound(&amountWeiTarget, &amountWeiRaw, 0, .down)
 
-        guard let inputNote = notes.first(where: {
+        var inputNote = notes.first(where: {
             let weiVal = WalletManager.parseToDecimal($0.value)
             return weiVal == amountWeiTarget
-        }) ?? selectNotes(for: amount).first
-        else { throw ProverError.noMatchingNote }
+        })
+
+        if inputNote == nil {
+            let splitSource = notes
+                .filter { WalletManager.parseToDecimal($0.value) > amountWeiTarget }
+                .sorted(by: { WalletManager.parseToDecimal($0.value) < WalletManager.parseToDecimal($1.value) })
+                .first
+
+            if let splitSource {
+                let ownShielded = try deriveOwnShieldedAddressParts()
+                let ownRecipientAddress = ShieldedAddress.format(ivk: ownShielded.ivk, pubkey: ownShielded.pubkey)
+                _ = try await executePrivateTransfer(
+                    recipientAddress: ownRecipientAddress,
+                    recipientIVK: ownShielded.ivk,
+                    recipientPubkey: ownShielded.pubkey,
+                    amount: amount,
+                    memo: "Split for unshield",
+                    rpcUrl: rpcUrl,
+                    contractAddress: contractAddress,
+                    network: network
+                )
+
+                inputNote = notes.first(where: {
+                    let weiVal = WalletManager.parseToDecimal($0.value)
+                    return weiVal == amountWeiTarget && $0.owner_ivk == ownShielded.ivk
+                })
+
+                if inputNote == nil {
+                    throw ProverError.custom(
+                        "Created a split note from \(splitSource.value), but the exact note is not available locally yet. Wait for sync and try unshield again."
+                    )
+                }
+            }
+        }
+
+        guard let inputNote else { throw ProverError.noMatchingNote }
 
         isTransferInFlight = true
         isUnshielding = true
@@ -670,9 +704,14 @@ class WalletManager: ObservableObject {
         // STRK token contract on Sepolia. Notes store asset_id as the shortstring "0x5354524b" (ASCII "STRK")
         // but the Cairo unshield() param is ContractAddress — the actual ERC-20 contract address.
         let strkTokenAddress = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
-        let safeAssetId: String = {
+        let unshieldAssetAddress: String = {
             let raw = inputNote.asset_id
             if raw == "STRK" || raw == "0xSTRK" || raw == "0x5354524b" { return strkTokenAddress }
+            return raw
+        }()
+        let commitmentAssetId: String = {
+            let raw = inputNote.asset_id
+            if raw == "STRK" || raw == "0xSTRK" || raw == "0x5354524b" { return "0x5354524b" }
             return raw
         }()
         // NULLIFIER DERIVATION — use the stored on-chain commitment DIRECTLY.
@@ -686,10 +725,10 @@ class WalletManager: ObservableObject {
         } else {
             // Fallback for old notes missing the commitment field: reconstruct.
             // This will only be correct for locally-shielded notes where nonce is the original random nonce.
-            let commitmentAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
+            let fallbackCommitmentAssetId = (inputNote.asset_id == "STRK" || inputNote.asset_id == "0xSTRK") ? "0x5354524b" : inputNote.asset_id
             commitment = try StarkVeilProver.noteCommitment(
                 value: inputNote.value,
-                assetId: commitmentAssetId,
+                assetId: fallbackCommitmentAssetId,
                 ownerPubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
                 nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce
             )
@@ -767,7 +806,7 @@ class WalletManager: ObservableObject {
 
         let proofInputNote = Note(
             value: WalletManager.valueToHex(inputNote.value),
-            asset_id: safeAssetId,
+            asset_id: commitmentAssetId,
             owner_ivk: inputNote.owner_ivk,
             owner_pubkey: storedNote.owner_pubkey.isEmpty ? keys.publicKey.hexString : storedNote.owner_pubkey,
             nonce: storedNote.nonce.isEmpty ? keys.publicKey.hexString : storedNote.nonce,
@@ -778,7 +817,7 @@ class WalletManager: ObservableObject {
             commitment: storedNote.commitment.isEmpty ? nil : storedNote.commitment
         )
         // Normalise value to hex for the u256 low-part calldata field.
-        let amountU256Low = WalletManager.valueToHex(inputNote.value)
+        let amountU256Low = WalletManager.parseDecimalToHex(amountWeiTarget)
         let amountU256High = "0x0"
 
         // Build an UnshieldInput for the Rust FFI, binding the proof to the current Merkle root
@@ -788,7 +827,7 @@ class WalletManager: ObservableObject {
             amountLow: amountU256Low,
             amountHigh: amountU256High,
             recipient: recipient,
-            asset: safeAssetId,
+            asset: unshieldAssetAddress,
             historicRoot: fetchedRoot
         )
         let unshieldProofDurationMs = Date().timeIntervalSince(unshieldProofStart) * 1000
@@ -818,12 +857,12 @@ class WalletManager: ObservableObject {
         let unshieldNullifier = unshieldResult.nullifier
         let historicRoot = unshieldResult.historic_root
         var callPayload: [String] = [String(format: "0x%x", proofCalldata.count)] + proofCalldata
-        callPayload += [unshieldNullifier, recipient, amountU256Low, amountU256High, safeAssetId, historicRoot]
+        callPayload += [unshieldNullifier, recipient, amountU256Low, amountU256High, unshieldAssetAddress, historicRoot]
 
         print("[Unshield] nullifier=\(nullifier)")
         print("[Unshield] recipient=\(recipient)")
         print("[Unshield] amount=\(amountU256Low) (wei)")
-        print("[Unshield] asset=\(safeAssetId)")
+        print("[Unshield] asset=\(unshieldAssetAddress)")
         print("[Unshield] proof items=\(proofCalldata.count)")
         print("[Unshield] calldata_len=\(callPayload.count)")
 
@@ -1386,6 +1425,7 @@ class WalletManager: ObservableObject {
         
         // Construct the output notes dynamically
         var outNotes: [Note] = []
+        let receivedMemo = userMemo.isEmpty ? "Private transfer" : "Private: \(userMemo)"
         let recipientNote = Note(
             value: amountWeiStr,
             asset_id: safeAssetId,
@@ -1393,7 +1433,7 @@ class WalletManager: ObservableObject {
             owner_pubkey: recipientPubkey,
             nonce: outputNonce,
             spending_key: nil,
-            memo: "",
+            memo: receivedMemo,
             leaf_position: nil,
             merkle_path: nil,
             commitment: outputCommitment
@@ -1514,6 +1554,12 @@ class WalletManager: ObservableObject {
         removeNote(inputNote)
         print("[PrivateTransfer] AFTER removeNote: notes.count=\(notes.count) balance=\(balance)")
 
+        let isSelfTransfer = recipientIVK == ivkHex && recipientPubkey == keys.publicKey.hexString
+        if isSelfTransfer {
+            addNote(recipientNote, commitment: outputCommitment)
+            print("[PrivateTransfer] AFTER addNote(self recipient): notes.count=\(notes.count) balance=\(balance)")
+        }
+
         // If there's a change note, add it back to the sender's wallet immediately.
         if hasChange, let cn = changePlainNote, let cc = changeCommitment {
             addNote(cn, commitment: cc)
@@ -1593,6 +1639,20 @@ class WalletManager: ObservableObject {
             if accumulated >= amountWeiTarget { break }
         }
         return selected
+    }
+
+    private func deriveOwnShieldedAddressParts() throws -> ShieldedAddressParts {
+        guard let seed = KeychainManager.masterSeed(),
+              let keys = try? StarknetAccount.deriveAccountKeys(fromSeed: seed) else {
+            throw NSError(
+                domain: "StarkVeil",
+                code: 11,
+                userInfo: [NSLocalizedDescriptionKey: "Could not derive shielded receive address."]
+            )
+        }
+        let spendingKeyHex = WalletManager.clampToFelt252(keys.privateKey.hexString)
+        let ivkHex = try StarkVeilProver.deriveIVK(spendingKeyHex: spendingKeyHex)
+        return ShieldedAddressParts(ivk: ivkHex, pubkey: keys.publicKey.hexString)
     }
 
     // MARK: - H-4 fix: Recover pending-spend notes

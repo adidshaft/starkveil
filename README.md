@@ -50,18 +50,18 @@ StarkVeil is a purely native cypherpunk iOS wallet that enforces total financial
 
 The PrivacyPool contract is **already deployed** on Sepolia. No local node required.
 
-### Deployed Contract (Phase 21 Stwo Verifier)
+### Deployed Contract (Phase 22 Stwo Verifier)
 | | |
 |---|---|
 | **Network** | Starknet Sepolia (v0.14.1) |
-| **Contract address** | `0x03dbdd7619868f04300fa97223dc0f626d6ce03d32c0569e5a8b38789d26f1a0` |
-| **Class hash** | `0x06e61cde681c47bdc539e7f1c95f505e70aa021da89d9d1ead22900ae62a5607` |
+| **Contract address** | `0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770` |
+| **Class hash** | `0x0146c9828fa128b54c0836f1573fe07a29ace1b49d0a4aa8a2f6748f532227f8` |
 | **Compiler** | Scarb / Cairo 2.16.0 · Sierra 1.7.0 |
 | **Deployed** | 2026-03-07 |
 | **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
-| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x03dbdd7619868f04300fa97223dc0f626d6ce03d32c0569e5a8b38789d26f1a0) |
-| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x0300be54599666bbe5c27c823287ed18f97d795568247352ea85e94be454729c) |
-| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x068178252bcc3962f71be9ed2418e16376c5fb9946416932ef568cb59ba58b3e) |
+| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770) |
+| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x04048a3adeb8352d24fe9ddfd97d53667ad2f417616cc273600bfbd5ee9fbc34) |
+| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x070c9d7b99f34afa16dadef1b6eef51d54d091f9311c89641731136ad35eaaea) |
 
 ### 1. Build the Rust Prover
 ```bash
@@ -104,7 +104,7 @@ The app points to Sepolia by default. No configuration needed.
 
 ### 7. Unshield (S → U)
 1. Tap **Shield** → switch to **Unshield** tab.
-2. Enter the amount matching an existing shielded note.
+2. Enter the amount to withdraw. If there is no exact matching note, the app first splits a larger note into an exact note plus change, then unshields the exact note.
 3. Tap **Unshield** — STRK returns to your public balance.
 
 ---

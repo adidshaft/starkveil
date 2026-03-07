@@ -295,6 +295,12 @@ pub fn verify_stwo_proof(
     // Absorb composition commitment.
     channel.absorb(composition_commitment);
 
+    // The prover squeezes an OOD point challenge immediately after absorbing
+    // the composition commitment. The verifier does not need the value, but it
+    // must advance the transcript state identically before absorbing the OOD
+    // evaluations that were sampled at that point.
+    let _ood_point = channel.squeeze();
+
     // ── Parse OOD evaluations ─────────────────────────────────────────────
     let mut cursor: u32 = 6;
     if cursor >= proof.len() { return false; }
@@ -320,6 +326,10 @@ pub fn verify_stwo_proof(
     channel.absorb(ood_composition);
     cursor += 1;
 
+    // The prover derives one additional challenge before entering FRI to mix
+    // the trace and composition columns into a single polynomial.
+    let _fri_alpha = channel.squeeze();
+
     // ── Parse FRI proof ───────────────────────────────────────────────────
     if cursor >= proof.len() { return false; }
     let n_fri_layers = read_u32(proof, cursor);
@@ -335,7 +345,6 @@ pub fn verify_stwo_proof(
         if cursor >= proof.len() { return false; }
         let commitment = read_felt(proof, cursor);
         fri_commitments.append(commitment);
-        channel.absorb(commitment);
         cursor += 1;
         fi += 1;
     };
@@ -350,6 +359,29 @@ pub fn verify_stwo_proof(
         fri_alphas.append(read_felt(proof, cursor));
         cursor += 1;
         ai += 1;
+    };
+
+    // Reconstruct the per-layer FRI transcript exactly as the prover does:
+    // absorb one layer commitment, squeeze four felt challenges for the QM31
+    // alpha, then continue to the next layer. The proof serializes all
+    // commitments first and all alpha limbs second, so we replay that order here.
+    let mut layer_idx: u32 = 0;
+    loop {
+        if layer_idx == n_fri_layers { break; }
+        channel.absorb(*fri_commitments.at(layer_idx));
+
+        let alpha_base = layer_idx * 4;
+        let mut alpha_part: u32 = 0;
+        loop {
+            if alpha_part == 4 { break; }
+            let expected = channel.squeeze();
+            if expected != *fri_alphas.at(alpha_base + alpha_part) {
+                return false;
+            }
+            alpha_part += 1;
+        };
+
+        layer_idx += 1;
     };
 
     // Last layer coefficients.
@@ -399,6 +431,12 @@ pub fn verify_stwo_proof(
         }
 
         // Read twin values for each FRI layer.
+        // The Rust prover folds the queried position down after each layer:
+        //   idx = idx % max(1, half / 2)
+        // where half = layer_size / 2. Reusing the top-layer index for deeper
+        // layers rejects valid proofs because those Merkle trees are smaller.
+        let mut layer_query_index = query_index;
+        let mut current_half_size = lde_half_size;
         let mut layer: u32 = 0;
         loop {
             if layer == n_fri_layers { break; }
@@ -433,12 +471,19 @@ pub fn verify_stwo_proof(
                 let valid = verify_merkle_path(
                     *fri_commitments.at(layer),
                     leaf,
-                    query_index,
+                    layer_query_index,
                     siblings.span(),
                 );
                 if !valid {
                     return false;
                 }
+            }
+
+            if current_half_size > 1 {
+                layer_query_index = layer_query_index % (current_half_size / 2);
+                current_half_size = current_half_size / 2;
+            } else {
+                layer_query_index = 0;
             }
 
             layer += 1;
