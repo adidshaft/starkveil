@@ -24,12 +24,39 @@ struct RPCError: Decodable {
         if let executionError = data?.execution_error, !executionError.isEmpty {
             return "\(message) — \(executionError)"
         }
+        if let rawMessage = data?.raw_message, !rawMessage.isEmpty {
+            return "\(message) — \(rawMessage)"
+        }
         return message
     }
 }
 
 struct RPCErrorData: Decodable {
     let execution_error: String?
+    let raw_message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case execution_error
+    }
+
+    init(execution_error: String? = nil, raw_message: String? = nil) {
+        self.execution_error = execution_error
+        self.raw_message = raw_message
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let rawString = try? container.decode(String.self) {
+            self.init(raw_message: rawString)
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            execution_error: try container.decodeIfPresent(String.self, forKey: .execution_error),
+            raw_message: nil
+        )
+    }
 }
 
 // MARK: - starknet_blockNumber

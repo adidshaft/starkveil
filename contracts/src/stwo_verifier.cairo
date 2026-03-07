@@ -87,6 +87,22 @@ impl ChannelImpl of ChannelTrait {
         challenge
     }
 
+    /// Squeeze an M31 challenge exactly like the Rust prover:
+    /// derive a felt252 challenge, then reduce it with the Mersenne-31 rule
+    /// used by `M31::new` in the Rust prover.
+    fn squeeze_m31(ref self: Channel) -> felt252 {
+        let f = self.squeeze();
+        let f_u256: u256 = f.into();
+        let low32: u64 = (f_u256 & 0xFFFFFFFF_u256).try_into().unwrap();
+        let lo31 = low32 % 0x80000000_u64;
+        let hi1 = low32 / 0x80000000_u64;
+        let mut reduced = lo31 + hi1;
+        if reduced >= 0x7FFFFFFF_u64 {
+            reduced = reduced - 0x7FFFFFFF_u64;
+        };
+        reduced.into()
+    }
+
     /// Squeeze a u32 challenge in [0, bound) by reducing felt252 mod bound.
     fn squeeze_index(ref self: Channel, bound: u32) -> u32 {
         let f = self.squeeze();
@@ -315,9 +331,9 @@ pub fn verify_stwo_proof(
         if oi == n_ood_evals { break; }
         let eval = read_felt(proof, cursor + oi);
         ood_evals.append(eval);
-        channel.absorb(eval);
         oi += 1;
     };
+    channel.absorb_many(ood_evals.span());
     cursor += n_ood_evals;
 
     // OOD composition evaluation.
@@ -362,7 +378,7 @@ pub fn verify_stwo_proof(
     };
 
     // Reconstruct the per-layer FRI transcript exactly as the prover does:
-    // absorb one layer commitment, squeeze four felt challenges for the QM31
+    // absorb one layer commitment, squeeze four M31 challenges for the QM31
     // alpha, then continue to the next layer. The proof serializes all
     // commitments first and all alpha limbs second, so we replay that order here.
     let mut layer_idx: u32 = 0;
@@ -374,7 +390,7 @@ pub fn verify_stwo_proof(
         let mut alpha_part: u32 = 0;
         loop {
             if alpha_part == 4 { break; }
-            let expected = channel.squeeze();
+            let expected = channel.squeeze_m31();
             if expected != *fri_alphas.at(alpha_base + alpha_part) {
                 return false;
             }
@@ -430,7 +446,22 @@ pub fn verify_stwo_proof(
             }
         }
 
-        // Read twin values for each FRI layer.
+        // The Rust proof serializes all twin-value pairs for this query first,
+        // followed by all authentication paths. Parse the value section up
+        // front, then replay the folded indices while reading auth paths.
+        let mut layer_vals = ArrayTrait::new();
+        let mut layer: u32 = 0;
+        loop {
+            if layer == n_fri_layers { break; }
+            if cursor + 2 > proof.len() { return false; }
+            let val_p = read_felt(proof, cursor);
+            let _val_p_conj = read_felt(proof, cursor + 1);
+            layer_vals.append(val_p);
+            cursor += 2;
+            layer += 1;
+        };
+
+        // Read authentication paths for each FRI layer.
         // The Rust prover folds the queried position down after each layer:
         //   idx = idx % max(1, half / 2)
         // where half = layer_size / 2. Reusing the top-layer index for deeper
@@ -440,11 +471,6 @@ pub fn verify_stwo_proof(
         let mut layer: u32 = 0;
         loop {
             if layer == n_fri_layers { break; }
-            if cursor + 2 > proof.len() { return false; }
-
-            let val_p = read_felt(proof, cursor);
-            let _val_p_conj = read_felt(proof, cursor + 1);
-            cursor += 2;
 
             // Read and verify Merkle authentication path.
             if cursor >= proof.len() { return false; }
@@ -464,7 +490,7 @@ pub fn verify_stwo_proof(
             // The Rust prover commits FRI layers with raw felt252 leaves:
             // `MerkleTree::new(vec![FieldElement::from(v)])`. Re-hashing the
             // queried value here would make every valid proof fail on-chain.
-            let leaf = val_p;
+            let leaf = *layer_vals.at(layer);
 
             // Verify Merkle decommitment against the layer commitment.
             if layer < fri_commitments.len() {

@@ -54,14 +54,30 @@ The PrivacyPool contract is **already deployed** on Sepolia. No local node requi
 | | |
 |---|---|
 | **Network** | Starknet Sepolia (v0.14.1) |
-| **Contract address** | `0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770` |
-| **Class hash** | `0x0146c9828fa128b54c0836f1573fe07a29ace1b49d0a4aa8a2f6748f532227f8` |
+| **Contract address** | `0x019f2e14dfc8133b17c532e8990fb65efd5a596482b209b89c8b5bb6947ff91c` |
+| **Class hash** | `0x0316cf3ac017db1524ea7a1195ebd60e48c058439b8c5804fd2e1017dc021de1` |
 | **Compiler** | Scarb / Cairo 2.16.0 · Sierra 1.7.0 |
 | **Deployed** | 2026-03-07 |
 | **RPC (primary)** | `https://api.cartridge.gg/x/starknet/sepolia` (Cartridge, v0.9.0) |
-| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770) |
-| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x04048a3adeb8352d24fe9ddfd97d53667ad2f417616cc273600bfbd5ee9fbc34) |
-| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x070c9d7b99f34afa16dadef1b6eef51d54d091f9311c89641731136ad35eaaea) |
+| **Contract on Voyager** | [View on Voyager](https://sepolia.voyager.online/contract/0x019f2e14dfc8133b17c532e8990fb65efd5a596482b209b89c8b5bb6947ff91c) |
+| **Declare tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x04f83d518d1543c6028dd69a1fe785b277ba26d56a485526555a43ee587e3832) |
+| **Deploy tx** | [View on Voyager](https://sepolia.voyager.online/tx/0x0044335207b29a66e2ec7c77559dcb48270c2a9d0ce222cc1d7c03d55b5f2bc3) |
+
+### Live Proof Demo
+
+The current Sepolia deployment has been exercised end-to-end with live user flows:
+
+| Flow | Status | Reference |
+|---|---|---|
+| Shield `1.0 STRK` | `ACCEPTED_ON_L2`, `SUCCEEDED` | [Voyager tx](https://sepolia.voyager.online/tx/0x17af0103f0d1c99f1fc130915d8b1449540b1f33e1227fb103f2b34dc7afb51) |
+| Private transfer proof verification | `ACCEPTED_ON_L2`, `SUCCEEDED` | [Voyager tx](https://sepolia.voyager.online/tx/0x6dce741b675b17a86960a4c79c3d1f6acba5099cd5c78095ba012916049dc37) |
+
+Observed on-device proof generation from the app:
+
+- Proof type: `Private Transfer Proof`
+- Proving system: `Poseidon-based Circle STARK` via `stwo`
+- Proof size: `1826 felt252 elements`
+- Device-side proving time: `215.8 ms`
 
 ### 1. Build the Rust Prover
 ```bash

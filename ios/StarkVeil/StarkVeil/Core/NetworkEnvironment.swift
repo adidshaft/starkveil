@@ -49,11 +49,11 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
     // The deployed PrivacyPool Cairo contract address for each environment.
     //
     // SEPOLIA: redeployed 2026-03-07 via sncast 0.57.0 on Starknet Sepolia 0.14.1
-    //   Scarb/Cairo: 2.16.0, Sierra: 1.7.0 — includes Stwo STARK prover + Cairo verifier
-    //   Class hash:       0x0146c9828fa128b54c0836f1573fe07a29ace1b49d0a4aa8a2f6748f532227f8
-    //   Contract address: 0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770
-    //   Declare tx:       0x04048a3adeb8352d24fe9ddfd97d53667ad2f417616cc273600bfbd5ee9fbc34
-    //   Deploy tx:        0x070c9d7b99f34afa16dadef1b6eef51d54d091f9311c89641731136ad35eaaea
+    //   Scarb/Cairo: 2.16.0, Sierra: 1.7.0 — includes fixed Stwo verifier transcript parsing
+    //   Class hash:       0x0316cf3ac017db1524ea7a1195ebd60e48c058439b8c5804fd2e1017dc021de1
+    //   Contract address: 0x019f2e14dfc8133b17c532e8990fb65efd5a596482b209b89c8b5bb6947ff91c
+    //   Declare tx:       0x04f83d518d1543c6028dd69a1fe785b277ba26d56a485526555a43ee587e3832
+    //   Deploy tx:        0x0044335207b29a66e2ec7c77559dcb48270c2a9d0ce222cc1d7c03d55b5f2bc3
     //
     // MAINNET: not yet deployed — replace before mainnet launch.
     var contractAddress: String {
@@ -62,7 +62,7 @@ enum NetworkEnvironment: String, CaseIterable, Identifiable {
             // TODO: replace with mainnet PrivacyPool address after production deployment
             return "0x0000000000000000000000000000000000000000000000000000000000000000"
         case .sepolia:
-            return "0x04dffe48a091ae571fdaadada69a38e3e12ded2067350fed5d9629c2e8ec6770"
+            return "0x019f2e14dfc8133b17c532e8990fb65efd5a596482b209b89c8b5bb6947ff91c"
         }
     }
 }
