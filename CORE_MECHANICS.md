@@ -2,6 +2,40 @@
 
 This document serves as the central source of truth for the StarkVeil project's system architecture, development phases, and core cryptographic mechanics.
 
+## Current Production Snapshot (Sepolia, 2026-03-07)
+
+This section reflects the current live system, not the earlier prototype phases below.
+
+- **Live contract**: `0x019f2e14dfc8133b17c532e8990fb65efd5a596482b209b89c8b5bb6947ff91c`
+- **Live class hash**: `0x0316cf3ac017db1524ea7a1195ebd60e48c058439b8c5804fd2e1017dc021de1`
+- **Shield reference tx**: `0x17af0103f0d1c99f1fc130915d8b1449540b1f33e1227fb103f2b34dc7afb51`
+- **Private transfer reference tx**: `0x6dce741b675b17a86960a4c79c3d1f6acba5099cd5c78095ba012916049dc37`
+- **Observed private proof generation**: `1826 felt252 elements` in about `215.8 ms` on-device
+
+### Current End-to-End Mechanics
+
+1. **Shield (`U -> S`)**
+   - The sender pays gas from unshielded STRK (`U`).
+   - The pool transfers public STRK into the contract and appends a new Poseidon note commitment to the Merkle tree.
+   - The resulting note becomes spendable after the wallet indexes the on-chain event and leaf position.
+2. **Private transfer (`S -> S`)**
+   - The sender selects shielded input notes, generates recipient and change commitments, and derives a nullifier.
+   - The device generates a real Stwo-based Circle STARK proof locally.
+   - The Cairo verifier checks the proof on-chain, marks nullifiers spent, and appends the new commitments.
+   - Gas is still paid from unshielded STRK (`U`), not from shielded balance.
+3. **Unshield (`S -> U`)**
+   - The device proves ownership of a shielded note while binding the public recipient and amount as public inputs.
+   - The contract verifies the proof, marks the nullifier spent, and releases ERC-20 STRK back to the public account.
+   - Gas again comes from unshielded STRK (`U`).
+
+### Visibility Model
+
+- **Visible on-chain during shield**: sender account, token, deposit amount, commitment
+- **Visible on-chain during private transfer**: nullifiers, new commitments, proof payload, historic root
+- **Hidden during private transfer**: recipient identity, transferred amount, memo plaintext
+- **Visible on-chain during unshield**: recipient public address, withdrawal amount, nullifier
+- **Not linkable publicly**: original depositor identity to later unshield recipient identity
+
 ## Development Phases
 
 ### Phase 1: Cryptographic Architecture (Completed)
@@ -13,13 +47,13 @@ Defined the visibility surfaces, threat models, and fundamental data structures.
 The on-chain settlement layer built on Starknet.
 - **PrivacyPool Contract**: Handles `shield`, `private_transfer`, and `unshield` operations.
 - **Merkle Tree**: An append-only state construct (depth 20) utilizing Starknet's native Poseidon hash. It stores root commitments representing all unspent shielded value.
-- **Zero-Knowledge Hooks**: Prepared `private_transfer` to accept and process verified S-Two STARK proofs, decoupling heavy computation from iOS devices directly onto the Starknet execution layer.
+- **Zero-Knowledge Verification**: The deployed Cairo verifier now validates Stwo-generated Circle STARK proofs for `private_transfer` and `unshield` on-chain.
 
 ### Phase 3: Client-Side Proving Pipeline (Completed)
 Transitioning STARK proof generation to iOS via a Rust SDK, omitting TEE trust assumptions.
 - **Target**: Mobile-native Rust code cross-compiled as `StarkVeilProver.xcframework` bundling simulators and physical binaries natively.
 - **FFI**: Uniffi or raw C bindings communicating JSON-serialized structs (Notes, Nullifiers) between Swift and Rust.
-- **Output**: Generates formatted dummy proofs (for MVP) and eventually full S-Two cryptographic proofs to be posted on-chain.
+- **Output**: Generates full Stwo-compatible Circle STARK proofs that are submitted to and verified by the live Cairo contract.
 
 ### Phase 4: iOS App Engineering (Completed)
 The mobile frontend managing keys, state, and user interactions.
@@ -164,7 +198,7 @@ Resolved 2C + 4H + 5M audit vulnerabilities:
 - **IVK loop optimization**: Derived once per SyncEngine batch, not per-event.
 - **Recipient IVK required**: `PrivateTransferView` asks for the recipient's real IVK instead of deriving from their public address.
 - **Cairo `Shielded` event**: Now emits `encrypted_memo: felt252` field at `data[5]` for SyncEngine trial-decryption.
-- **Mock verifier**: `verify_proof` returns `true` (documented, intentional for demo). Stwo client-side proving circuit is the next milestone.
+- **Stwo verifier rollout**: Cairo verifier transcript parsing and FRI validation were corrected so live Stwo proofs now verify successfully on Sepolia.
 
 ---
 
@@ -185,14 +219,15 @@ Resolved 2C + 4H + 5M audit vulnerabilities:
 - **isNullifierSpent**: RPC call (`starknet_call` → `is_nullifier_spent` selector) performed before proof generation. Fail-open (returns false on RPC error); the Cairo contract is the authoritative guard.
 - **IVK Trial-Decryption**: SyncEngine derives IVK once per block (outside the event loop) and attempts `NoteEncryption.decryptMemo` on every `Shielded` event. Notes that authenticate belong to this wallet; others are silently dropped.
 - **PrivateTransferView**: Shield-to-shield private transfer UI. Requires the recipient's Starknet address AND their IVK hex. Encrypts the memo with the recipient's IVK so their SyncEngine can trial-decrypt it.
-- **Mock Verifier**: `verify_proof` in `privacy_pool.cairo` returns `true` for all proofs. Documented as intentional for the demo — enables the full demo flow without a client-side ZK prover circuit. Stwo integration replaces this post-hackathon.
+- **On-Chain Verifier**: `privacy_pool.cairo` routes `private_transfer` and `unshield` proofs through the deployed Stwo-compatible Cairo verifier. Proof acceptance is enforced on-chain, not mocked in the client.
 - **SyncCheckpoint**: SwiftData record mapping `networkId → lastBlockNumber`. Enables resumable syncing without duplicate note emission.
-- **Private Transfer Proof**: STARK circuit asserting (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, (3) nullifiers derive from spending keys owning the inputs. Currently mock — real Stwo proving circuit pending.
-- **Unshield Proof**: STARK circuit binding `(amount, asset, recipient)` as public inputs. Currently mock — same Stwo circuit pending.
+- **Private Transfer Proof**: Real Circle STARK proof asserting (1) input notes exist in the Merkle tree, (2) `Σin = Σout + fee`, and (3) nullifiers derive from the spending keys controlling the inputs.
+- **Unshield Proof**: Real Circle STARK proof binding `(amount, asset, recipient)` as public inputs while proving note ownership and Merkle inclusion.
 - **`ActivityEvent`**: Persistent SwiftData record of a privacy-pool operation (deposit, transfer, unshield). Outlives the UTXO set so history is retained after notes are spent.
 - **`PersistenceController`**: SwiftData `ModelContainer` singleton with a single shared `ModelContext` — inserts and fetches share the same context.
 - **3-State App Flow**: `Onboarding` (no seed) → `AccountActivation` (seed exists, account not deployed) → `Vault` (full operation). Each state is persisted in Keychain and survives reinstall.
 - **ResourceBoundsMapping**: V3 transaction fee structure with three gas markets: `l1_gas` (L2→L1 messages), `l2_gas` (execution computation, dominant cost), `l1_data_gas` (state diff blob posting). Each has `max_amount` (u64) and `max_price_per_unit` (u128).
+- **Public Gas Requirement**: Shield, private transfer, unshield, and public sends all consume unshielded STRK (`U`) for gas. The app now pre-checks `resource_bounds` against the current public balance and surfaces the estimated STRK requirement before submit.
 - **V3 Resource Bound Encoding**: Each bound encoded as a 252-bit felt252: `resource_name(60 bits) | max_amount(64 bits) | max_price_per_unit(128 bits)`. Resource names: `L1_GAS=0x4c315f474153`, `L2_GAS=0x4c325f474153`, `L1_DATA=0x4c315f44415441`.
 - **V3 Gas Hash**: `Poseidon(tip, l1_gas_bound, l2_gas_bound, l1_data_gas_bound)` — tip is the first element inside this hash, not a separate field in the outer hash.
 

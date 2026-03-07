@@ -116,12 +116,14 @@ The app points to Sepolia by default. No configuration needed.
 1. Ask the recipient to share their SVK from **Receive → Shielded Address (S)**.
 2. Tap **Send** → select **Shielded (S)** mode.
 3. Paste the `svk:0x<ivk>:0x<pubkey>` address and amount.
-4. Tap **Send (Private)** — no amounts or addresses visible on-chain.
+4. Keep some unshielded STRK (`U`) in the sender wallet for gas. Private sends are paid from public balance, not shielded notes.
+5. Tap **Send (Private)** — no amounts or addresses visible on-chain.
 
 ### 7. Unshield (S → U)
 1. Tap **Shield** → switch to **Unshield** tab.
 2. Enter the amount to withdraw. If there is no exact matching note, the app first splits a larger note into an exact note plus change, then unshields the exact note.
-3. Tap **Unshield** — STRK returns to your public balance.
+3. Keep some unshielded STRK (`U`) for gas.
+4. Tap **Unshield** — STRK returns to your public balance.
 
 ---
 
@@ -223,9 +225,21 @@ Update `NetworkEnvironment.swift` local case with your new contract address.
 
 ## 🔍 Comprehensive Technical Verification
 
-For developers, auditors, and privacy enthusiasts, here is the exact lifecycle of a StarkVeil transaction, from public STRK (U) to the shielded pool (S), through a private transfer, and back to public STRK (U).
+This is the current live flow on Starknet Sepolia, using the deployed Stwo verifier and the native iOS prover.
 
-This section details how to verify the cryptographic proofs, on-chain state transitions, and the specific algorithms used at each step to guarantee absolute financial privacy.
+### Current Core Mechanics
+
+- **Shield (`U -> S`)**: public STRK is transferred into `PrivacyPool`, which appends a new note commitment to the Merkle tree.
+- **Private transfer (`S -> S`)**: the device generates a Circle STARK proof locally, the contract verifies it on-chain, and the pool appends new opaque commitments plus marks nullifiers as spent.
+- **Unshield (`S -> U`)**: the device proves ownership of a shielded note while binding the public recipient and amount as public inputs.
+- **Gas model**: account deployment, public send, shield, private transfer, and unshield are all paid from unshielded STRK (`U`). Shielded notes do not pay gas directly.
+- **Discovery model**: recipients discover incoming private notes by trial-decrypting encrypted note payloads with their IVK during sync.
+
+### Live End-to-End Example
+
+- Shield verification example: [0x17af0103f0d1c99f1fc130915d8b1449540b1f33e1227fb103f2b34dc7afb51](https://sepolia.voyager.online/tx/0x17af0103f0d1c99f1fc130915d8b1449540b1f33e1227fb103f2b34dc7afb51)
+- Private transfer verification example: [0x6dce741b675b17a86960a4c79c3d1f6acba5099cd5c78095ba012916049dc37](https://sepolia.voyager.online/tx/0x6dce741b675b17a86960a4c79c3d1f6acba5099cd5c78095ba012916049dc37)
+- Observed local proof generation: `1826 felt252 elements` in about `215.8 ms`
 
 ### The Flow: U → S → Private Transfer → U
 
@@ -245,15 +259,16 @@ This section details how to verify the cryptographic proofs, on-chain state tran
 #### Stage 2: Private Transfer (S → S)
 **What happens:** Moving shielded STRK to another user inside the privacy pool without revealing sender, receiver, or amount.
 *   **Action:** User inputs the recipient's Shielded Address (`svk:0x<ivk>:0x<pubkey>`) and an amount, then taps **Send**.
+*   **Operational note:** The sender still needs public STRK (`U`) for gas. The app now warns and shows an estimated STRK requirement when the public balance is too low.
 *   **Algorithms:**
     *   **Nullifier Generation:** `nf = Poseidon(commitment, spending_key)`
         *   *Why Nullifier?* It proves the note is spent without revealing *which* note was spent. The contract enforces `!nullifiers[nf]` to stop double-spends.
     *   **Output Commitments:** New `Poseidon` hashes are generated for the recipient's note and the sender's change note.
-    *   **STARK Proof:** The `libstarkveil_prover` Rust core generates a Cairo-compatible STARK proof asserting: `Σ Input = Σ Output + Fee`, and that all inputs exist in the Merkle Tree.
+    *   **STARK Proof:** The `libstarkveil_prover` Rust core generates a Cairo-compatible Circle STARK proof asserting: `Σ Input = Σ Output + Fee`, nullifier correctness, and Merkle inclusion for all spent notes.
         *   *Why STARKs?* Quantum-resistant, highly scalable, and require no trusted setup (unlike SNARKs).
 *   **On-Chain Verification:**
     *   Find the `Transfer` event on-chain.
-    *   **Privacy check:** You will only see the `proof` blob, a list of `nullifiers` (spent signals), and a list of `new_commitments`.
+    *   **Privacy check:** You will only see the proof payload, a list of `nullifiers` (spent signals), and a list of `new_commitments`.
     *   Notice that the transaction **does not contain any amounts, asset IDs, or recipient addresses**. To an outside observer, this transaction is completely opaque.
 
 #### Stage 3: Sync & Discovery
@@ -269,6 +284,7 @@ This section details how to verify the cryptographic proofs, on-chain state tran
 #### Stage 4: Unshield (S → U)
 **What happens:** Withdrawing shielded STRK back to a public Starknet account.
 *   **Action:** User inputs a public Starknet address (`0x...`) and an amount matching a single note, then taps **Unshield**.
+*   **Operational note:** Unshield also consumes public STRK (`U`) for gas, even though the withdrawn funds come from shielded balance.
 *   **Algorithms:**
     *   **Nullifier Generation:** Same as private transfer, a nullifier is generated to destroy the shielded note.
     *   **STARK Proof:** The proof asserts the note's validity and, crucially, binds the `recipient_address` and `amount` as **public inputs**.
