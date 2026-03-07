@@ -8,6 +8,7 @@ struct VaultView: View {
     @EnvironmentObject private var syncEngine: SyncEngine
     @EnvironmentObject private var walletManager: WalletManager
     @EnvironmentObject private var networkManager: NetworkManager
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var bottomTab: BottomNavTab = .wallet
     @State private var vaultTab: VaultTab = .assets
@@ -118,6 +119,14 @@ struct VaultView: View {
             }
         }
         .onDisappear { syncEngine.stopSyncing() }
+        .onChange(of: syncEngine.currentBlockNumber) { _, newBlock in
+            guard newBlock > 0 else { return }
+            refreshBalance()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            refreshBalance()
+        }
         // Send sheet — unified (address + amount only)
         .sheet(isPresented: $showSendSheet, onDismiss: refreshBalance) {
             UnifiedSendView(isPresented: $showSendSheet)
@@ -448,5 +457,4 @@ private struct UnifiedSendView: View {
         }
     }
 }
-
 

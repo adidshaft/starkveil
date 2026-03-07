@@ -60,6 +60,10 @@ class WalletManager: ObservableObject {
     // Synchronous re-entrancy flag. Only ever read/written on the main actor,
     // so no additional locking is needed.
     private var isTransferInFlight = false
+    private var isRefreshingPublicBalance = false
+    private var pendingPublicBalanceRefresh = false
+    private var lastPublicBalanceRefreshAt = Date.distantPast
+    private var hasLoadedPublicBalance = false
 
     // Persistence
     private let persistence = PersistenceController.shared
@@ -74,6 +78,7 @@ class WalletManager: ObservableObject {
     }
 
     func loadNotes(for networkId: String) {
+        hasLoadedPublicBalance = false
         let ctx = persistence.context
         let descriptor = FetchDescriptor<StoredNote>(
             predicate: #Predicate { $0.networkId == networkId },
@@ -111,7 +116,13 @@ class WalletManager: ObservableObject {
             predicate: #Predicate { $0.networkId == networkId },
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
-        proverEvents = (try? ctx.fetch(proverDesc)) ?? []
+        let fetchedProverEvents = (try? ctx.fetch(proverDesc)) ?? []
+        let legacyShieldEvents = fetchedProverEvents.filter { $0.kind == .shield }
+        if !legacyShieldEvents.isEmpty {
+            legacyShieldEvents.forEach { ctx.delete($0) }
+            try? ctx.save()
+        }
+        proverEvents = fetchedProverEvents.filter { $0.kind != .shield }
     }
 
     @discardableResult
@@ -171,36 +182,45 @@ class WalletManager: ObservableObject {
             return stored.contains { $0.commitment == commitKey && !$0.commitment.isEmpty }
         }()
         guard !isDuplicate && !isLegacyDup && !isStoredCommitmentDup else {
-            // Leaf-position back-patch: executeShield stores the note with leaf_position=nil because
-            // fetchMerkleNextIndex runs right after broadcast — before the tx is indexed. When
-            // SyncEngine later picks up the Shielded event it carries the real leaf index (data[4]).
-            // Patch the stored note here so executePrivateTransfer/executeUnshield can build a witness.
             if let newLeaf = note.leaf_position, !commitKey.isEmpty {
                 let pCtx = persistence.context
                 let netId = activeNetworkId
                 let pDesc = FetchDescriptor<StoredNote>(predicate: #Predicate { $0.networkId == netId })
                 if let stored = try? pCtx.fetch(pDesc),
-                   let match = stored.first(where: { $0.commitment == commitKey && $0.leafPosition == nil }) {
-                    match.leafPosition = Int(newLeaf)
-                    try? pCtx.save()
-                    // Mirror into in-memory notes so the current session benefits immediately
-                    if let idx = notes.firstIndex(where: { $0.nonce == match.nonce || $0.nonce == commitKey }) {
-                        let old = notes[idx]
-                        notes[idx] = Note(value: old.value, asset_id: old.asset_id, owner_ivk: old.owner_ivk,
-                                          owner_pubkey: old.owner_pubkey, nonce: old.nonce, spending_key: old.spending_key,
-                                          memo: old.memo, leaf_position: newLeaf, merkle_path: old.merkle_path)
+                   let match = stored.first(where: { $0.commitment == commitKey }) {
+                    if match.leafPosition != Int(newLeaf) {
+                        match.leafPosition = Int(newLeaf)
+                        match.merklePathJSON = nil
+                        try? pCtx.save()
+                        updateInMemoryNote(commitment: commitKey, fallbackNonce: match.nonce, leafPosition: newLeaf)
+                        print("[WalletManager] Synced leafPosition=\(newLeaf) on stored note commitment=\(commitKey.prefix(12))…")
                     }
-                    print("[WalletManager] Patched leafPosition=\(newLeaf) on stored note commitment=\(commitKey.prefix(12))…")
                 }
             }
             print("[WalletManager] Duplicate note ignored (commitment: \(commitKey.prefix(16)))")
             return
         }
-        notes.append(note)
+        let canonicalCommitment = commitKey.isEmpty ? note.commitment : commitKey
+        let persistedNote = Note(
+            value: note.value,
+            asset_id: note.asset_id,
+            owner_ivk: note.owner_ivk,
+            owner_pubkey: note.owner_pubkey,
+            nonce: note.nonce,
+            spending_key: note.spending_key,
+            memo: note.memo,
+            leaf_position: note.leaf_position,
+            merkle_path: note.merkle_path,
+            commitment: canonicalCommitment
+        )
+        notes.append(persistedNote)
         recomputeBalance()
         let ctx = persistence.context
-        ctx.insert(StoredNote(from: note, networkId: activeNetworkId, commitment: commitment,
-                              leafPosition: note.leaf_position.map { Int($0) }))
+        ctx.insert(StoredNote(from: persistedNote,
+                              networkId: activeNetworkId,
+                              commitment: canonicalCommitment ?? "",
+                              leafPosition: persistedNote.leaf_position.map { Int($0) },
+                              merklePath: persistedNote.merkle_path))
         do {
             try ctx.save()
         } catch {
@@ -343,18 +363,127 @@ class WalletManager: ObservableObject {
     /// Phase 19: Fetches the on-chain STRK ERC-20 balance for the public (unshielded) address.
     /// Updates `publicBalance` which is displayed as the U balance in the Zashi-style UI.
     func refreshPublicBalance(rpcUrl: URL) async {
+        if isRefreshingPublicBalance {
+            pendingPublicBalanceRefresh = true
+            return
+        }
+
+        let now = Date()
+        if now.timeIntervalSince(lastPublicBalanceRefreshAt) < 1.0 {
+            return
+        }
+
+        isRefreshingPublicBalance = true
+        lastPublicBalanceRefreshAt = now
+        defer {
+            isRefreshingPublicBalance = false
+            if pendingPublicBalanceRefresh {
+                pendingPublicBalanceRefresh = false
+                Task { @MainActor in
+                    await refreshPublicBalance(rpcUrl: rpcUrl)
+                }
+            }
+        }
+
         guard let address = KeychainManager.accountAddress() else { return }
         do {
+            let previousBalance = publicBalance
             let rawResult = try await RPCClient().getSTRKBalance(rpcUrl: rpcUrl, address: address)
             // Result is "low_hex, high_hex" — parse the u256
             let parts = rawResult.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             let lowHex = parts.first ?? "0x0"
             let weiDecimal = WalletManager.parseToDecimal(lowHex)
             let strkBalance = weiDecimal / Decimal(sign: .plus, exponent: 18, significand: 1)
-            publicBalance = NSDecimalNumber(decimal: strkBalance).doubleValue
+            let newBalance = NSDecimalNumber(decimal: strkBalance).doubleValue
+            publicBalance = newBalance
+
+            if hasLoadedPublicBalance {
+                maybeLogIncomingPublicTransfer(previousBalance: previousBalance, newBalance: newBalance)
+            } else {
+                hasLoadedPublicBalance = true
+            }
         } catch {
             print("[WalletManager] Failed to fetch public balance: \(error)")
         }
+    }
+
+    private func maybeLogIncomingPublicTransfer(previousBalance: Double, newBalance: Double) {
+        let delta = newBalance - previousBalance
+        guard delta > 0.000_000_5 else { return }
+
+        let now = Date()
+        if let recentEvent = activityEvents.first,
+           recentEvent.kind == .unshield,
+           now.timeIntervalSince(recentEvent.timestamp) < 120 {
+            return
+        }
+
+        let formattedDelta = String(format: "%.6f", delta)
+        if let recentEvent = activityEvents.first,
+           recentEvent.kind == .publicReceive,
+           recentEvent.amount == formattedDelta,
+           now.timeIntervalSince(recentEvent.timestamp) < 30 {
+            return
+        }
+
+        logEvent(
+            kind: .publicReceive,
+            amount: formattedDelta,
+            assetId: "STRK (U)",
+            counterparty: "Incoming public transfer"
+        )
+    }
+
+    private func updateInMemoryNote(commitment: String, fallbackNonce: String, leafPosition: UInt32) {
+        guard let idx = notes.firstIndex(where: {
+            $0.commitment == commitment || $0.nonce == fallbackNonce || $0.nonce == commitment
+        }) else { return }
+
+        let old = notes[idx]
+        notes[idx] = Note(
+            value: old.value,
+            asset_id: old.asset_id,
+            owner_ivk: old.owner_ivk,
+            owner_pubkey: old.owner_pubkey,
+            nonce: old.nonce,
+            spending_key: old.spending_key,
+            memo: old.memo,
+            leaf_position: leafPosition,
+            merkle_path: nil,
+            commitment: old.commitment ?? commitment
+        )
+    }
+
+    private func resolveCanonicalLeafPosition(
+        storedNote: StoredNote,
+        rpcClient: RPCClient,
+        rpcUrl: URL,
+        contractAddress: String,
+        logPrefix: String
+    ) async throws -> Int? {
+        if let existingLeaf = storedNote.leafPosition {
+            return existingLeaf
+        }
+
+        guard !storedNote.commitment.isEmpty else {
+            return storedNote.leafPosition
+        }
+
+        let onChainLeaf = try await rpcClient.fetchLeafPositionByCommitment(
+            rpcUrl: rpcUrl,
+            contractAddress: contractAddress,
+            commitment: storedNote.commitment
+        )
+
+        if let leaf = onChainLeaf, storedNote.leafPosition != leaf {
+            storedNote.leafPosition = leaf
+            storedNote.merklePathJSON = nil
+            try? persistence.context.save()
+            updateInMemoryNote(commitment: storedNote.commitment, fallbackNonce: storedNote.nonce, leafPosition: UInt32(leaf))
+            print("[\(logPrefix)] Synced canonical leafPosition=\(leaf) for commitment \(storedNote.commitment.prefix(12))…")
+        }
+
+        return onChainLeaf ?? storedNote.leafPosition
     }
 
     /// Phase 19: Send STRK from the public (unshielded) balance via ERC-20 transfer().
@@ -446,7 +575,7 @@ class WalletManager: ObservableObject {
         // Log to activity feed
         let strkAmount = String(format: "%.6f", amount)
         logEvent(
-            kind: .transfer,
+            kind: .publicSend,
             amount: strkAmount,
             assetId: "STRK (U)",
             counterparty: String(recipient.prefix(16)) + "…",
@@ -606,18 +735,19 @@ class WalletManager: ObservableObject {
             throw ProverError.custom("The privacy pool is currently empty on this network. Please clear your local app data if it contains stale notes from a previous deployment.")
         }
 
-        // Last-resort leaf_position recovery for unshield (same issue as private transfer)
-        if storedNote.leafPosition == nil, !storedNote.commitment.isEmpty {
-            print("[Unshield] leafPosition nil — scanning events for commitment \(storedNote.commitment.prefix(12))…")
-            if let found = try? await rpcClient.fetchLeafPositionByCommitment(
-                rpcUrl: rpcUrl,
-                contractAddress: contractAddress,
-                commitment: storedNote.commitment
-            ) {
-                storedNote.leafPosition = found
-                try? ctx.save()
-                print("[Unshield] Recovered leafPosition=\(found) from on-chain events")
+        let previousLeafPosition = storedNote.leafPosition
+        if let canonicalLeaf = try await resolveCanonicalLeafPosition(
+            storedNote: storedNote,
+            rpcClient: rpcClient,
+            rpcUrl: rpcUrl,
+            contractAddress: contractAddress,
+            logPrefix: "Unshield"
+        ) {
+            if previousLeafPosition != canonicalLeaf {
+                merklePath = nil
             }
+        } else {
+            throw ProverError.custom("Shield still indexing on-chain. Try again in a few seconds.")
         }
 
         if merklePath == nil, let leafIdx = storedNote.leafPosition {
@@ -715,14 +845,28 @@ class WalletManager: ObservableObject {
             throw NSError(domain: "StarkVeil", code: 11,
                           userInfo: [NSLocalizedDescriptionKey: "Could not derive signing key."])
         }
-        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
-        // V3: estimate fee returns resource bounds (STRK gas pricing)
-        let resourceBounds = try await RPCClient().estimateInvokeFee(
-            rpcUrl: rpcUrl,
-            senderAddress: senderAddress,
-            calldata: calldata,
-            nonce: chainNonce
-        )
+        let submitRPCClient = RPCClient()
+        let chainNonce = try await submitRPCClient.getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        let resourceBounds: ResourceBoundsMapping
+        do {
+            resourceBounds = try await submitRPCClient.estimateInvokeFee(
+                rpcUrl: rpcUrl,
+                senderAddress: senderAddress,
+                calldata: calldata,
+                nonce: chainNonce
+            )
+        } catch {
+            let diagnostic = await submitRPCClient.simulateInvokeForDiagnostics(
+                rpcUrl: rpcUrl,
+                senderAddress: senderAddress,
+                calldata: calldata,
+                nonce: chainNonce
+            )
+            let message = diagnostic ?? error.localizedDescription
+            print("[Unshield] estimate failed: \(message)")
+            throw NSError(domain: "StarkVeil", code: 41,
+                          userInfo: [NSLocalizedDescriptionKey: message])
+        }
         let (_, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,
@@ -962,33 +1106,7 @@ class WalletManager: ObservableObject {
         let finality = await RPCClient().pollUntilAccepted(rpcUrl: rpcUrl, txHash: broadcastedHash)
         switch finality {
         case .accepted:
-            // Pass the COMPUTED commitment so the StoredNote.commitment field is set correctly.
-            // executeUnshield/executePrivateTransfer will use this directly for nullifier derivation.
-            // C-4 fix: fetch leaf position (get_mt_next_index() - 1) right after acceptance.
-            let leafPos: UInt32? = await {
-                if let idx = try? await RPCClient().fetchMerkleNextIndex(rpcUrl: rpcUrl, contractAddress: contractAddress), idx > 0 {
-                    return UInt32(idx - 1)
-                }
-                return nil
-            }()
-            let noteWithLeaf = Note(value: note.value, asset_id: note.asset_id,
-                                    owner_ivk: note.owner_ivk, owner_pubkey: note.owner_pubkey,
-                                    nonce: note.nonce, spending_key: note.spending_key,
-                                    memo: note.memo, leaf_position: leafPos, merkle_path: nil)
-            addNote(noteWithLeaf, commitment: commitmentKey)
-            
-            let shieldProverEvent = ProverEvent(
-                kind: .shield,
-                proofElementCount: 0,
-                noteCommitment: commitmentKey,
-                historicRoot: "0x0",
-                nullifier: "0x0",
-                durationMs: 0,
-                networkId: activeNetworkId
-            )
-            persistence.context.insert(shieldProverEvent)
-            try? persistence.context.save()
-            proverEvents.insert(shieldProverEvent, at: 0)
+            addNote(note, commitment: commitmentKey)
 
             if let last = activityEvents.first, last.txHash == nil, last.kind == .deposit {
                 last.txHash = broadcastedHash
@@ -1213,26 +1331,24 @@ class WalletManager: ObservableObject {
         // Fetch current Merkle root + witness, then generate the proof.
         // Falls back to storage read if the view function isn't available on this deployment.
         let xferRPCClient = RPCClient()
-        let xferFetchedRoot = (try? await xferRPCClient.fetchMerkleRoot(rpcUrl: rpcUrl, contractAddress: contractAddress)) ?? "0x0"
 
         var xferMerklePath: [String]? = storedNote.merklePathJSON
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
 
-        // Last-resort leaf_position recovery: if the note was stored before the selector fix,
-        // leafPosition may be nil. Scan on-chain Shielded events to find the correct index.
-        if storedNote.leafPosition == nil, !storedNote.commitment.isEmpty {
-            print("[PrivateTransfer] leafPosition nil — scanning events for commitment \(storedNote.commitment.prefix(12))…")
-            if let found = try? await xferRPCClient.fetchLeafPositionByCommitment(
-                rpcUrl: rpcUrl,
-                contractAddress: contractAddress,
-                commitment: storedNote.commitment
-            ) {
-                storedNote.leafPosition = found
-                let saveCtx = persistence.context
-                try? saveCtx.save()
-                print("[PrivateTransfer] Recovered leafPosition=\(found) from on-chain events")
+        let previousLeafPosition = storedNote.leafPosition
+        if let canonicalLeaf = try await resolveCanonicalLeafPosition(
+            storedNote: storedNote,
+            rpcClient: xferRPCClient,
+            rpcUrl: rpcUrl,
+            contractAddress: contractAddress,
+            logPrefix: "PrivateTransfer"
+        ) {
+            if previousLeafPosition != canonicalLeaf {
+                xferMerklePath = nil
             }
+        } else {
+            throw ProverError.custom("Shield still indexing on-chain. Try again in a few seconds.")
         }
 
         if xferMerklePath == nil, let leafIdx = storedNote.leafPosition {
@@ -1353,8 +1469,28 @@ class WalletManager: ObservableObject {
         ] + callPayload
 
         // 6. Sign and submit (V3)
-        let chainNonce = try await RPCClient().getNonce(rpcUrl: rpcUrl, address: senderAddress)
-        let resourceBounds = try await RPCClient().estimateInvokeFee(rpcUrl: rpcUrl, senderAddress: senderAddress, calldata: calldata, nonce: chainNonce)
+        let submitRPCClient = RPCClient()
+        let chainNonce = try await submitRPCClient.getNonce(rpcUrl: rpcUrl, address: senderAddress)
+        let resourceBounds: ResourceBoundsMapping
+        do {
+            resourceBounds = try await submitRPCClient.estimateInvokeFee(
+                rpcUrl: rpcUrl,
+                senderAddress: senderAddress,
+                calldata: calldata,
+                nonce: chainNonce
+            )
+        } catch {
+            let diagnostic = await submitRPCClient.simulateInvokeForDiagnostics(
+                rpcUrl: rpcUrl,
+                senderAddress: senderAddress,
+                calldata: calldata,
+                nonce: chainNonce
+            )
+            let message = diagnostic ?? error.localizedDescription
+            print("[PrivateTransfer] estimate failed: \(message)")
+            throw NSError(domain: "StarkVeil", code: 41,
+                          userInfo: [NSLocalizedDescriptionKey: message])
+        }
         let (txHash, signature) = try StarknetTransactionBuilder.buildAndSign(
             senderAddress: senderAddress,
             calldata: calldata,

@@ -18,6 +18,18 @@ struct RPCResponse<T: Decodable>: Decodable {
 struct RPCError: Decodable {
     let code: Int
     let message: String
+    let data: RPCErrorData?
+
+    var detailedMessage: String {
+        if let executionError = data?.execution_error, !executionError.isEmpty {
+            return "\(message) — \(executionError)"
+        }
+        return message
+    }
+}
+
+struct RPCErrorData: Decodable {
+    let execution_error: String?
 }
 
 // MARK: - starknet_blockNumber

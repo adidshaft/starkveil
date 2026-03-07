@@ -173,7 +173,7 @@ class RPCClient {
         let requestPayload = RPCRequest(method: "starknet_blockNumber", params: [] as [String])
         let response: RPCResponse<Int> = try await performRequest(url: rpcUrl, payload: requestPayload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         guard let blockNumber = response.result else { throw RPCClientError.invalidResponse }
         return blockNumber
@@ -245,7 +245,7 @@ class RPCClient {
             let requestPayload = RPCRequest(method: "starknet_getEvents", params: Args(filter: filter))
             let response: RPCResponse<EventPageResponse> = try await performRequest(url: rpcUrl, payload: requestPayload)
             if let error = response.error {
-                throw RPCClientError.serverError(code: error.code, message: error.message)
+                throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
             }
             guard let page = response.result else { throw RPCClientError.invalidResponse }
             allEvents.append(contentsOf: page.events)
@@ -269,7 +269,7 @@ class RPCClient {
         )
         let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         guard let result = response.result else { throw RPCClientError.invalidResponse }
         return result   // hex string e.g. "0x3"
@@ -318,7 +318,7 @@ class RPCClient {
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         guard let result = response.result else { throw RPCClientError.invalidResponse }
         return result.transaction_hash
@@ -366,7 +366,7 @@ class RPCClient {
         struct TxResult: Decodable { let transaction_hash: String }
         let response: RPCResponse<TxResult> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         guard let result = response.result else { throw RPCClientError.invalidResponse }
         return result.transaction_hash
@@ -426,7 +426,7 @@ class RPCClient {
                 return estimate.toResourceBounds(multiplier: multiplier)
             }
             if let err = response.error {
-                 throw RPCClientError.serverError(code: err.code, message: err.message)
+                 throw RPCClientError.serverError(code: err.code, message: err.detailedMessage)
             }
         } catch {
             print("⚠️ [RPC] starknet_estimateFee failed: \(error.localizedDescription) — throwing error")
@@ -486,13 +486,67 @@ class RPCClient {
                 return estimate.toResourceBounds(multiplier: multiplier)
             }
             if let err = response.error {
-                 throw RPCClientError.serverError(code: err.code, message: err.message)
+                 throw RPCClientError.serverError(code: err.code, message: err.detailedMessage)
             }
         } catch {
             print("⚠️ [RPC] starknet_estimateFee (deploy) failed: \(error.localizedDescription) — throwing error")
             throw error
         }
         return fallback
+    }
+
+    /// Runs a non-broadcast simulation to surface nested execution errors after a fee-estimation
+    /// failure, which otherwise often appears only as the account contract's unwrap panic.
+    func simulateInvokeForDiagnostics(
+        rpcUrl: URL,
+        senderAddress: String,
+        calldata: [String],
+        nonce: String,
+        resourceBounds: ResourceBoundsMapping? = nil
+    ) async -> String? {
+        struct SimulateInvokeTx: Encodable {
+            let type: String = "INVOKE"
+            let sender_address: String
+            let calldata: [String]
+            let version: String = "0x3"
+            let signature: [String] = []
+            let nonce: String
+            let resource_bounds: ResourceBoundsMapping
+            let tip: String = "0x0"
+            let paymaster_data: [String] = []
+            let account_deployment_data: [String] = []
+            let nonce_data_availability_mode: String = "L1"
+            let fee_data_availability_mode: String = "L1"
+        }
+        struct Params: Encodable {
+            let block_id: String = "latest"
+            let transactions: [SimulateInvokeTx]
+            let simulation_flags: [String] = ["SKIP_VALIDATE", "SKIP_FEE_CHARGE"]
+        }
+        struct SimulationResult: Decodable {}
+
+        let fallbackBounds = ResourceBoundsMapping(
+            l1_gas: ResourceBound(max_amount: "0x30d40", max_price_per_unit: "0x174876e800"),
+            l2_gas: ResourceBound(max_amount: "0x989680", max_price_per_unit: "0x174876e800"),
+            l1_data_gas: ResourceBound(max_amount: "0x2710", max_price_per_unit: "0x174876e800")
+        )
+        let tx = SimulateInvokeTx(
+            sender_address: senderAddress,
+            calldata: calldata,
+            nonce: nonce,
+            resource_bounds: resourceBounds ?? fallbackBounds
+        )
+        let payload = RPCRequest(method: "starknet_simulateTransactions",
+                                 params: Params(transactions: [tx]))
+
+        do {
+            let response: RPCResponse<[SimulationResult]> = try await performRequest(url: rpcUrl, payload: payload)
+            return response.error?.detailedMessage
+        } catch let error as RPCClientError {
+            return error.localizedDescription
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     // MARK: - Fee Estimate V3 Parsing
@@ -568,7 +622,7 @@ class RPCClient {
                                  params: Params(transaction_hash: txHash))
         let response: RPCResponse<TransactionReceipt> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         guard let result = response.result else { throw RPCClientError.invalidResponse }
         return result
@@ -652,7 +706,7 @@ class RPCClient {
         )
         let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         let parts = response.result ?? ["0x0", "0x0"]
         return parts.joined(separator: ", ")
@@ -683,7 +737,7 @@ class RPCClient {
         )
         let response: RPCResponse<[String]> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         let parts = response.result ?? ["0x0", "0x0"]
         return parts.joined(separator: ", ")
@@ -853,7 +907,7 @@ class RPCClient {
                                                 block_id: "latest"))
         let response: RPCResponse<String> = try await performRequest(url: rpcUrl, payload: payload)
         if let error = response.error {
-            throw RPCClientError.serverError(code: error.code, message: error.message)
+            throw RPCClientError.serverError(code: error.code, message: error.detailedMessage)
         }
         return response.result ?? "0x0"
     }

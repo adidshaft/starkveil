@@ -13,10 +13,10 @@ struct ActivityTabView: View {
                 Image(systemName: "shield.lefthalf.filled")
                     .font(.system(size: 36))
                     .foregroundStyle(themeManager.textSecondary)
-                Text("No shielded activity yet.")
+                Text("No activity yet.")
                     .font(.system(size: 14, design: .monospaced))
                     .foregroundStyle(themeManager.textSecondary)
-                Text("Deposit funds to get started.")
+                Text("Send, receive, shield, or unshield funds to get started.")
                     .font(.system(size: 12))
                     .foregroundStyle(themeManager.textSecondary.opacity(0.6))
             }
@@ -51,6 +51,7 @@ struct ActivityRowView: View {
         case .received:   return "arrow.down.circle.fill"
         case .unshield:   return "lock.open.fill"
         case .publicSend: return "arrow.up.right.circle.fill"
+        case .publicReceive: return "arrow.down.right.circle.fill"
         }
     }
 
@@ -61,6 +62,7 @@ struct ActivityRowView: View {
         case .received:   return "Private Receive"
         case .unshield:   return "Unshield"
         case .publicSend: return "Public Send"
+        case .publicReceive: return "Public Receive"
         }
     }
 
@@ -160,6 +162,7 @@ struct ActivityRowView: View {
         switch event.kind {
         case .deposit:    return AppTheme.accentGreen.opacity(0.15)
         case .received:   return AppTheme.accentGreen.opacity(0.15)
+        case .publicReceive: return AppTheme.accentGreen.opacity(0.15)
         case .transfer:   return AppTheme.accentRed.opacity(0.12)
         case .unshield:   return Color(hex: "#FF9800").opacity(0.15)
         case .publicSend: return Color(hex: "#FF9800").opacity(0.15)
@@ -170,6 +173,7 @@ struct ActivityRowView: View {
         switch event.kind {
         case .deposit:    return AppTheme.accentGreen
         case .received:   return AppTheme.accentGreen
+        case .publicReceive: return AppTheme.accentGreen
         case .transfer:   return AppTheme.accentRed
         case .unshield:   return Color(hex: "#FF9800")
         case .publicSend: return Color(hex: "#FF9800")
@@ -204,6 +208,7 @@ struct ActivityDetailSheet: View {
         case .received:   return "Private Receive"
         case .unshield:   return "Unshield"
         case .publicSend: return "Public Send"
+        case .publicReceive: return "Public Receive"
         }
     }
 
@@ -214,6 +219,7 @@ struct ActivityDetailSheet: View {
         case .received:   return "arrow.down.circle.fill"
         case .unshield:   return "lock.open.fill"
         case .publicSend: return "arrow.up.right.circle.fill"
+        case .publicReceive: return "arrow.down.right.circle.fill"
         }
     }
 
@@ -236,6 +242,8 @@ struct ActivityDetailSheet: View {
             return "Amount and recipient visible on-chain. Source note is hidden."
         case .publicSend:
             return "Amount and recipient visible on-chain."
+        case .publicReceive:
+            return "Amount visible on-chain. The sender may be publicly observable."
         }
     }
 
@@ -344,6 +352,7 @@ struct ActivityDetailSheet: View {
         switch event.kind {
         case .deposit:    return AppTheme.accentGreen
         case .received:   return AppTheme.accentGreen
+        case .publicReceive: return AppTheme.accentGreen
         case .transfer:   return AppTheme.accentRed
         case .unshield:   return Color(hex: "#FF9800")
         case .publicSend: return Color(hex: "#FF9800")

@@ -80,7 +80,7 @@ struct ShieldView: View {
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(themeManager.textPrimary)
                                 Text(mode == .shield
-                                     ? "Your public STRK enters the privacy pool. The deposit amount is visible on-chain. Everything after is private."
+                                     ? "Your public STRK enters the privacy pool. The deposit amount is visible on-chain, and the shielded note becomes spendable after the deposit is indexed."
                                      : "Your shielded STRK returns to your public balance. The withdrawal amount will be visible on-chain.")
                                     .font(.system(size: 12))
                                     .foregroundStyle(themeManager.textSecondary)
@@ -153,9 +153,14 @@ struct ShieldView: View {
                                 Image(systemName: "checkmark.shield.fill")
                                     .foregroundStyle(mode == .shield ? Color(hex: "#9B6DFF") : Color(hex: "#FF6B35"))
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(mode == .shield ? "Shielded successfully!" : "Unshielded successfully!")
+                                    Text(mode == .shield ? "Shield submitted successfully!" : "Unshielded successfully!")
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(themeManager.textPrimary)
+                                    if mode == .shield {
+                                        Text("The new shielded note becomes spendable after on-chain indexing completes.")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(themeManager.textSecondary)
+                                    }
                                     if let url = explorerUrl {
                                         Link(destination: url) {
                                             HStack(spacing: 4) {

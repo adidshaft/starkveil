@@ -9,6 +9,7 @@ enum ActivityKind: String, Codable {
     case received  = "received"  // Private transfer — incoming (received)
     case unshield  = "unshield"  // Unshield to a public recipient
     case publicSend = "publicSend" // Public ERC-20 send
+    case publicReceive = "publicReceive" // Public ERC-20 receive (balance-delta detected)
 }
 
 // MARK: - ActivityEvent Model
@@ -52,7 +53,7 @@ final class ActivityEvent {
     /// True if this event represents funds arriving into the shielded pool for this user.
     var isIncoming: Bool {
         switch kind {
-        case .deposit, .received: return true
+        case .deposit, .received, .publicReceive: return true
         case .transfer, .unshield, .publicSend: return false
         }
     }

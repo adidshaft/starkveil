@@ -6,8 +6,12 @@ struct ProverActivityView: View {
     @EnvironmentObject private var themeManager: AppThemeManager
     @EnvironmentObject private var walletManager: WalletManager
 
+    private var visibleEvents: [ProverEvent] {
+        walletManager.proverEvents.filter { $0.kind != .shield }
+    }
+
     var body: some View {
-        if walletManager.proverEvents.isEmpty {
+        if visibleEvents.isEmpty {
             VStack(spacing: 12) {
                 Image(systemName: "cpu")
                     .font(.system(size: 36))
@@ -25,7 +29,7 @@ struct ProverActivityView: View {
             .padding(.vertical, 40)
         } else {
             LazyVStack(spacing: 0) {
-                ForEach(walletManager.proverEvents) { event in
+                ForEach(visibleEvents) { event in
                     ProverEventRowView(event: event)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 14)
