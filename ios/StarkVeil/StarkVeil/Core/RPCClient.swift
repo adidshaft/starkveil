@@ -47,19 +47,39 @@ class RPCClient {
         request.timeoutInterval = 15   // explicit 15-second timeout
 
         let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let bodyData = try encoder.encode(AnyEncodable(payload))
         request.httpBody = bodyData
 
+        let reqDict = (try? JSONSerialization.jsonObject(with: bodyData, options: [])) as? [String: Any]
+        let reqMethod = reqDict?["method"] as? String ?? "Unknown RPC Method"
+
+        print("\n\n==========================================================")
+        print("↗️ [RPC REQUEST] \(reqMethod)")
+        print("URL: \(url.absoluteString)")
         if let bodyStr = String(data: bodyData, encoding: .utf8) {
-            print("[RPC→] \(url.host ?? url.absoluteString)\n\(bodyStr)")
+            print("PAYLOAD:\n\(bodyStr)")
         }
+        print("==========================================================")
 
         let (data, response) = try await urlSession.data(for: request)
 
-        if let respStr = String(data: data, encoding: .utf8) {
-            print("[RPC←] \(respStr)")
+        print("\n==========================================================")
+        print("↙️ [RPC RESPONSE] \(reqMethod)")
+        print("URL: \(url.absoluteString)")
+        if let httpResponse = response as? HTTPURLResponse {
+            let icon = (200...299).contains(httpResponse.statusCode) ? "✅" : "❌"
+            print("STATUS CODE: \(httpResponse.statusCode) \(icon)")
         }
+
+        if let jsonObject = try? JSONSerialization.jsonObject(with: data, options: []),
+           let prettyData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.prettyPrinted, .sortedKeys]),
+           let prettyStr = String(data: prettyData, encoding: .utf8) {
+            print("BODY:\n\(prettyStr)")
+        } else if let respStr = String(data: data, encoding: .utf8) {
+            print("BODY (Raw):\n\(respStr)")
+        }
+        print("==========================================================\n\n")
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw RPCClientError.invalidResponse
@@ -77,7 +97,12 @@ class RPCClient {
     /// Server errors (-32xxx) are NOT retried — a different node returns the same error.
     func performRequestWithFallback<T: Decodable>(urls: [URL], payload: Encodable) async throws -> RPCResponse<T> {
         let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let body = try encoder.encode(AnyEncodable(payload))
+        
+        let reqDict = (try? JSONSerialization.jsonObject(with: body, options: [])) as? [String: Any]
+        let reqMethod = reqDict?["method"] as? String ?? "Unknown RPC Method"
+        
         var lastError: Error = RPCClientError.invalidResponse
         for url in urls {
             do {
@@ -87,17 +112,44 @@ class RPCClient {
                 req.timeoutInterval  = 15   // L-2 fix: explicit timeout, matching performRequest
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
+                
+                print("\n\n==========================================================")
+                print("↗️ [RPC REQUEST (Fallback)] \(reqMethod)")
+                print("URL: \(url.absoluteString)")
+                if let bodyStr = String(data: body, encoding: .utf8) {
+                    print("PAYLOAD:\n\(bodyStr)")
+                }
+                print("==========================================================")
+
                 let (data, response) = try await urlSession.data(for: req)
+                
+                print("\n==========================================================")
+                print("↙️ [RPC RESPONSE (Fallback)] \(reqMethod)")
+                print("URL: \(url.absoluteString)")
+                if let http = response as? HTTPURLResponse {
+                    let icon = (200...299).contains(http.statusCode) ? "✅" : "❌"
+                    print("STATUS CODE: \(http.statusCode) \(icon)")
+                }
+                
+                if let jsonObject = try? JSONSerialization.jsonObject(with: data, options: []),
+                   let prettyData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.prettyPrinted, .sortedKeys]),
+                   let prettyStr = String(data: prettyData, encoding: .utf8) {
+                    print("BODY:\n\(prettyStr)")
+                } else if let respStr = String(data: data, encoding: .utf8) {
+                    print("BODY (Raw):\n\(respStr)")
+                }
+                print("==========================================================\n\n")
+
                 guard let http = response as? HTTPURLResponse else { continue }
                 guard (200..<300).contains(http.statusCode) else {
-                    print("[RPC] HTTP \(http.statusCode) from \(url.host ?? url.absoluteString) — trying next")
+                    print("⚠️ [RPC Error] HTTP \(http.statusCode) from \(url.host ?? url.absoluteString) — trying next")
                     lastError = RPCClientError.httpError(statusCode: http.statusCode)
                     continue
                 }
                 let decoded: RPCResponse<T> = try JSONDecoder().decode(RPCResponse<T>.self, from: data)
                 return decoded
             } catch {
-                print("[RPC] \(url.host ?? url.absoluteString) failed: \(error.localizedDescription) — trying next")
+                print("⚠️ [RPC Error] \(url.host ?? url.absoluteString) failed: \(error.localizedDescription) — trying next")
                 lastError = error
             }
         }
