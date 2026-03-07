@@ -413,14 +413,6 @@ class RPCClient {
             let nonce_data_availability_mode: String = "L1"
             let fee_data_availability_mode: String = "L1"
         }
-        struct Params: Encodable {
-            let request: [EstimateInvokeTx]
-            let block_id: String = "latest"
-            let simulation_flags: [String] = ["SKIP_VALIDATE"]
-        }
-        // Starknet v0.14 requires non-zero L2 gas bounds in every INVOKE_V3 transaction,
-        // including estimation requests. SKIP_VALIDATE bypasses balance checks so using
-        // the same large ceiling as L1/L1_DATA is safe here.
         let maxBounds = ResourceBoundsMapping(
             l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
             l2_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
@@ -432,8 +424,15 @@ class RPCClient {
             nonce: nonce,
             resource_bounds: maxBounds
         )
-        let payload = RPCRequest(method: "starknet_estimateFee",
-                                 params: Params(request: [tx]))
+        // Starknet RPC starknet_estimateFee expects positional params: [request_array, simulation_flags, block_id]
+        let payload = RPCRequest(
+            method: "starknet_estimateFee",
+            params: [
+                AnyEncodable([tx]),
+                AnyEncodable(["SKIP_VALIDATE"] as [String]),
+                AnyEncodable("latest")
+            ]
+        )
         do {
             let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
             if let estimate = response.result?.first {
@@ -476,11 +475,6 @@ class RPCClient {
             let nonce_data_availability_mode: String = "L1"
             let fee_data_availability_mode: String = "L1"
         }
-        struct Params: Encodable {
-            let request: [EstimateDeployTx]
-            let block_id: String = "latest"
-            let simulation_flags: [String] = ["SKIP_VALIDATE"]
-        }
         let maxBounds = ResourceBoundsMapping(
             l1_gas: ResourceBound(max_amount: "0xffffffffffff", max_price_per_unit: "0xffffffffffff"),
             l2_gas: ResourceBound(max_amount: "0x0", max_price_per_unit: "0x0"),
@@ -492,8 +486,14 @@ class RPCClient {
             class_hash: classHash,
             resource_bounds: maxBounds
         )
-        let payload = RPCRequest(method: "starknet_estimateFee",
-                                 params: Params(request: [tx]))
+        let payload = RPCRequest(
+            method: "starknet_estimateFee",
+            params: [
+                AnyEncodable([tx]),
+                AnyEncodable(["SKIP_VALIDATE"] as [String]),
+                AnyEncodable("latest")
+            ]
+        )
         do {
             let response: RPCResponse<[FeeEstimateV3]> = try await performRequest(url: rpcUrl, payload: payload)
             if let estimate = response.result?.first {
